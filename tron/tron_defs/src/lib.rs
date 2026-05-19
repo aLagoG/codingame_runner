@@ -1,6 +1,7 @@
 use std::{
     fmt::Display,
     io::{BufRead, Write},
+    marker::PhantomData,
     str::FromStr,
 };
 
@@ -33,12 +34,19 @@ pub struct TurnRef<'a> {
     pub player_lines: &'a [Line],
 }
 
+// Fields are private — the only way to obtain a `TurnInputFFI<'a>` is
+// `TurnInput::as_ffi`, which establishes the invariants relied on by `as_ref`:
+//   1. `player_lines` is a valid, properly-aligned pointer to a contiguous
+//      array of `Line`s.
+//   2. The array has at least `number_of_players` elements.
+//   3. The memory is live for `'a` (enforced by the lifetime + PhantomData).
 #[repr(C)]
 #[derive(Debug, PartialEq, Eq)]
-pub struct TurnInputFFI {
-    pub number_of_players: i32,
-    pub player_number: i32,
-    pub player_lines: *const Line,
+pub struct TurnInputFFI<'a> {
+    number_of_players: i32,
+    player_number: i32,
+    player_lines: *const Line,
+    _marker: PhantomData<&'a [Line]>,
 }
 
 #[repr(u8)]
@@ -57,18 +65,19 @@ pub struct TurnOutput {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn take_turn(_: TurnInputFFI) -> TurnOutput {
+pub extern "C" fn take_turn(_: TurnInputFFI<'_>) -> TurnOutput {
     unreachable!()
 }
 
 impl TurnInput {
-    pub fn as_ffi(&self) -> TurnInputFFI {
+    pub fn as_ffi(&self) -> TurnInputFFI<'_> {
         assert!(self.player_lines.len() == self.number_of_players as usize);
 
         TurnInputFFI {
             number_of_players: self.number_of_players,
             player_number: self.player_number,
             player_lines: self.player_lines.as_ptr(),
+            _marker: PhantomData,
         }
     }
 
@@ -81,10 +90,18 @@ impl TurnInput {
     }
 }
 
-impl TurnInputFFI {
-    /// SAFETY: `self.player_lines` must point to `self.number_of_players` initialized,
-    /// contiguous `Line` values, all valid for reads for the chosen lifetime `'a`.
-    pub unsafe fn as_ref<'a>(&self) -> TurnRef<'a> {
+impl<'a> TurnInputFFI<'a> {
+    pub fn number_of_players(&self) -> i32 {
+        self.number_of_players
+    }
+
+    pub fn player_number(&self) -> i32 {
+        self.player_number
+    }
+
+    // Safe because every `TurnInputFFI<'a>` is constructed by `as_ffi`, which
+    // establishes the three invariants documented on the struct.
+    pub fn as_ref(&self) -> TurnRef<'a> {
         TurnRef {
             number_of_players: self.number_of_players,
             player_number: self.player_number,
@@ -97,41 +114,32 @@ impl TurnInputFFI {
 
 impl Display for Pos {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!("{} {}", self.x, self.y))
+        write!(f, "{} {}", self.x, self.y)
     }
 }
 
 impl Display for Line {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!("{} {}", self.start, self.end))
+        write!(f, "{} {}", self.start, self.end)
     }
 }
 
 impl Display for TurnInput {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!(
-            "{} {}",
-            self.number_of_players, self.player_number
-        ))?;
+        write!(f, "{} {}", self.number_of_players, self.player_number)?;
         for line in &self.player_lines {
-            f.write_fmt(format_args!("\n{}", line))?;
+            write!(f, "\n{line}")?;
         }
         Ok(())
     }
 }
 
-impl Display for TurnInputFFI {
+impl Display for TurnInputFFI<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!(
-            "{} {}\n",
-            self.number_of_players, self.player_number
-        ))?;
-
-        let slice = unsafe {
-            std::slice::from_raw_parts(self.player_lines, self.number_of_players as usize)
-        };
-        for line in slice {
-            f.write_fmt(format_args!("{}\n", line))?;
+        let view = self.as_ref();
+        writeln!(f, "{} {}", view.number_of_players, view.player_number)?;
+        for line in view.player_lines {
+            writeln!(f, "{line}")?;
         }
         Ok(())
     }

@@ -149,8 +149,10 @@ dependencies = [
  "anyhow",
  "clap",
  "codingame_macros",
+ "common",
  "libloading",
  "thiserror",
+ "tron_defs",
 ]
 
 [[package]]

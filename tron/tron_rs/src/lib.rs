@@ -12,12 +12,11 @@ pub fn decide(turn: TurnRef<'_>) -> TurnOutput {
     }
 }
 
-// FFI shim. Panics in `decide` unwinding across `extern "C"` would be UB, so we
-// catch and fall back to a default move. SAFETY contract on the input pointer
-// is documented on `TurnInputFFI::as_ref`.
+// FFI shim. A panic in `decide` unwinding across `extern "C"` would be UB,
+// so we catch and fall back to a default move.
 #[unsafe(no_mangle)]
-pub extern "C" fn take_turn(input: TurnInputFFI) -> TurnOutput {
-    std::panic::catch_unwind(|| decide(unsafe { input.as_ref() })).unwrap_or(TurnOutput {
+pub extern "C" fn take_turn(input: TurnInputFFI<'_>) -> TurnOutput {
+    std::panic::catch_unwind(|| decide(input.as_ref())).unwrap_or(TurnOutput {
         direction: Direction::Down,
     })
 }
