@@ -21,7 +21,7 @@ fn main() -> Result<()> {
     let mut output = io::BufWriter::new(io::stdout().lock());
     loop {
         let turn = TurnInput::read_from(&mut input)?;
-        bot.run_turn(&turn).write_to(&mut output)?;
+        bot.run_turn(&turn)?.write_to(&mut output)?;
         output.flush()?;
     }
 }

@@ -64,11 +64,35 @@ pub struct TurnOutput {
     pub direction: Direction,
 }
 
+impl Default for TurnOutput {
+    fn default() -> Self {
+        TurnOutput {
+            direction: Direction::Down,
+        }
+    }
+}
+
+#[repr(u8)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+pub enum BotStatus {
+    Ok = 0,
+    Panic = 1,
+}
+
+#[repr(C)]
+#[derive(Debug, PartialEq, Eq)]
+pub struct TurnResult {
+    pub status: BotStatus,
+    // Valid iff `status == BotStatus::Ok`; otherwise a placeholder.
+    pub output: TurnOutput,
+}
+
 #[unsafe(no_mangle)]
-pub extern "C" fn take_turn(_: TurnInputFFI<'_>) -> TurnOutput {
+pub extern "C" fn take_turn(_: TurnInputFFI<'_>) -> TurnResult {
     unreachable!()
 }
 
+// region: Inherent impls
 impl TurnInput {
     pub fn as_ffi(&self) -> TurnInputFFI<'_> {
         assert!(self.player_lines.len() == self.number_of_players as usize);
@@ -111,7 +135,9 @@ impl<'a> TurnInputFFI<'a> {
         }
     }
 }
+// endregion: Inherent impls
 
+// region: Display impls
 impl Display for Pos {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{} {}", self.x, self.y)
@@ -161,7 +187,9 @@ impl Display for TurnOutput {
         Display::fmt(&self.direction, f)
     }
 }
+// endregion: Display impls
 
+// region: FromStr impls
 impl FromStr for Pos {
     type Err = anyhow::Error;
 
@@ -226,12 +254,16 @@ impl FromStr for TurnOutput {
         })
     }
 }
+// endregion: FromStr impls
 
+// region: SingleLine markers
 impl SingleLine for Pos {}
 impl SingleLine for Line {}
 impl SingleLine for Direction {}
 impl SingleLine for TurnOutput {}
+// endregion: SingleLine markers
 
+// region: ReadFrom / WriteTo impls
 impl ReadFrom for TurnInput {
     fn read_from(r: &mut impl BufRead) -> anyhow::Result<Self> {
         let mut header = String::new();
@@ -267,6 +299,7 @@ impl WriteTo for TurnInput {
         Ok(())
     }
 }
+// endregion: ReadFrom / WriteTo impls
 
 #[cfg(test)]
 mod test {

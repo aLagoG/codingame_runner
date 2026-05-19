@@ -4,6 +4,11 @@
 #include <ostream>
 #include <new>
 
+enum class BotStatus : uint8_t {
+  Ok = 0,
+  Panic = 1,
+};
+
 enum class Direction : uint8_t {
   Up,
   Down,
@@ -13,6 +18,11 @@ enum class Direction : uint8_t {
 
 struct TurnOutput {
   Direction direction;
+};
+
+struct TurnResult {
+  BotStatus status;
+  TurnOutput output;
 };
 
 struct Pos {
@@ -33,6 +43,6 @@ struct TurnInputFFI {
 
 extern "C" {
 
-TurnOutput take_turn(TurnInputFFI);
+TurnResult take_turn(TurnInputFFI);
 
 }  // extern "C"
