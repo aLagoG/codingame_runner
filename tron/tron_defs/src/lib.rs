@@ -27,6 +27,12 @@ pub struct TurnInput {
     pub player_lines: Vec<Line>,
 }
 
+pub struct TurnRef<'a> {
+    pub number_of_players: i32,
+    pub player_number: i32,
+    pub player_lines: &'a [Line],
+}
+
 #[repr(C)]
 #[derive(Debug, PartialEq, Eq)]
 pub struct TurnInputFFI {
@@ -63,6 +69,28 @@ impl TurnInput {
             number_of_players: self.number_of_players,
             player_number: self.player_number,
             player_lines: self.player_lines.as_ptr(),
+        }
+    }
+
+    pub fn as_ref(&self) -> TurnRef<'_> {
+        TurnRef {
+            number_of_players: self.number_of_players,
+            player_number: self.player_number,
+            player_lines: &self.player_lines,
+        }
+    }
+}
+
+impl TurnInputFFI {
+    /// SAFETY: `self.player_lines` must point to `self.number_of_players` initialized,
+    /// contiguous `Line` values, all valid for reads for the chosen lifetime `'a`.
+    pub unsafe fn as_ref<'a>(&self) -> TurnRef<'a> {
+        TurnRef {
+            number_of_players: self.number_of_players,
+            player_number: self.player_number,
+            player_lines: unsafe {
+                std::slice::from_raw_parts(self.player_lines, self.number_of_players as usize)
+            },
         }
     }
 }
