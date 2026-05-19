@@ -1,0 +1,6 @@
+[package]
+name = "tron_rs"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

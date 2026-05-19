@@ -1,0 +1,17 @@
+
+
+#[repr(C)]
+pub struct TurnInput {
+}
+
+
+#[repr(C)]
+pub struct TurnOutput {
+}
+
+
+
+#[unsafe(no_mangle)]
+pub  extern "C" fn take_turn(_: TurnInput) -> TurnOutput {
+    unreachable!()
+}

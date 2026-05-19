@@ -1,0 +1,11 @@
+[package]
+name = "codingame_runner"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+libloading.workspace = true
+thiserror.workspace = true
+codingame_macros.workspace = true

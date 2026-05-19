@@ -1,0 +1,10 @@
+[package]
+name = "tron_defs"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+
+[build-dependencies]
+cbindgen = "0.29.2"
