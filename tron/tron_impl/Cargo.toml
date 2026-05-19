@@ -1,0 +1,7 @@
+[package]
+name = "tron_impl"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tron_defs.workspace = true

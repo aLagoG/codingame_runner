@@ -1,6 +1,11 @@
-use std::{fmt::Display, str::FromStr};
+use std::{
+    fmt::Display,
+    io::{BufRead, Write},
+    str::FromStr,
+};
 
 use anyhow::{Context, bail};
+use common::{ReadFrom, SingleLine, WriteTo};
 
 #[repr(C)]
 #[derive(Debug, PartialEq, Eq)]
@@ -117,7 +122,7 @@ impl Display for Direction {
 
 impl Display for TurnOutput {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!("{}\n", self.direction))
+        Display::fmt(&self.direction, f)
     }
 }
 
@@ -158,24 +163,7 @@ impl FromStr for TurnInput {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut lines = s.lines();
-
-        let header = lines.next().context("Missing header")?;
-        let (number_of_players, player_number) = header
-            .trim()
-            .split_once(' ')
-            .context("Failed reading header")?;
-
-        let player_lines = lines
-            .into_iter()
-            .map(|l| l.parse::<Line>().unwrap())
-            .collect::<Vec<_>>();
-
-        Ok(TurnInput {
-            number_of_players: number_of_players.parse()?,
-            player_number: player_number.parse()?,
-            player_lines,
-        })
+        Self::read_from(&mut s.as_bytes())
     }
 }
 
@@ -200,6 +188,47 @@ impl FromStr for TurnOutput {
         Ok(TurnOutput {
             direction: s.parse()?,
         })
+    }
+}
+
+impl SingleLine for Pos {}
+impl SingleLine for Line {}
+impl SingleLine for Direction {}
+impl SingleLine for TurnOutput {}
+
+impl ReadFrom for TurnInput {
+    fn read_from(r: &mut impl BufRead) -> anyhow::Result<Self> {
+        let mut header = String::new();
+        r.read_line(&mut header)?;
+        let (n, p) = header
+            .trim()
+            .split_once(' ')
+            .context("Failed reading header")?;
+        let number_of_players: i32 = n.parse()?;
+        let player_number: i32 = p.parse()?;
+
+        let mut player_lines = Vec::with_capacity(number_of_players as usize);
+        for _ in 0..number_of_players {
+            let mut buf = String::new();
+            r.read_line(&mut buf)?;
+            player_lines.push(buf.parse()?);
+        }
+
+        Ok(TurnInput {
+            number_of_players,
+            player_number,
+            player_lines,
+        })
+    }
+}
+
+impl WriteTo for TurnInput {
+    fn write_to(&self, w: &mut impl Write) -> std::io::Result<()> {
+        writeln!(w, "{} {}", self.number_of_players, self.player_number)?;
+        for line in &self.player_lines {
+            writeln!(w, "{line}")?;
+        }
+        Ok(())
     }
 }
 
@@ -350,7 +379,7 @@ mod test {
         let output = TurnOutput {
             direction: Direction::Up,
         };
-        assert!(output.to_string() == "UP\n");
+        assert!(output.to_string() == "UP");
         Ok(())
     }
 
@@ -360,6 +389,90 @@ mod test {
             direction: Direction::Up,
         };
         assert!(output == output.to_string().parse()?);
+        Ok(())
+    }
+
+    fn stdio_round_trip<T>(value: T) -> Result<T>
+    where
+        T: ReadFrom + WriteTo,
+    {
+        let mut buf = Vec::new();
+        value.write_to(&mut buf)?;
+        Ok(T::read_from(&mut buf.as_slice())?)
+    }
+
+    #[test]
+    fn pos_stdio_round_trip() -> Result<()> {
+        let pos = Pos { x: 1, y: 2 };
+        assert!(pos == stdio_round_trip(Pos { x: 1, y: 2 })?);
+        let _ = pos;
+        Ok(())
+    }
+
+    #[test]
+    fn line_stdio_round_trip() -> Result<()> {
+        let line = Line {
+            start: Pos { x: 1, y: 2 },
+            end: Pos { x: 3, y: 4 },
+        };
+        let parsed = stdio_round_trip(Line {
+            start: Pos { x: 1, y: 2 },
+            end: Pos { x: 3, y: 4 },
+        })?;
+        assert!(line == parsed);
+        Ok(())
+    }
+
+    #[test]
+    fn direction_stdio_round_trip() -> Result<()> {
+        for d in [
+            Direction::Up,
+            Direction::Down,
+            Direction::Left,
+            Direction::Right,
+        ] {
+            let mut buf = Vec::new();
+            d.write_to(&mut buf)?;
+            let parsed = Direction::read_from(&mut buf.as_slice())?;
+            assert!(d == parsed);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn turn_output_stdio_round_trip() -> Result<()> {
+        let output = TurnOutput {
+            direction: Direction::Right,
+        };
+        let parsed = stdio_round_trip(TurnOutput {
+            direction: Direction::Right,
+        })?;
+        assert!(output == parsed);
+        Ok(())
+    }
+
+    #[test]
+    fn turn_input_stdio_round_trip() -> Result<()> {
+        let input = TurnInput {
+            number_of_players: 2,
+            player_number: 0,
+            player_lines: vec![
+                Line {
+                    start: Pos { x: 1, y: 2 },
+                    end: Pos { x: 3, y: 4 },
+                },
+                Line {
+                    start: Pos { x: 5, y: 6 },
+                    end: Pos { x: 7, y: 8 },
+                },
+            ],
+        };
+        let mut buf = Vec::new();
+        input.write_to(&mut buf)?;
+        let parsed = TurnInput::read_from(&mut buf.as_slice())?;
+        assert!(parsed.number_of_players == input.number_of_players);
+        assert!(parsed.player_number == input.player_number);
+        assert!(parsed.player_lines == input.player_lines);
         Ok(())
     }
 }
