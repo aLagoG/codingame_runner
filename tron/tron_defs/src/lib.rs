@@ -9,14 +9,14 @@ use anyhow::{Context, bail};
 use common::{ReadFrom, SingleLine, WriteTo};
 
 #[repr(C)]
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub struct Pos {
     pub x: i32,
     pub y: i32,
 }
 
 #[repr(C)]
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub struct Line {
     pub start: Pos,
     pub end: Pos,
@@ -50,7 +50,7 @@ pub struct TurnInputFFI<'a> {
 }
 
 #[repr(u8)]
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum Direction {
     Up,
     Down,

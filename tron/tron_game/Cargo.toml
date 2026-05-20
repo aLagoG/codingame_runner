@@ -1,7 +1,8 @@
 [package]
-name = "tron_impl"
+name = "tron_game"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
 tron_defs.workspace = true
+common.workspace = true

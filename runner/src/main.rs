@@ -1,27 +1,61 @@
-use std::{env, io::{self, Write}, path::PathBuf, process};
+use std::{env, path::PathBuf, process, process::Command};
 
 use anyhow::{Context, Result};
-use codingame_runner::Bot;
-use common::{ReadFrom, WriteTo};
-use tron_defs::TurnInput;
+use common::engine::{
+    run_match, Game, MatchResult, Player, PluginPlayer, RunConfig, SubprocessPlayer,
+};
+use tron_game::TronGame;
 
 fn main() -> Result<()> {
-    let bot_path = match env::args_os().nth(1) {
-        Some(p) => PathBuf::from(p),
-        None => {
-            eprintln!("usage: codingame_runner <path-to-bot.{{so,dylib,dll}}>");
-            process::exit(2);
-        }
-    };
-
-    let bot = unsafe { Bot::load(&bot_path) }
-        .with_context(|| format!("loading bot from {}", bot_path.display()))?;
-
-    let mut input = io::stdin().lock();
-    let mut output = io::BufWriter::new(io::stdout().lock());
-    loop {
-        let turn = TurnInput::read_from(&mut input)?;
-        bot.run_turn(&turn)?.write_to(&mut output)?;
-        output.flush()?;
+    let paths: Vec<PathBuf> = env::args_os().skip(1).map(PathBuf::from).collect();
+    if paths.is_empty() {
+        eprintln!("usage: codingame_runner <bot1> [bot2 ...]");
+        eprintln!("  bot is a dynamic library (.so/.dylib/.dll) or a subprocess binary");
+        process::exit(2);
     }
+
+    let num_players = paths.len() as u32;
+    let game = TronGame::new(num_players, 0);
+
+    let mut players: Vec<Box<dyn Player<TronGame>>> = Vec::with_capacity(paths.len());
+    for path in &paths {
+        let player: Box<dyn Player<TronGame>> = if is_plugin(path) {
+            Box::new(
+                unsafe { PluginPlayer::<TronGame>::load(path) }
+                    .with_context(|| format!("loading plugin {}", path.display()))?,
+            )
+        } else {
+            Box::new(
+                SubprocessPlayer::<TronGame>::spawn(&mut Command::new(path))
+                    .with_context(|| format!("spawning subprocess {}", path.display()))?,
+            )
+        };
+        players.push(player);
+    }
+
+    let MatchResult {
+        outcome,
+        stats,
+        replay,
+    } = run_match(game, players, RunConfig::default())?;
+
+    println!("outcome: {outcome:?}");
+    println!("ticks: {}", replay.len().saturating_sub(1));
+    for (i, s) in stats.iter().enumerate() {
+        println!(
+            "player {i}: {} turns, avg {:?}, max {:?}",
+            s.turn_times.len(),
+            s.average(),
+            s.max()
+        );
+    }
+
+    Ok(())
+}
+
+fn is_plugin(path: &std::path::Path) -> bool {
+    matches!(
+        path.extension().and_then(|e| e.to_str()),
+        Some("so") | Some("dylib") | Some("dll")
+    )
 }

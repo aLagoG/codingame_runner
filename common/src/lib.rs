@@ -1,3 +1,5 @@
+pub mod engine;
+
 use std::{
     fmt::Display,
     io::{self, BufRead, Write},
@@ -47,5 +49,18 @@ where
 {
     fn write_to(&self, w: &mut impl Write) -> io::Result<()> {
         writeln!(w, "{self}")
+    }
+}
+
+// `()` impls — useful for games whose `InitialInput` is empty.
+impl ReadFrom for () {
+    fn read_from(_: &mut impl BufRead) -> anyhow::Result<Self> {
+        Ok(())
+    }
+}
+
+impl WriteTo for () {
+    fn write_to(&self, _: &mut impl Write) -> io::Result<()> {
+        Ok(())
     }
 }

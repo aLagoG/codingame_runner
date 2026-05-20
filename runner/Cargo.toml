@@ -6,8 +6,6 @@ edition.workspace = true
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
-libloading.workspace = true
-thiserror.workspace = true
 codingame_macros.workspace = true
 common.workspace = true
-tron_defs.workspace = true
+tron_game.workspace = true
