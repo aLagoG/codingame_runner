@@ -1,0 +1,13 @@
+[package]
+name = "tron_viz"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+common.workspace = true
+tron_defs.workspace = true
+tron_game.workspace = true
+viz.workspace = true
+macroquad.workspace = true
+anyhow.workspace = true
+bincode.workspace = true

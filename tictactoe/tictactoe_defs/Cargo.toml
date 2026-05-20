@@ -1,5 +1,5 @@
 [package]
-name = "tron_defs"
+name = "tictactoe_defs"
 version.workspace = true
 edition.workspace = true
 

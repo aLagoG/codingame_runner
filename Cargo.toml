@@ -8,6 +8,12 @@ members = [
     "tron/tron_rs",
     "xtask",
     "tron/tron_game",
+    "tron/tron_viz",
+    "viz",
+    "tictactoe/tictactoe_defs",
+    "tictactoe/tictactoe_rs",
+    "tictactoe/tictactoe_game",
+    "tictactoe/tictactoe_viz",
 ]
 
 [workspace.package]
@@ -23,3 +29,10 @@ codingame_macros = { path = "macros" }
 common = { path = "common" }
 tron_defs = { path = "tron/tron_defs" }
 tron_game = { path = "tron/tron_game" }
+tictactoe_defs = { path = "tictactoe/tictactoe_defs" }
+tictactoe_game = { path = "tictactoe/tictactoe_game" }
+viz = { path = "viz" }
+macroquad = "0.4"
+egui-macroquad = "0.17"
+serde = { version = "1", features = ["derive"] }
+bincode = "1.3"

@@ -7,6 +7,7 @@ use std::{
 };
 
 use libloading::{Library, Symbol};
+use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::{ReadFrom, WriteTo};
@@ -49,9 +50,6 @@ pub trait Game: Sized {
     /// Final result of the match (winner, scores, …).
     type Outcome;
 
-    /// Per-tick snapshot of game state for replay / visualization.
-    type ReplayFrame;
-
     fn new(num_players: u32, seed: u64) -> Self;
 
     fn initial_input(&self, player: PlayerId) -> Self::InitialInput;
@@ -65,9 +63,6 @@ pub trait Game: Sized {
     /// Players who still need to submit a move this tick.
     /// Simultaneous games return many; sequential games return one.
     fn active_players(&self) -> &[PlayerId];
-
-    /// Snapshot of state, captured by the runner after each tick.
-    fn snapshot(&self) -> Self::ReplayFrame;
 }
 
 /// Anything that can act as a player for game `G`. Implemented by the FFI
@@ -83,25 +78,34 @@ pub struct RunConfig {
     /// failing player just submits `None` for that tick — the game decides
     /// what that means (elimination, no-op, etc.).
     pub abort_on_player_error: bool,
-    /// If false, the runner never calls `Game::snapshot` and `MatchResult::replay`
-    /// stays empty. Skip when running tournaments where only the outcome matters.
-    pub record_replay: bool,
 }
 
 impl Default for RunConfig {
     fn default() -> Self {
         Self {
             abort_on_player_error: false,
-            record_replay: true,
         }
     }
 }
 
-// Monomorphized per `G`; `size_of` is a const expression, so when
-// `G::ReplayFrame` is zero-sized the whole branch folds to `false` at compile
-// time and the snapshot call is elided.
-fn should_record_replay<G: Game>(config: &RunConfig) -> bool {
-    config.record_replay && std::mem::size_of::<G::ReplayFrame>() > 0
+/// Compact recording of a finished match: the seed, the player count, and the
+/// outputs each player submitted on each tick. Combined with a deterministic
+/// [`Game`] implementation this is enough to reconstruct the whole match by
+/// calling `Game::new(num_players, seed)` and replaying `outputs` through
+/// `Game::step`.
+///
+/// `outputs` is indexed `[tick][player]`. The inner Vec is the same shape
+/// `Game::step` consumes, with `None` for players that didn't move that tick
+/// (inactive / failed).
+#[derive(Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "G::Output: Serialize",
+    deserialize = "G::Output: serde::de::DeserializeOwned",
+))]
+pub struct Replay<G: Game> {
+    pub seed: u64,
+    pub num_players: u32,
+    pub outputs: Vec<Vec<Option<G::Output>>>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -126,16 +130,19 @@ impl PlayerStats {
 pub struct MatchResult<G: Game> {
     pub outcome: G::Outcome,
     pub stats: Vec<PlayerStats>,
-    pub replay: Vec<G::ReplayFrame>,
+    pub replay: Replay<G>,
 }
 
 pub fn run_match<G: Game>(
-    mut game: G,
+    num_players: u32,
+    seed: u64,
     mut players: Vec<Box<dyn Player<G>>>,
     config: RunConfig,
 ) -> Result<MatchResult<G>, MatchError> {
-    let mut stats: Vec<PlayerStats> = (0..players.len()).map(|_| PlayerStats::default()).collect();
-    let mut replay: Vec<G::ReplayFrame> = Vec::new();
+    let mut game = G::new(num_players, seed);
+    let mut stats: Vec<PlayerStats> =
+        (0..players.len()).map(|_| PlayerStats::default()).collect();
+    let mut outputs_per_tick: Vec<Vec<Option<G::Output>>> = Vec::new();
 
     // Per-player one-time init.
     for (i, player) in players.iter_mut().enumerate() {
@@ -146,10 +153,6 @@ pub fn run_match<G: Game>(
             }
             warn!("Player {i} failed to initialize");
         }
-    }
-
-    if should_record_replay::<G>(&config) {
-        replay.push(game.snapshot());
     }
 
     loop {
@@ -174,15 +177,17 @@ pub fn run_match<G: Game>(
         }
 
         let outcome = game.step(&outputs);
-        if should_record_replay::<G>(&config) {
-            replay.push(game.snapshot());
-        }
+        outputs_per_tick.push(outputs);
 
         if let Some(outcome) = outcome {
             return Ok(MatchResult {
                 outcome,
                 stats,
-                replay,
+                replay: Replay {
+                    seed,
+                    num_players,
+                    outputs: outputs_per_tick,
+                },
             });
         }
     }

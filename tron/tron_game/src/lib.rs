@@ -36,6 +36,7 @@ pub struct TronGame {
     trails: Vec<Vec<Pos>>,
     alive: Vec<bool>,
     active: Vec<PlayerId>,
+    last_moves: Vec<Option<Direction>>,
 }
 
 #[derive(Debug, Clone)]
@@ -43,11 +44,22 @@ pub struct TronOutcome {
     pub winner: Option<PlayerId>,
 }
 
-#[derive(Debug, Clone)]
-pub struct TronFrame {
-    pub alive: Vec<bool>,
-    pub heads: Vec<Pos>,
-    pub trails: Vec<Vec<Pos>>,
+impl TronGame {
+    pub fn alive(&self) -> &[bool] {
+        &self.alive
+    }
+    pub fn heads(&self) -> &[Pos] {
+        &self.heads
+    }
+    pub fn trails(&self) -> &[Vec<Pos>] {
+        &self.trails
+    }
+    /// What each player submitted last tick. `None` means they were inactive
+    /// or failed to produce output. Before any step has run, all entries are
+    /// `None`.
+    pub fn last_moves(&self) -> &[Option<Direction>] {
+        &self.last_moves
+    }
 }
 
 // TODO: review all this code
@@ -56,7 +68,6 @@ impl Game for TronGame {
     type Input = TurnInput;
     type Output = TurnOutput;
     type Outcome = TronOutcome;
-    type ReplayFrame = TronFrame;
 
     fn new(num_players: u32, _seed: u64) -> Self {
         assert!(
@@ -70,6 +81,7 @@ impl Game for TronGame {
         let trails: Vec<Vec<Pos>> = heads.iter().map(|p| vec![*p]).collect();
         let alive = vec![true; n];
         let active: Vec<PlayerId> = (0..num_players).collect();
+        let last_moves = vec![None; n];
         TronGame {
             num_players,
             heads,
@@ -77,6 +89,7 @@ impl Game for TronGame {
             trails,
             alive,
             active,
+            last_moves,
         }
     }
 
@@ -103,6 +116,11 @@ impl Game for TronGame {
     }
 
     fn step(&mut self, outputs: &[Option<TurnOutput>]) -> Option<TronOutcome> {
+        self.last_moves = outputs
+            .iter()
+            .map(|o| o.as_ref().map(|t| t.direction))
+            .collect();
+
         // 1. Each active player picks a new head. Missing output = elimination.
         let mut new_heads: Vec<Option<Pos>> = vec![None; self.num_players as usize];
         for &p in &self.active {
@@ -157,14 +175,6 @@ impl Game for TronGame {
 
     fn active_players(&self) -> &[PlayerId] {
         &self.active
-    }
-
-    fn snapshot(&self) -> TronFrame {
-        TronFrame {
-            alive: self.alive.clone(),
-            heads: self.heads.clone(),
-            trails: self.trails.clone(),
-        }
     }
 }
 

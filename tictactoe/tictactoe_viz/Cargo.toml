@@ -1,14 +1,13 @@
 [package]
-name = "codingame_runner"
+name = "tictactoe_viz"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
-anyhow.workspace = true
-clap.workspace = true
-codingame_macros.workspace = true
 common.workspace = true
-tron_game.workspace = true
+tictactoe_defs.workspace = true
 tictactoe_game.workspace = true
-serde.workspace = true
+viz.workspace = true
+macroquad.workspace = true
+anyhow.workspace = true
 bincode.workspace = true

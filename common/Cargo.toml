@@ -7,4 +7,5 @@ edition.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 libloading.workspace = true
+serde.workspace = true
 tracing = "0.1.44"
