@@ -1,6 +1,6 @@
 use std::io::{self, Write};
 
-use common::{ReadFrom, WriteTo};
+use common::{ReadFrom, WireInput, WriteTo};
 use tictactoe_defs::TurnInput;
 use tictactoe_rs::decide;
 

@@ -1,4 +1,4 @@
-use common::engine::{BotStatus, FfiGame, Game, PlayerError, PlayerId, TurnResult};
+use common::engine::{BotStatus, FfiGame, Game, PlayerError, PlayerId, TurnResult, WireInput};
 use tictactoe_defs::{BOARD_CELLS, BOARD_SIZE, Cell, Pos, TurnInput, TurnInputFFI, TurnOutput};
 
 pub struct TicTacToeGame {

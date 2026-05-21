@@ -5,12 +5,23 @@ use std::{
     str::FromStr,
 };
 
-use common::{ReadFrom, SingleLine, TurnResult, WriteTo};
+use common::{Defs, ReadFrom, SingleLine, TurnResult, WireInput, WireInputFfi, WireOutput, WriteTo};
 
 /// Bumped on any wire-type change. Plugins built against an older
 /// `{{name}}_defs` export an older value; `PluginPlayer::load` reads it and
 /// refuses mismatches before any UB-prone call lands.
 pub const ABI_VERSION: u32 = 1;
+
+/// Marker type. Implementing [`common::Defs`] on it is the single line that
+/// ratifies this crate's FFI surface — all of `WireInput`, `WireInputFfi`,
+/// `WireOutput`, and `ABI_VERSION` are checked at this exact site.
+pub struct Ffi;
+
+impl Defs for Ffi {
+    type Input = TurnInput;
+    type Output = TurnOutput;
+    const ABI_VERSION: u32 = ABI_VERSION;
+}
 
 // TODO: define your game's per-tick input fields. The engine constructs this;
 // the bot's `decide(turn: TurnRef<'_>)` reads from it through `as_ref`.
@@ -36,6 +47,10 @@ pub struct TurnInputFFI<'a> {
 #[derive(Debug, Default, PartialEq, Eq, Copy, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TurnOutput {}
 
+/// Asserts `TurnOutput` satisfies the full bundled contract — see
+/// [`common::WireOutput`].
+impl WireOutput for TurnOutput {}
+
 // cbindgen reachability root — generates the `extern "C" { ... }` block in
 // the C++ header. No symbols introduced into `_defs.rlib`; the real
 // `take_turn` / `abi_version` are emitted by `common::ffi_bot!` in the bot
@@ -46,20 +61,25 @@ unsafe extern "C" {
     pub fn abi_version() -> u32;
 }
 
-impl TurnInput {
-    pub fn as_ffi(&self) -> TurnInputFFI<'_> {
+impl WireInput for TurnInput {
+    type Ffi<'a> = TurnInputFFI<'a>;
+    type Ref<'a> = TurnRef<'a>;
+
+    fn as_ffi(&self) -> TurnInputFFI<'_> {
         TurnInputFFI { _marker: PhantomData }
     }
 
-    pub fn as_ref(&self) -> TurnRef<'_> {
+    fn as_ref(&self) -> TurnRef<'_> {
         TurnRef { _marker: PhantomData }
     }
 }
 
-impl<'a> TurnInputFFI<'a> {
+impl<'a> WireInputFfi<'a> for TurnInputFFI<'a> {
+    type Ref = TurnRef<'a>;
+
     /// Safe because every `TurnInputFFI<'a>` is constructed by `as_ffi`,
     /// which establishes the documented invariants.
-    pub fn as_ref(&self) -> TurnRef<'a> {
+    fn as_ref(&self) -> TurnRef<'a> {
         TurnRef { _marker: PhantomData }
     }
 }

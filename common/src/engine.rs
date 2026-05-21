@@ -66,6 +66,102 @@ pub struct TurnResult<O> {
     pub output: O,
 }
 
+/// Contract on each game's owned per-tick input struct (the `TurnInput` in
+/// each `_defs` crate).
+///
+/// Pairs the owned type with two views:
+///   * `Ffi<'a>` — `#[repr(C)]` mirror sent across the plugin boundary.
+///   * `Ref<'a>` — borrowed view bots read inside `decide(...)`.
+///
+/// Supertraits `ReadFrom + WriteTo` are what the engine uses to ferry the
+/// input through subprocess pipes; the trait method pair is what the FFI
+/// path uses. Implementing this trait is what makes a game's `TurnInput`
+/// usable end-to-end. The cross-trait `Ffi<'a>::Ref = Self::Ref<'a>` bound
+/// guarantees the same borrowed type comes out of both `as_ref` paths.
+pub trait WireInput: ReadFrom + WriteTo {
+    /// `#[repr(C)]` FFI mirror.
+    type Ffi<'a>: WireInputFfi<'a, Ref = Self::Ref<'a>>
+    where
+        Self: 'a;
+
+    /// Borrowed view passed to bot `decide` functions.
+    type Ref<'a>
+    where
+        Self: 'a;
+
+    /// Build the FFI mirror borrowing from `self`.
+    fn as_ffi(&self) -> Self::Ffi<'_>;
+
+    /// Build the borrowed view from `self`.
+    fn as_ref(&self) -> Self::Ref<'_>;
+}
+
+/// FFI-side companion to [`WireInput`]. Bots receive `Self` from the runner
+/// and call `as_ref` to get the borrowed view they actually read.
+pub trait WireInputFfi<'a> {
+    /// Borrowed view type — typically the same `Ref<'a>` as the owning
+    /// [`WireInput`]'s associated `Ref<'a>`.
+    type Ref;
+
+    /// SAFETY: the impl relies on the invariants the FFI struct documents
+    /// (pointers properly aligned, lengths in range, lifetime live). The
+    /// trait wraps that in a safe method because every FFI struct's only
+    /// constructor (`WireInput::as_ffi`) establishes them.
+    fn as_ref(&self) -> Self::Ref;
+}
+
+/// Bundled contract on each game's `TurnOutput`. Implementing this on your
+/// `TurnOutput` is the single line that asserts — at the `_defs` crate site
+/// — that the type satisfies every requirement the rest of the system will
+/// eventually need:
+///
+///   * `ReadFrom + WriteTo` — stdio between runner and subprocess bots.
+///   * `Default` — placeholder the `ffi_bot!` macro stores on the panic path.
+///   * `Serialize + DeserializeOwned` — `Replay<TurnOutput>` round-trips.
+///   * `'static` — implied by `DeserializeOwned`, made explicit for clarity.
+///
+/// No blanket impl: write `impl WireOutput for TurnOutput {}` explicitly so
+/// missing pieces fail at *this* line instead of three crates downstream.
+pub trait WireOutput:
+    ReadFrom + WriteTo + Default + Serialize + serde::de::DeserializeOwned + 'static
+{
+}
+
+/// Crate-level contract for a `_defs` crate: implement this on a unit
+/// marker type (conventionally `Ffi`) to ratify that the crate exposes a
+/// complete and consistent FFI surface.
+///
+/// ```ignore
+/// // tron_defs/src/lib.rs
+/// pub struct Ffi;
+/// impl common::Defs for Ffi {
+///     type Input = TurnInput;
+///     type Output = TurnOutput;
+///     const ABI_VERSION: u32 = ABI_VERSION;
+/// }
+/// ```
+///
+/// The single `impl Defs` line forces the compiler to check every required
+/// trait (`WireInput`, `WireOutput`, transitively `WireInputFfi` via the
+/// GAT) at this exact site — not three crates downstream. The bot-side
+/// `ffi_bot!` macro and the runner-side `FfiGame` reach all the other types
+/// they need by projecting through these associated types.
+pub trait Defs {
+    /// Owned per-tick input type. Pulls in `WireInput` (which itself
+    /// requires `ReadFrom + WriteTo`), and through that the FFI mirror
+    /// and the borrowed view via GATs.
+    type Input: WireInput;
+
+    /// Per-tick output type. `WireOutput` bundles `ReadFrom + WriteTo +
+    /// Default + Serialize + DeserializeOwned + 'static`.
+    type Output: WireOutput;
+
+    /// Plugin ABI version. Bumped on any wire-type change. The runner
+    /// reads this at load time through the plugin's `abi_version()`
+    /// symbol and refuses mismatches before any UB-prone call.
+    const ABI_VERSION: u32;
+}
+
 /// A `Game` is the rules + state for a match. Generic over its I/O types so the
 /// same runner can drive any CodinGame-style game.
 pub trait Game: Sized {
@@ -78,10 +174,10 @@ pub trait Game: Sized {
     type InitialInput: ReadFrom + WriteTo;
 
     /// Per-turn input sent to each active player.
-    type Input: ReadFrom + WriteTo;
+    type Input: WireInput;
 
     /// Per-turn output collected from each active player.
-    type Output: ReadFrom + WriteTo;
+    type Output: WireOutput;
 
     /// Final result of the match (winner, scores, …).
     type Outcome;
@@ -156,10 +252,7 @@ const REPLAY_MAGIC: &[u8; 8] = b"CGRREPLY";
 const REPLAY_VERSION: u32 = 1;
 
 /// Write a framed replay (magic + version + game name + bincoded body).
-pub fn write_replay<G: Game>(replay: &Replay<G::Output>, w: &mut impl Write) -> anyhow::Result<()>
-where
-    G::Output: Serialize,
-{
+pub fn write_replay<G: Game>(replay: &Replay<G::Output>, w: &mut impl Write) -> anyhow::Result<()> {
     use anyhow::Context;
     let name = G::NAME.as_bytes();
     anyhow::ensure!(name.len() <= u8::MAX as usize, "game name too long");
@@ -174,10 +267,7 @@ where
 
 /// Read a framed replay. Errors on bad magic, unknown version, or a header
 /// game name that doesn't match `G::NAME`.
-pub fn read_replay<G: Game>(r: &mut impl io::Read) -> anyhow::Result<Replay<G::Output>>
-where
-    G::Output: serde::de::DeserializeOwned,
-{
+pub fn read_replay<G: Game>(r: &mut impl io::Read) -> anyhow::Result<Replay<G::Output>> {
     use anyhow::{Context, bail, ensure};
 
     let mut magic = [0u8; 8];

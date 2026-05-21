@@ -19,4 +19,4 @@ pub fn decide(turn: TurnRef<'_>) -> TurnOutput {
     }
 }
 
-common::ffi_bot!(tictactoe_defs, decide);
+common::ffi_bot!(tictactoe_defs::Ffi, decide);

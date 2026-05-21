@@ -1,4 +1,4 @@
-use common::engine::{BotStatus, FfiGame, Game, PlayerError, PlayerId, TurnResult};
+use common::engine::{BotStatus, FfiGame, Game, PlayerError, PlayerId, TurnResult, WireInput};
 use tron_defs::{Direction, Line, Pos, TurnInput, TurnInputFFI, TurnOutput};
 
 const WIDTH: i32 = 30;

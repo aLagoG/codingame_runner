@@ -352,10 +352,7 @@ pub fn color_chip(ui: &mut egui::Ui, color: Color) {
 
 /// If `argv[1]` is set, read a framed replay from it; otherwise return `None`
 /// so the caller can fall through to a built-in demo.
-pub fn load_replay_from_argv<G: Game>() -> anyhow::Result<Option<Replay<G::Output>>>
-where
-    G::Output: serde::de::DeserializeOwned,
-{
+pub fn load_replay_from_argv<G: Game>() -> anyhow::Result<Option<Replay<G::Output>>> {
     let Some(path) = std::env::args().nth(1) else {
         return Ok(None);
     };

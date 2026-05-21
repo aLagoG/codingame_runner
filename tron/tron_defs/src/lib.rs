@@ -6,7 +6,7 @@ use std::{
 };
 
 use anyhow::{Context, bail};
-use common::{ReadFrom, SingleLine, TurnResult, WriteTo};
+use common::{Defs, ReadFrom, SingleLine, TurnResult, WireInput, WireInputFfi, WireOutput, WriteTo};
 use serde::{Deserialize, Serialize};
 
 #[repr(C)]
@@ -73,10 +73,25 @@ impl Default for TurnOutput {
     }
 }
 
+/// Asserts `TurnOutput` satisfies the full bundled contract — see
+/// [`common::WireOutput`].
+impl WireOutput for TurnOutput {}
+
 /// Bumped on any wire-type change. Plugins built against an older `tron_defs`
 /// export an older value; `PluginPlayer::load` reads it through `abi_version()`
 /// and refuses mismatches before any UB-prone call lands.
 pub const ABI_VERSION: u32 = 1;
+
+/// Marker type. Implementing [`common::Defs`] on it is the single line that
+/// ratifies this crate's FFI surface — all of `WireInput`, `WireInputFfi`,
+/// `WireOutput`, and `ABI_VERSION` are checked at this exact site.
+pub struct Ffi;
+
+impl Defs for Ffi {
+    type Input = TurnInput;
+    type Output = TurnOutput;
+    const ABI_VERSION: u32 = ABI_VERSION;
+}
 
 // `extern "C" { ... }` block: declares the FFI signatures bots must export.
 // Used only by cbindgen as a reachability root for the header — no symbols
@@ -89,9 +104,22 @@ unsafe extern "C" {
     pub fn abi_version() -> u32;
 }
 
-// region: Inherent impls
-impl TurnInput {
-    pub fn as_ffi(&self) -> TurnInputFFI<'_> {
+// region: Wire-input impls
+impl<'a> TurnInputFFI<'a> {
+    pub fn number_of_players(&self) -> i32 {
+        self.number_of_players
+    }
+
+    pub fn player_number(&self) -> i32 {
+        self.player_number
+    }
+}
+
+impl WireInput for TurnInput {
+    type Ffi<'a> = TurnInputFFI<'a>;
+    type Ref<'a> = TurnRef<'a>;
+
+    fn as_ffi(&self) -> TurnInputFFI<'_> {
         assert!(self.player_lines.len() == self.number_of_players as usize);
 
         TurnInputFFI {
@@ -102,7 +130,7 @@ impl TurnInput {
         }
     }
 
-    pub fn as_ref(&self) -> TurnRef<'_> {
+    fn as_ref(&self) -> TurnRef<'_> {
         TurnRef {
             number_of_players: self.number_of_players,
             player_number: self.player_number,
@@ -111,18 +139,12 @@ impl TurnInput {
     }
 }
 
-impl<'a> TurnInputFFI<'a> {
-    pub fn number_of_players(&self) -> i32 {
-        self.number_of_players
-    }
-
-    pub fn player_number(&self) -> i32 {
-        self.player_number
-    }
+impl<'a> WireInputFfi<'a> for TurnInputFFI<'a> {
+    type Ref = TurnRef<'a>;
 
     // Safe because every `TurnInputFFI<'a>` is constructed by `as_ffi`, which
     // establishes the three invariants documented on the struct.
-    pub fn as_ref(&self) -> TurnRef<'a> {
+    fn as_ref(&self) -> TurnRef<'a> {
         TurnRef {
             number_of_players: self.number_of_players,
             player_number: self.player_number,
@@ -132,7 +154,7 @@ impl<'a> TurnInputFFI<'a> {
         }
     }
 }
-// endregion: Inherent impls
+// endregion: Wire-input impls
 
 // region: Display impls
 impl Display for Pos {

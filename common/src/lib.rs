@@ -1,6 +1,6 @@
 pub mod engine;
 
-pub use engine::{BotStatus, TurnResult};
+pub use engine::{BotStatus, Defs, TurnResult, WireInput, WireInputFfi, WireOutput};
 
 use std::{
     fmt::Display,
@@ -85,11 +85,15 @@ impl WriteTo for () {
 /// boundary (UB).
 #[macro_export]
 macro_rules! ffi_bot {
-    ($defs:ident, $decide:expr) => {
+    ($defs:ty, $decide:expr) => {
         #[unsafe(no_mangle)]
         pub extern "C" fn take_turn(
-            input: $defs::TurnInputFFI<'_>,
-        ) -> $crate::TurnResult<$defs::TurnOutput> {
+            input: <<$defs as $crate::Defs>::Input as $crate::WireInput>::Ffi<'_>,
+        ) -> $crate::TurnResult<<$defs as $crate::Defs>::Output> {
+            // Bring the WireInputFfi trait into local scope so `input.as_ref()`
+            // resolves through the trait without polluting the caller's
+            // namespace.
+            use $crate::WireInputFfi as _;
             match ::std::panic::catch_unwind(|| ($decide)(input.as_ref())) {
                 Ok(output) => $crate::TurnResult {
                     status: $crate::BotStatus::Ok,
@@ -97,14 +101,14 @@ macro_rules! ffi_bot {
                 },
                 Err(_) => $crate::TurnResult {
                     status: $crate::BotStatus::Panic,
-                    output: <$defs::TurnOutput as ::std::default::Default>::default(),
+                    output: ::std::default::Default::default(),
                 },
             }
         }
 
         #[unsafe(no_mangle)]
         pub extern "C" fn abi_version() -> u32 {
-            $defs::ABI_VERSION
+            <$defs as $crate::Defs>::ABI_VERSION
         }
     };
 }

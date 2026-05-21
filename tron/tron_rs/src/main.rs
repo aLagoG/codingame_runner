@@ -1,6 +1,6 @@
 use std::io::{self, Write};
 
-use common::{ReadFrom, WriteTo};
+use common::{ReadFrom, WireInput, WriteTo};
 use tron_defs::TurnInput;
 use tron_rs::decide;
 

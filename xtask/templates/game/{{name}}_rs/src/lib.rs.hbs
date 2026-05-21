@@ -5,4 +5,4 @@ pub fn decide(_turn: TurnRef<'_>) -> TurnOutput {
     TurnOutput::default()
 }
 
-common::ffi_bot!({{name}}_defs, decide);
+common::ffi_bot!({{name}}_defs::Ffi, decide);

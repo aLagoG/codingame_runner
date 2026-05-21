@@ -6,7 +6,6 @@ use common::engine::{
     FfiGame, MatchResult, Player, PluginPlayer, RunConfig, SubprocessPlayer, run_match,
     write_replay,
 };
-use serde::Serialize;
 use tictactoe_game::TicTacToeGame;
 use tron_game::TronGame;
 
@@ -46,7 +45,6 @@ fn run_for_game<G: FfiGame + 'static>(
 ) -> Result<()>
 where
     G::Outcome: Debug,
-    G::Output: Serialize,
 {
     let num_players = paths.len() as u32;
     let seed: u64 = 0;
