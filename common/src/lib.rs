@@ -1,6 +1,9 @@
 pub mod engine;
 
-pub use engine::{BotStatus, Defs, TurnResult, WireInput, WireInputFfi, WireOutput};
+pub use engine::{
+    BotStatus, Defs, NoInitialInput, NoInitialInputFfi, NoInitialInputRef, TurnResult, WireInput,
+    WireInputFfi, WireOutput,
+};
 
 use std::{
     fmt::Display,
@@ -69,30 +72,50 @@ impl WriteTo for () {
 
 /// Define the FFI surface for a bot dynamic library.
 ///
-/// Use from a `cdylib` crate that depends on `common` and the game's `_defs`
-/// crate (which must expose `TurnInputFFI<'_>`, `TurnOutput: Default`,
-/// `TurnResult`, `BotStatus::{Ok, Panic}`, and an `ABI_VERSION: u32`
-/// constant — matching the `extern "C" { … }` block in that `_defs/lib.rs`):
+/// Two-arg form (most bots — games whose `Defs::InitialInput = ()` or that
+/// don't care about init data):
 ///
 /// ```ignore
 /// // tron_rs/src/lib.rs
 /// pub fn decide(turn: tron_defs::TurnRef<'_>) -> tron_defs::TurnOutput { … }
-/// common::ffi_bot!(tron_defs, decide);
+/// common::ffi_bot!(tron_defs::Ffi, decide);
 /// ```
 ///
-/// Generates `take_turn` and `abi_version` `extern "C"` exports, wrapping
-/// `decide` in `catch_unwind` so a panic doesn't unwind across the FFI
-/// boundary (UB).
+/// Three-arg form (games with non-trivial `InitialInput` whose bots want
+/// to inspect or stash it):
+///
+/// ```ignore
+/// fn on_init(init: <chess_defs::Initial as common::WireInput>::Ref<'_>) {
+///     // store init in a `OnceCell`, etc.
+/// }
+/// common::ffi_bot!(chess_defs::Ffi, decide, on_init);
+/// ```
+///
+/// Generates three `extern "C"` exports — `initialize`, `take_turn`,
+/// `abi_version` — each wrapped in `catch_unwind` so a panic doesn't
+/// unwind across the FFI boundary (UB).
 #[macro_export]
 macro_rules! ffi_bot {
     ($defs:ty, $decide:expr) => {
+        // Two-arg form: default init handler ignores its argument.
+        $crate::ffi_bot!($defs, $decide, |_| ());
+    };
+    ($defs:ty, $decide:expr, $init:expr) => {
+        #[unsafe(no_mangle)]
+        pub extern "C" fn initialize(
+            input: <<$defs as $crate::Defs>::InitialInput as $crate::WireInput>::Ffi<'_>,
+        ) {
+            // Bring the WireInputFfi trait into local scope so
+            // `input.as_ref()` resolves without polluting the caller's
+            // module-level namespace.
+            use $crate::WireInputFfi as _;
+            let _ = ::std::panic::catch_unwind(|| ($init)(input.as_ref()));
+        }
+
         #[unsafe(no_mangle)]
         pub extern "C" fn take_turn(
             input: <<$defs as $crate::Defs>::Input as $crate::WireInput>::Ffi<'_>,
         ) -> $crate::TurnResult<<$defs as $crate::Defs>::Output> {
-            // Bring the WireInputFfi trait into local scope so `input.as_ref()`
-            // resolves through the trait without polluting the caller's
-            // namespace.
             use $crate::WireInputFfi as _;
             match ::std::panic::catch_unwind(|| ($decide)(input.as_ref())) {
                 Ok(output) => $crate::TurnResult {

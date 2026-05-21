@@ -1,3 +1,7 @@
+#if defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic ignored "-Wreturn-type-c-linkage"
+#endif
+
 #include <cstdarg>
 #include <cstdint>
 #include <cstdlib>
@@ -29,6 +33,11 @@ enum class Cell : uint8_t {
   O = 2,
 };
 
+/// FFI mirror of [`NoInitialInput`]. Same one-byte layout.
+struct NoInitialInputFfi {
+  uint8_t _padding;
+};
+
 struct Pos {
   int32_t row;
   int32_t col;
@@ -53,6 +62,8 @@ struct TurnInputFFI {
 };
 
 extern "C" {
+
+extern void initialize(NoInitialInputFfi input);
 
 extern TurnResult<TurnOutput> take_turn(TurnInputFFI input);
 

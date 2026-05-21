@@ -1,3 +1,9 @@
+// Treat `improper_ctypes` as an error. The `unsafe extern "C" { ... }` block
+// below references `TurnInputFFI<'_>` and `TurnResult<TurnOutput>`; if either
+// drops `#[repr(C)]` (or gains a non-FFI-safe field) the lint fires at the
+// extern block — the closest thing Rust has to a "must be repr(C)" check.
+#![deny(improper_ctypes)]
+
 use std::{
     fmt::{self, Display},
     io::{BufRead, Write},
@@ -6,7 +12,10 @@ use std::{
 };
 
 use anyhow::{Context, bail};
-use common::{Defs, ReadFrom, SingleLine, TurnResult, WireInput, WireInputFfi, WireOutput, WriteTo};
+use common::{
+    Defs, NoInitialInput, NoInitialInputFfi, ReadFrom, SingleLine, TurnResult, WireInput,
+    WireInputFfi, WireOutput, WriteTo,
+};
 
 pub const BOARD_SIZE: usize = 3;
 pub const BOARD_CELLS: usize = BOARD_SIZE * BOARD_SIZE;
@@ -90,6 +99,7 @@ pub const ABI_VERSION: u32 = 1;
 pub struct Ffi;
 
 impl Defs for Ffi {
+    type InitialInput = NoInitialInput;
     type Input = TurnInput;
     type Output = TurnOutput;
     const ABI_VERSION: u32 = ABI_VERSION;
@@ -102,6 +112,7 @@ impl Defs for Ffi {
 // macro. `TurnResult` is generic over the per-game output; cbindgen
 // monomorphises it into a concrete C++ struct.
 unsafe extern "C" {
+    pub fn initialize(input: NoInitialInputFfi<'_>);
     pub fn take_turn(input: TurnInputFFI<'_>) -> TurnResult<TurnOutput>;
     pub fn abi_version() -> u32;
 }

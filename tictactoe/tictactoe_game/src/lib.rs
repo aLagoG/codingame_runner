@@ -1,5 +1,5 @@
-use common::engine::{BotStatus, FfiGame, Game, PlayerError, PlayerId, TurnResult, WireInput};
-use tictactoe_defs::{BOARD_CELLS, BOARD_SIZE, Cell, Pos, TurnInput, TurnInputFFI, TurnOutput};
+use common::engine::{FfiGame, Game, NoInitialInput, PlayerId};
+use tictactoe_defs::{BOARD_CELLS, BOARD_SIZE, Cell, Pos, TurnInput, TurnOutput};
 
 pub struct TicTacToeGame {
     board: [Cell; BOARD_CELLS],
@@ -38,7 +38,7 @@ impl TicTacToeGame {
 impl Game for TicTacToeGame {
     const NAME: &'static str = "tictactoe";
 
-    type InitialInput = ();
+    type InitialInput = NoInitialInput;
     type Input = TurnInput;
     type Output = TurnOutput;
     type Outcome = TicTacToeOutcome;
@@ -57,7 +57,9 @@ impl Game for TicTacToeGame {
         }
     }
 
-    fn initial_input(&self, _player: PlayerId) {}
+    fn initial_input(&self, _player: PlayerId) -> NoInitialInput {
+        NoInitialInput::default()
+    }
 
     fn input_for(&self, player: PlayerId) -> TurnInput {
         TurnInput {
@@ -141,27 +143,10 @@ fn check_winner(board: &[Cell; BOARD_CELLS]) -> Option<PlayerId> {
     None
 }
 
-// Plugin glue: tells the generic `PluginPlayer<G>` how to call a tic-tac-toe
-// bot through its `take_turn` FFI symbol. Bots don't export an init symbol.
+// Plugin glue: marks TicTacToeGame as FFI-playable and points at the
+// `_defs` crate's Ffi marker.
 impl FfiGame for TicTacToeGame {
-    type Symbol = for<'a> unsafe extern "C" fn(TurnInputFFI<'a>) -> TurnResult<TurnOutput>;
-    type InitSymbol = unsafe extern "C" fn();
-
-    const SYMBOL_NAME: &'static [u8] = b"take_turn";
-    const INIT_SYMBOL_NAME: &'static [u8] = b"initialize";
-    const ABI_VERSION: u32 = tictactoe_defs::ABI_VERSION;
-
-    unsafe fn call(sym: Self::Symbol, input: &TurnInput) -> Result<TurnOutput, PlayerError> {
-        let result = unsafe { sym(input.as_ffi()) };
-        match result.status {
-            BotStatus::Ok => Ok(result.output),
-            BotStatus::Panic => Err(PlayerError::Panic),
-        }
-    }
-
-    unsafe fn call_init(_sym: Self::InitSymbol, _input: &()) -> Result<(), PlayerError> {
-        Ok(())
-    }
+    type Defs = tictactoe_defs::Ffi;
 }
 
 #[cfg(test)]

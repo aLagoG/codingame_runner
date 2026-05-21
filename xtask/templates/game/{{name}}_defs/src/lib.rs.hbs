@@ -1,3 +1,9 @@
+// Treat `improper_ctypes` as an error. The `unsafe extern "C" { ... }` block
+// below references `TurnInputFFI<'_>` and `TurnResult<TurnOutput>`; if either
+// drops `#[repr(C)]` (or gains a non-FFI-safe field) the lint fires at the
+// extern block — the closest thing Rust has to a "must be repr(C)" check.
+#![deny(improper_ctypes)]
+
 use std::{
     fmt::Display,
     io::{BufRead, Write},
@@ -5,7 +11,10 @@ use std::{
     str::FromStr,
 };
 
-use common::{Defs, ReadFrom, SingleLine, TurnResult, WireInput, WireInputFfi, WireOutput, WriteTo};
+use common::{
+    Defs, NoInitialInput, NoInitialInputFfi, ReadFrom, SingleLine, TurnResult, WireInput,
+    WireInputFfi, WireOutput, WriteTo,
+};
 
 /// Bumped on any wire-type change. Plugins built against an older
 /// `{{name}}_defs` export an older value; `PluginPlayer::load` reads it and
@@ -18,6 +27,11 @@ pub const ABI_VERSION: u32 = 1;
 pub struct Ffi;
 
 impl Defs for Ffi {
+    /// Default for games that don't send per-player initial data. To use
+    /// real init data, define your own `InitialInput` struct + its
+    /// `InitialInputFFI<'a>` mirror + `WireInput`/`WireInputFfi` impls
+    /// (same shape as `TurnInput` below) and reference it here.
+    type InitialInput = NoInitialInput;
     type Input = TurnInput;
     type Output = TurnOutput;
     const ABI_VERSION: u32 = ABI_VERSION;
@@ -53,10 +67,17 @@ impl WireOutput for TurnOutput {}
 
 // cbindgen reachability root — generates the `extern "C" { ... }` block in
 // the C++ header. No symbols introduced into `_defs.rlib`; the real
-// `take_turn` / `abi_version` are emitted by `common::ffi_bot!` in the bot
-// crate. Keep in sync with that macro. `TurnResult` is generic over the
-// per-game output; cbindgen monomorphises it into a concrete C++ struct.
+// `initialize` / `take_turn` / `abi_version` are emitted by
+// `common::ffi_bot!` in the bot crate. Keep in sync with that macro.
+// `TurnResult` is generic over the per-game output; cbindgen monomorphises
+// it into a concrete C++ struct.
+//
+// TODO: remove the `#[allow]` once `TurnInputFFI` / `TurnOutput` have real
+// fields. The crate-level `deny(improper_ctypes)` will then start catching
+// any future regression — e.g. dropping `#[repr(C)]`.
+#[allow(improper_ctypes)]
 unsafe extern "C" {
+    pub fn initialize(input: NoInitialInputFfi<'_>);
     pub fn take_turn(input: TurnInputFFI<'_>) -> TurnResult<TurnOutput>;
     pub fn abi_version() -> u32;
 }

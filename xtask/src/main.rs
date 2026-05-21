@@ -119,7 +119,7 @@ fn new_game(name: &str) -> Result<()> {
 fn print_next_steps(name: &str, name_pascal: &str) {
     let s = Style::new();
     println!(
-        "{} Created game {} in {} (4 crates) and updated workspace {}",
+        "{} Created game {} in {} (4 crates + C++ starter) and updated workspace {}",
         s.ok("✓"),
         s.name(name),
         s.path(&format!("{name}/")),
@@ -170,6 +170,13 @@ fn print_next_steps(name: &str, name_pascal: &str) {
     println!(
         "  5. Customise the visualiser in {}.",
         s.path(&format!("{name}/{name}_viz/src/main.rs")),
+    );
+    println!(
+        "  6. (optional) C++ bot starter at {} — compiles to a `.so`/`.dylib`/`.dll`",
+        s.path(&format!("{name}/{name}_cpp/bot.cpp")),
+    );
+    println!(
+        "     the runner can load. Build instructions are in the file header.",
     );
     println!();
     println!(

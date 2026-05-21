@@ -9,6 +9,15 @@ fn main() {
         // (reached via the `extern "C"` block in lib.rs) land in the header.
         .with_parse_deps(true)
         .with_parse_include(&["common".to_string()])
+        // Suppress Clang/GCC's noisy `-Wreturn-type-c-linkage` on the
+        // `extern TurnResult<TurnOutput> take_turn(...)` declaration. The
+        // template-instantiation-in-extern-C warning is spurious here:
+        // both runner and bot are C++ compilers seeing the same header.
+        .with_header(
+            "#if defined(__clang__) || defined(__GNUC__)\n\
+             #pragma GCC diagnostic ignored \"-Wreturn-type-c-linkage\"\n\
+             #endif",
+        )
         .with_language(cbindgen::Language::Cxx)
         .generate()
         .expect("Unable to generate bindings")

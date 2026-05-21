@@ -1,5 +1,5 @@
-use common::engine::{BotStatus, FfiGame, Game, PlayerError, PlayerId, TurnResult, WireInput};
-use tron_defs::{Direction, Line, Pos, TurnInput, TurnInputFFI, TurnOutput};
+use common::engine::{FfiGame, Game, NoInitialInput, PlayerId};
+use tron_defs::{Direction, Line, Pos, TurnInput, TurnOutput};
 
 const WIDTH: i32 = 30;
 const HEIGHT: i32 = 20;
@@ -64,7 +64,7 @@ impl TronGame {
 impl Game for TronGame {
     const NAME: &'static str = "tron";
 
-    type InitialInput = ();
+    type InitialInput = NoInitialInput;
     type Input = TurnInput;
     type Output = TurnOutput;
     type Outcome = TronOutcome;
@@ -93,7 +93,9 @@ impl Game for TronGame {
         }
     }
 
-    fn initial_input(&self, _player: PlayerId) {}
+    fn initial_input(&self, _player: PlayerId) -> NoInitialInput {
+        NoInitialInput::default()
+    }
 
     fn input_for(&self, player: PlayerId) -> TurnInput {
         let player_lines = (0..self.num_players as usize)
@@ -191,30 +193,9 @@ fn apply_direction(p: Pos, d: Direction) -> Pos {
     }
 }
 
-// Plugin glue: tell the generic `PluginPlayer<G>` in `common::engine` how to
-// talk to a tron bot. `PluginPlayer<TronGame>` is the concrete type the runner
-// uses; we don't need a tron-specific player struct.
+// Plugin glue: marks TronGame as FFI-playable and points at the `_defs`
+// crate's Ffi marker. Everything else (FFI fn-pointer shape, ABI version,
+// symbol names) flows from `tron_defs::Ffi`'s `Defs` impl.
 impl FfiGame for TronGame {
-    type Symbol = for<'a> unsafe extern "C" fn(TurnInputFFI<'a>) -> TurnResult<TurnOutput>;
-    // Tron has no per-bot init; the symbol below is never loaded because tron
-    // bots don't export `initialize`. The type only exists to satisfy the trait.
-    type InitSymbol = unsafe extern "C" fn();
-
-    const SYMBOL_NAME: &'static [u8] = b"take_turn";
-    const INIT_SYMBOL_NAME: &'static [u8] = b"initialize";
-    const ABI_VERSION: u32 = tron_defs::ABI_VERSION;
-
-    unsafe fn call(sym: Self::Symbol, input: &TurnInput) -> Result<TurnOutput, PlayerError> {
-        let result = unsafe { sym(input.as_ffi()) };
-        match result.status {
-            BotStatus::Ok => Ok(result.output),
-            BotStatus::Panic => Err(PlayerError::Panic),
-        }
-    }
-
-    unsafe fn call_init(_sym: Self::InitSymbol, _input: &()) -> Result<(), PlayerError> {
-        // Unreachable in practice: tron bots don't export `initialize`, so
-        // `PluginPlayer` never has a non-`None` `init_sym` for tron.
-        Ok(())
-    }
+    type Defs = tron_defs::Ffi;
 }

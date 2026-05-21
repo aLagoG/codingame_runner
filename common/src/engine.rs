@@ -110,6 +110,72 @@ pub trait WireInputFfi<'a> {
     fn as_ref(&self) -> Self::Ref;
 }
 
+/// Sentinel `InitialInput` for games that don't ferry per-player data at
+/// match start. Real games either use this (typical) or define their own
+/// `WireInput`-implementing struct. One padding byte makes the type
+/// non-zero-sized — without it, the `improper_ctypes` lint would fire on
+/// the per-game extern block because zero-sized types aren't FFI-safe.
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NoInitialInput {
+    _padding: u8,
+}
+
+/// FFI mirror of [`NoInitialInput`]. Same one-byte layout.
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoInitialInputFfi<'a> {
+    _padding: u8,
+    _marker: PhantomData<&'a NoInitialInput>,
+}
+
+/// Borrowed view of [`NoInitialInput`] — handed to bot init handlers.
+/// Carries no semantic data; bots typically ignore the argument.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoInitialInputRef<'a> {
+    _marker: PhantomData<&'a NoInitialInput>,
+}
+
+impl WireInput for NoInitialInput {
+    type Ffi<'a> = NoInitialInputFfi<'a>;
+    type Ref<'a> = NoInitialInputRef<'a>;
+
+    fn as_ffi(&self) -> NoInitialInputFfi<'_> {
+        NoInitialInputFfi {
+            _padding: 0,
+            _marker: PhantomData,
+        }
+    }
+
+    fn as_ref(&self) -> NoInitialInputRef<'_> {
+        NoInitialInputRef {
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<'a> WireInputFfi<'a> for NoInitialInputFfi<'a> {
+    type Ref = NoInitialInputRef<'a>;
+
+    fn as_ref(&self) -> NoInitialInputRef<'a> {
+        NoInitialInputRef {
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl ReadFrom for NoInitialInput {
+    fn read_from(_r: &mut impl BufRead) -> anyhow::Result<Self> {
+        Ok(NoInitialInput::default())
+    }
+}
+
+impl WriteTo for NoInitialInput {
+    fn write_to(&self, _w: &mut impl Write) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 /// Bundled contract on each game's `TurnOutput`. Implementing this on your
 /// `TurnOutput` is the single line that asserts — at the `_defs` crate site
 /// — that the type satisfies every requirement the rest of the system will
@@ -147,6 +213,11 @@ pub trait WireOutput:
 /// `ffi_bot!` macro and the runner-side `FfiGame` reach all the other types
 /// they need by projecting through these associated types.
 pub trait Defs {
+    /// One-time per-player input sent before the match starts. Use `()`
+    /// (which has a blanket `WireInput` impl) for games that don't need
+    /// init data.
+    type InitialInput: WireInput;
+
     /// Owned per-tick input type. Pulls in `WireInput` (which itself
     /// requires `ReadFrom + WriteTo`), and through that the FFI mirror
     /// and the borrowed view via GATs.
@@ -170,8 +241,9 @@ pub trait Game: Sized {
     const NAME: &'static str;
 
     /// One-time per-player input sent before the match starts (e.g. world
-    /// parameters). Use `()` if not needed.
-    type InitialInput: ReadFrom + WriteTo;
+    /// parameters). Use `()` if not needed — `()` impls `WireInput`
+    /// trivially.
+    type InitialInput: WireInput;
 
     /// Per-turn input sent to each active player.
     type Input: WireInput;
@@ -464,89 +536,81 @@ impl<G: Game> Player<G> for SubprocessPlayer<G> {
 }
 
 /// A `Game` that can be played by a bot loaded from a dynamic library.
-/// Implementations describe the FFI symbol name + signature and how to
-/// convert between the game's `Input`/`Output` and the C-ABI types the bot
-/// expects. With this trait, `PluginPlayer<G>` becomes fully generic.
+///
+/// The implementing crate just points at its `_defs` crate's [`Defs`]
+/// marker; everything else (the FFI fn-pointer shapes, the ABI version,
+/// the symbol names) is derived from there. With this trait,
+/// `PluginPlayer<G>` becomes fully generic.
 pub trait FfiGame: Game {
-    /// The `extern "C"` function pointer type the bot exports for per-turn
-    /// play. Typically `for<'a> unsafe extern "C" fn(SomeInputFFI<'a>) -> SomeResult`.
-    /// Must be `Copy` because libloading hands you a `Symbol<T>` that derefs
-    /// to `&T`, and we cache the bare pointer in `PluginPlayer`.
-    type Symbol: Copy;
-
-    /// The `extern "C"` function pointer type for one-time initialization.
-    /// Looked up optionally — if the bot doesn't export `INIT_SYMBOL_NAME`,
-    /// `PluginPlayer::initialize` is a no-op. Games whose `InitialInput = ()`
-    /// can declare any dummy `unsafe extern "C" fn()` here.
-    type InitSymbol: Copy;
-
-    /// Per-turn symbol name.
-    const SYMBOL_NAME: &'static [u8];
-
-    /// One-time init symbol name. Missing from the bot library is fine.
-    const INIT_SYMBOL_NAME: &'static [u8];
-
-    /// The version of this game's FFI ABI the runner was built against. The
-    /// plugin exports its own value through the `abi_version` symbol; load
-    /// fails fast on mismatch. Bump in `_defs::ABI_VERSION` whenever a wire
-    /// type changes shape.
-    const ABI_VERSION: u32;
-
-    /// SAFETY: `sym` must be a valid pointer to the bot's exported per-turn
-    /// symbol, obtained by loading `SYMBOL_NAME` from a compatible dynamic
-    /// library, and the bot must uphold its UB contracts (no unwinding past
-    /// the FFI boundary, no out-of-bounds reads on input pointers, …).
-    unsafe fn call(sym: Self::Symbol, input: &Self::Input) -> Result<Self::Output, PlayerError>;
-
-    /// SAFETY: `sym` must be a valid pointer to the bot's exported init
-    /// symbol, obtained by loading `INIT_SYMBOL_NAME` from a compatible
-    /// dynamic library, with the same UB-contract requirements as `call`.
-    unsafe fn call_init(
-        sym: Self::InitSymbol,
-        input: &Self::InitialInput,
-    ) -> Result<(), PlayerError>;
+    /// The `_defs` crate's marker (e.g. `tron_defs::Ffi`). The
+    /// `InitialInput = Self::InitialInput, Input = Self::Input,
+    /// Output = Self::Output` bound ties this game's I/O types to the FFI
+    /// surface that backs them.
+    type Defs: Defs<
+            InitialInput = Self::InitialInput,
+            Input = Self::Input,
+            Output = Self::Output,
+        >;
 }
 
+/// The `extern "C"` `take_turn` function pointer type for a given
+/// `FfiGame` — derived from the game's `Defs` so per-game `_game` crates
+/// never have to spell it out themselves.
+pub type FfiTakeTurn<G> = for<'a> unsafe extern "C" fn(
+    <<<G as FfiGame>::Defs as Defs>::Input as WireInput>::Ffi<'a>,
+) -> TurnResult<<<G as FfiGame>::Defs as Defs>::Output>;
+
+/// The `extern "C"` `initialize` function pointer type for a given
+/// `FfiGame`. Called once per player at match start with the FFI mirror of
+/// `<G::Defs as Defs>::InitialInput`. Bots that don't care about init
+/// (games whose `InitialInput = ()`) get a no-op stub from the default
+/// `ffi_bot!` invocation.
+pub type FfiInitialize<G> = for<'a> unsafe extern "C" fn(
+    <<<G as FfiGame>::Defs as Defs>::InitialInput as WireInput>::Ffi<'a>,
+);
+
+/// Symbol names every `ffi_bot!`-generated plugin exports. Free constants
+/// (not `FfiGame` associated consts) because the macro hardcodes them and
+/// nothing per-game can vary them.
+const TAKE_TURN_SYMBOL: &[u8] = b"take_turn";
+const INITIALIZE_SYMBOL: &[u8] = b"initialize";
+const ABI_VERSION_SYMBOL: &[u8] = b"abi_version";
+
 pub struct PluginPlayer<G: FfiGame> {
-    sym: G::Symbol,
-    init_sym: Option<G::InitSymbol>,
+    init: FfiInitialize<G>,
+    take_turn: FfiTakeTurn<G>,
     _lib: Library,
 }
 
 impl<G: FfiGame> PluginPlayer<G> {
-    /// SAFETY: `path` must point to a dynamic library exporting `G::SYMBOL_NAME`
-    /// with a type matching `G::Symbol`, and that symbol must uphold the
-    /// game's FFI contracts. If `G::INIT_SYMBOL_NAME` is also exported, it
-    /// must match `G::InitSymbol`.
+    /// SAFETY: `path` must point to a dynamic library produced by
+    /// `common::ffi_bot!(<defs>::Ffi, decide)` for a `_defs` crate whose
+    /// `Defs::ABI_VERSION` matches this binary's. The ABI handshake below
+    /// refuses mismatches before any UB-prone call lands.
     pub unsafe fn load(path: &Path) -> anyhow::Result<Self> {
         use anyhow::{Context, bail};
 
         let lib = unsafe { Library::new(path) }?;
 
-        // ABI handshake before we touch anything else: loading a plugin built
-        // against an incompatible `_defs` and then calling its `take_turn` is
-        // straight UB. Refusing here turns that into a friendly error.
-        let abi: Symbol<unsafe extern "C" fn() -> u32> = unsafe { lib.get(b"abi_version") }
-            .context("plugin missing `abi_version` symbol — was it built with the `*_bot!` macro?")?;
+        let abi: Symbol<unsafe extern "C" fn() -> u32> = unsafe { lib.get(ABI_VERSION_SYMBOL) }
+            .context("plugin missing `abi_version` symbol — was it built with `ffi_bot!`?")?;
         let plugin_abi = unsafe { abi() };
-        if plugin_abi != G::ABI_VERSION {
+        let expected = <G::Defs as Defs>::ABI_VERSION;
+        if plugin_abi != expected {
             bail!(
-                "ABI mismatch loading {}: plugin reports v{plugin_abi}, runner expects v{}",
+                "ABI mismatch loading {}: plugin reports v{plugin_abi}, runner expects v{expected}",
                 path.display(),
-                G::ABI_VERSION,
             );
         }
 
-        let symbol: Symbol<G::Symbol> = unsafe { lib.get(G::SYMBOL_NAME) }?;
-        let sym = *symbol;
-        // Init symbol is optional — bot doesn't have to export it.
-        let init_sym = match unsafe { lib.get::<G::InitSymbol>(G::INIT_SYMBOL_NAME) } {
-            Ok(s) => Some(*s),
-            Err(_) => None,
-        };
+        let init: Symbol<FfiInitialize<G>> = unsafe { lib.get(INITIALIZE_SYMBOL) }
+            .context("plugin missing `initialize` symbol — was it built with `ffi_bot!`?")?;
+        let init = *init;
+        let take_turn: Symbol<FfiTakeTurn<G>> = unsafe { lib.get(TAKE_TURN_SYMBOL) }?;
+        let take_turn = *take_turn;
         Ok(PluginPlayer {
-            sym,
-            init_sym,
+            init,
+            take_turn,
             _lib: lib,
         })
     }
@@ -554,18 +618,31 @@ impl<G: FfiGame> PluginPlayer<G> {
 
 impl<G: FfiGame> Player<G> for PluginPlayer<G> {
     fn initialize(&mut self, input: &G::InitialInput) -> Result<(), PlayerError> {
-        let Some(sym) = self.init_sym else {
-            return Ok(());
-        };
-        // SAFETY: `init_sym` came from `PluginPlayer::load`, whose contract
-        // matches `FfiGame::call_init`'s preconditions.
-        catch_into_player_err(AssertUnwindSafe(|| unsafe { G::call_init(sym, input) }))
+        let init = self.init;
+        let ffi = input.as_ffi();
+        catch_into_player_err(AssertUnwindSafe(move || {
+            // SAFETY: `init` was obtained by `load`, which verified the
+            // plugin's ABI version. The macro-generated `initialize` on
+            // the bot side catches its own panics.
+            unsafe { init(ffi) };
+            Ok(())
+        }))
     }
 
     fn take_turn(&mut self, input: &G::Input) -> Result<G::Output, PlayerError> {
-        // SAFETY: `self.sym` was obtained by `PluginPlayer::load`, whose
-        // safety contract is exactly what `FfiGame::call` requires.
-        catch_into_player_err(AssertUnwindSafe(|| unsafe { G::call(self.sym, input) }))
+        let take_turn = self.take_turn;
+        let ffi = input.as_ffi();
+        catch_into_player_err(AssertUnwindSafe(move || {
+            // SAFETY: `take_turn` was obtained by `load`, which verified
+            // the plugin's ABI version. The macro-generated `take_turn`
+            // on the bot side catches its own panics — so a Panic status
+            // here is the bot's, not UB unwinding.
+            let result = unsafe { take_turn(ffi) };
+            match result.status {
+                BotStatus::Ok => Ok(result.output),
+                BotStatus::Panic => Err(PlayerError::Panic),
+            }
+        }))
     }
 }
 
