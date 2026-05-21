@@ -3,8 +3,50 @@ use clap::{Parser, Subcommand};
 use handlebars::Handlebars;
 use serde::Serialize;
 use std::fs;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use toml_edit::{DocumentMut, InlineTable, Item, Table};
+
+/// Minimal ANSI helper for the scaffolder's printed instructions. Respects
+/// `NO_COLOR` and falls back to plain text when stdout isn't a terminal
+/// (e.g. piped into a file or another process).
+struct Style {
+    enabled: bool,
+}
+
+impl Style {
+    fn new() -> Self {
+        let enabled = std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal();
+        Self { enabled }
+    }
+
+    fn paint(&self, s: &str, code: &str) -> String {
+        if self.enabled {
+            format!("\x1b[{code}m{s}\x1b[0m")
+        } else {
+            s.to_string()
+        }
+    }
+
+    /// File paths.
+    fn path(&self, s: &str) -> String {
+        self.paint(s, "36") // cyan
+    }
+    /// Code snippets (identifiers, source lines).
+    fn code(&self, s: &str) -> String {
+        self.paint(s, "33") // yellow
+    }
+    /// Names and headings.
+    fn name(&self, s: &str) -> String {
+        self.paint(s, "1;32") // bold green
+    }
+    fn heading(&self, s: &str) -> String {
+        self.paint(s, "1") // bold
+    }
+    fn ok(&self, s: &str) -> String {
+        self.paint(s, "32") // green
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "xtask")]
@@ -44,20 +86,96 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::NewGame { name } => {
-            let vars = TemplateVars::new(&name);
-            let dest = format!("{name}");
-            render_template("game", &dest, &vars)?;
-            for crate_name in [format!("{name}_defs"), format!("{name}_rs")] {
-                let crate_path = format!("{dest}/{crate_name}");
-                add_workspace_member("Cargo.toml", &crate_path)?;
-                add_workspace_dependency("Cargo.toml", &crate_name, &crate_path)?;
-            }
-            println!("✓ Created game '{name}' in {dest} and updated workspace Cargo.toml");
-        }
+        Command::NewGame { name } => new_game(&name)?,
     }
 
     Ok(())
+}
+
+fn new_game(name: &str) -> Result<()> {
+    let vars = TemplateVars::new(name);
+    render_template("game", name, &vars)?;
+
+    // All four crates are members; only `_defs` and `_game` are surfaced as
+    // workspace dependencies (the `_rs` cdylib and `_viz` binary are leaves).
+    for suffix in ["_defs", "_game", "_rs", "_viz"] {
+        let crate_path = format!("{name}/{name}{suffix}");
+        add_workspace_member("Cargo.toml", &crate_path)?;
+    }
+    for suffix in ["_defs", "_game"] {
+        let crate_name = format!("{name}{suffix}");
+        let crate_path = format!("{name}/{crate_name}");
+        add_workspace_dependency("Cargo.toml", &crate_name, &crate_path)?;
+    }
+
+    // Wire the `_game` crate into the runner so the manual checklist only
+    // needs to cover the `use` import and the dispatch arm.
+    add_runner_dep("runner/Cargo.toml", &format!("{name}_game"))?;
+
+    print_next_steps(name, &vars.name_pascal);
+    Ok(())
+}
+
+fn print_next_steps(name: &str, name_pascal: &str) {
+    let s = Style::new();
+    println!(
+        "{} Created game {} in {} (4 crates) and updated workspace {}",
+        s.ok("✓"),
+        s.name(name),
+        s.path(&format!("{name}/")),
+        s.path("Cargo.toml"),
+    );
+    println!();
+    println!("{}", s.heading("Next steps:"));
+    println!(
+        "  1. Fill in {} in {}",
+        s.code("TurnInput/TurnOutput"),
+        s.path(&format!("{name}/{name}_defs/src/lib.rs")),
+    );
+    println!(
+        "     and the matching {} impls.",
+        s.code("Display/FromStr/ReadFrom/WriteTo"),
+    );
+    println!(
+        "  2. Implement {} and {} in {}.",
+        s.code("Game::input_for"),
+        s.code("Game::step"),
+        s.path(&format!("{name}/{name}_game/src/lib.rs")),
+    );
+    println!(
+        "  3. Implement {} in {}.",
+        s.code("decide"),
+        s.path(&format!("{name}/{name}_rs/src/lib.rs")),
+    );
+    println!(
+        "  4. Wire the game into {} ({} dep already added):",
+        s.path("runner/src/main.rs"),
+        s.path("runner/Cargo.toml"),
+    );
+    println!(
+        "       - add {}",
+        s.code(&format!("use {name}_game::{name_pascal}Game;")),
+    );
+    println!(
+        "       - add {} to the dispatch match",
+        s.code(&format!(
+            "\"{name}\" => run_for_game::<{name_pascal}Game>(args.bots, args.save_replay),"
+        )),
+    );
+    println!(
+        "       - update the {} bail message to mention {}",
+        s.code("unknown game"),
+        s.name(name),
+    );
+    println!(
+        "  5. Customise the visualiser in {}.",
+        s.path(&format!("{name}/{name}_viz/src/main.rs")),
+    );
+    println!();
+    println!(
+        "Run {} to confirm the skeleton compiles.",
+        s.code("cargo check --workspace"),
+    );
 }
 
 /// Renders all `.hbs` files from a template directory into the destination,
@@ -150,7 +268,10 @@ fn add_workspace_member(workspace_toml: &str, member_path: &str) -> Result<()> {
     // Don't add duplicates
     let already_exists = members.iter().any(|v| v.as_str() == Some(member_path));
     if !already_exists {
-        members.push(member_path);
+        // Match the existing multi-line `members = [\n    "x",\n    "y",\n]` shape.
+        let mut v = toml_edit::Value::from(member_path);
+        v.decor_mut().set_prefix("\n    ");
+        members.push_formatted(v);
     }
 
     fs::write(workspace_toml, doc.to_string())?;
@@ -181,5 +302,30 @@ fn add_workspace_dependency(workspace_toml: &str, crate_name: &str, path: &str) 
     }
 
     fs::write(workspace_toml, doc.to_string())?;
+    Ok(())
+}
+
+/// Add `<crate_name>.workspace = true` (dotted-key form) to the runner's
+/// `[dependencies]`. Matches the style of the other entries in that file.
+fn add_runner_dep(runner_toml: &str, crate_name: &str) -> Result<()> {
+    let content = fs::read_to_string(runner_toml).context("reading runner Cargo.toml")?;
+    let mut doc = content
+        .parse::<DocumentMut>()
+        .context("parsing runner Cargo.toml")?;
+
+    let deps = doc["dependencies"]
+        .as_table_mut()
+        .context("[dependencies] not found in runner/Cargo.toml")?;
+
+    if !deps.contains_key(crate_name) {
+        // `set_dotted(true)` on the inner Table tells toml_edit to render it
+        // as `name.workspace = true` rather than `[dependencies.name]\nworkspace = true`.
+        let mut inner = Table::new();
+        inner.set_dotted(true);
+        inner.insert("workspace", Item::Value(true.into()));
+        deps.insert(crate_name, Item::Table(inner));
+    }
+
+    fs::write(runner_toml, doc.to_string())?;
     Ok(())
 }

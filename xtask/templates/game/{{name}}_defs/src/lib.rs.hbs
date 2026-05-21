@@ -1,17 +1,113 @@
+use std::{
+    fmt::Display,
+    io::{BufRead, Write},
+    marker::PhantomData,
+    str::FromStr,
+};
 
+use common::{ReadFrom, SingleLine, WriteTo};
+
+/// Bumped on any wire-type change. Plugins built against an older
+/// `{{name}}_defs` export an older value; `PluginPlayer::load` reads it and
+/// refuses mismatches before any UB-prone call lands.
+pub const ABI_VERSION: u32 = 1;
+
+// TODO: define your game's per-tick input fields. The engine constructs this;
+// the bot's `decide(turn: TurnRef<'_>)` reads from it through `as_ref`.
+#[derive(Debug, Clone, Default)]
+pub struct TurnInput {}
+
+/// Borrowed view of [`TurnInput`] — what `decide` actually sees.
+pub struct TurnRef<'a> {
+    _marker: PhantomData<&'a TurnInput>,
+}
+
+/// `#[repr(C)]` mirror of [`TurnInput`] for FFI. Fields are private — the only
+/// constructor is `TurnInput::as_ffi`, which establishes the invariants
+/// `as_ref` relies on.
+#[repr(C)]
+#[derive(Debug)]
+pub struct TurnInputFFI<'a> {
+    _marker: PhantomData<&'a TurnInput>,
+}
+
+// TODO: define your game's per-tick output fields.
+#[repr(C)]
+#[derive(Debug, Default, PartialEq, Eq, Copy, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TurnOutput {}
+
+#[repr(u8)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+pub enum BotStatus {
+    Ok = 0,
+    Panic = 1,
+}
 
 #[repr(C)]
-pub struct TurnInput {
+#[derive(Debug)]
+pub struct TurnResult {
+    pub status: BotStatus,
+    // Valid iff `status == BotStatus::Ok`; otherwise a placeholder.
+    pub output: TurnOutput,
 }
 
-
-#[repr(C)]
-pub struct TurnOutput {
+// cbindgen reachability root — generates the `extern "C" { ... }` block in
+// the C++ header. No symbols introduced into `_defs.rlib`; the real
+// `take_turn` / `abi_version` are emitted by `common::ffi_bot!` in the bot
+// crate. Keep in sync with that macro.
+unsafe extern "C" {
+    pub fn take_turn(input: TurnInputFFI<'_>) -> TurnResult;
+    pub fn abi_version() -> u32;
 }
 
+impl TurnInput {
+    pub fn as_ffi(&self) -> TurnInputFFI<'_> {
+        TurnInputFFI { _marker: PhantomData }
+    }
 
-
-#[unsafe(no_mangle)]
-pub  extern "C" fn take_turn(_: TurnInput) -> TurnOutput {
-    unreachable!()
+    pub fn as_ref(&self) -> TurnRef<'_> {
+        TurnRef { _marker: PhantomData }
+    }
 }
+
+impl<'a> TurnInputFFI<'a> {
+    /// Safe because every `TurnInputFFI<'a>` is constructed by `as_ffi`,
+    /// which establishes the documented invariants.
+    pub fn as_ref(&self) -> TurnRef<'a> {
+        TurnRef { _marker: PhantomData }
+    }
+}
+
+// region: stdio wire format (Display / FromStr / ReadFrom / WriteTo)
+//
+// Subprocess bots talk over stdin/stdout, one tick at a time. Implement
+// these to match the format your game uses. See `tron_defs` or
+// `tictactoe_defs` for fully fleshed-out examples.
+
+impl Display for TurnOutput {
+    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Ok(())
+    }
+}
+
+impl FromStr for TurnOutput {
+    type Err = anyhow::Error;
+    fn from_str(_s: &str) -> Result<Self, Self::Err> {
+        Ok(TurnOutput::default())
+    }
+}
+
+impl SingleLine for TurnOutput {}
+
+impl ReadFrom for TurnInput {
+    fn read_from(_r: &mut impl BufRead) -> anyhow::Result<Self> {
+        Ok(TurnInput::default())
+    }
+}
+
+impl WriteTo for TurnInput {
+    fn write_to(&self, _w: &mut impl Write) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+// endregion: stdio wire format

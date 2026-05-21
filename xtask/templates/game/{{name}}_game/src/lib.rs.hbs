@@ -1,0 +1,72 @@
+use common::engine::{FfiGame, Game, PlayerError, PlayerId};
+use {{name}}_defs::{
+    ABI_VERSION, BotStatus, TurnInput, TurnInputFFI, TurnOutput, TurnResult,
+};
+
+pub struct {{name_pascal}}Game {
+    active: Vec<PlayerId>,
+    // TODO: add per-match state (board, scores, RNG, …).
+}
+
+#[derive(Debug, Clone)]
+pub struct {{name_pascal}}Outcome {
+    /// `Some(p)` if `p` won, `None` for a draw.
+    pub winner: Option<PlayerId>,
+}
+
+impl Game for {{name_pascal}}Game {
+    const NAME: &'static str = "{{name}}";
+
+    type InitialInput = ();
+    type Input = TurnInput;
+    type Output = TurnOutput;
+    type Outcome = {{name_pascal}}Outcome;
+
+    fn new(num_players: u32, _seed: u64) -> Self {
+        {{name_pascal}}Game {
+            active: (0..num_players).collect(),
+        }
+    }
+
+    fn initial_input(&self, _player: PlayerId) {}
+
+    fn input_for(&self, _player: PlayerId) -> TurnInput {
+        TurnInput::default()
+    }
+
+    fn step(&mut self, _outputs: &[Option<TurnOutput>]) -> Option<{{name_pascal}}Outcome> {
+        // TODO: apply outputs, advance state, return `Some(outcome)` when done.
+        // Skeleton ends the match immediately as a draw so things compile and
+        // a runner invocation terminates.
+        self.active.clear();
+        Some({{name_pascal}}Outcome { winner: None })
+    }
+
+    fn active_players(&self) -> &[PlayerId] {
+        &self.active
+    }
+}
+
+// Plugin glue: tells the generic `PluginPlayer<G>` how to call a bot through
+// its `take_turn` FFI symbol. The `*_bot!` macro on the bot side and the
+// `extern "C"` block in `_defs/lib.rs` must agree on this signature.
+impl FfiGame for {{name_pascal}}Game {
+    type Symbol = for<'a> unsafe extern "C" fn(TurnInputFFI<'a>) -> TurnResult;
+    type InitSymbol = unsafe extern "C" fn();
+
+    const SYMBOL_NAME: &'static [u8] = b"take_turn";
+    const INIT_SYMBOL_NAME: &'static [u8] = b"initialize";
+    const ABI_VERSION: u32 = ABI_VERSION;
+
+    unsafe fn call(sym: Self::Symbol, input: &TurnInput) -> Result<TurnOutput, PlayerError> {
+        let result = unsafe { sym(input.as_ffi()) };
+        match result.status {
+            BotStatus::Ok => Ok(result.output),
+            BotStatus::Panic => Err(PlayerError::Panic),
+        }
+    }
+
+    unsafe fn call_init(_sym: Self::InitSymbol, _input: &()) -> Result<(), PlayerError> {
+        Ok(())
+    }
+}
