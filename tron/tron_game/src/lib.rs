@@ -64,6 +64,8 @@ impl TronGame {
 
 // TODO: review all this code
 impl Game for TronGame {
+    const NAME: &'static str = "tron";
+
     type InitialInput = ();
     type Input = TurnInput;
     type Output = TurnOutput;
@@ -202,6 +204,7 @@ impl FfiGame for TronGame {
 
     const SYMBOL_NAME: &'static [u8] = b"take_turn";
     const INIT_SYMBOL_NAME: &'static [u8] = b"initialize";
+    const ABI_VERSION: u32 = tron_defs::ABI_VERSION;
 
     unsafe fn call(sym: Self::Symbol, input: &TurnInput) -> Result<TurnOutput, PlayerError> {
         let result = unsafe { sym(input.as_ffi()) };

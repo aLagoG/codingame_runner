@@ -38,6 +38,8 @@ impl TicTacToeGame {
 }
 
 impl Game for TicTacToeGame {
+    const NAME: &'static str = "tictactoe";
+
     type InitialInput = ();
     type Input = TurnInput;
     type Output = TurnOutput;
@@ -149,6 +151,7 @@ impl FfiGame for TicTacToeGame {
 
     const SYMBOL_NAME: &'static [u8] = b"take_turn";
     const INIT_SYMBOL_NAME: &'static [u8] = b"initialize";
+    const ABI_VERSION: u32 = tictactoe_defs::ABI_VERSION;
 
     unsafe fn call(sym: Self::Symbol, input: &TurnInput) -> Result<TurnOutput, PlayerError> {
         let result = unsafe { sym(input.as_ffi()) };

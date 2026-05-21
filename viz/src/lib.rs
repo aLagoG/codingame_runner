@@ -9,12 +9,13 @@
 //! Controls are drawn with `egui` (via `egui-macroquad`) and overlay a bottom
 //! panel on top of the macroquad scene.
 
-use common::engine::{Game, Replay};
+use anyhow::Context;
 use macroquad::prelude::*;
 
 // Re-exported so per-game viz crates can reference them through `viz::*`
 // without adding their own deps, and stay in lockstep with whatever
-// `egui-macroquad` pulls in.
+// `egui-macroquad` / `common` pull in.
+pub use common::engine::{Game, Replay, read_replay};
 pub use egui_macroquad::egui;
 pub use macroquad;
 
@@ -104,7 +105,9 @@ struct State {
 }
 
 /// Run the playback loop. Call from inside a `#[macroquad::main]` entry point.
-pub async fn run<V: Visualize>(replay: Replay<V::Game>) -> anyhow::Result<()> {
+pub async fn run<V: Visualize>(
+    replay: Replay<<V::Game as Game>::Output>,
+) -> anyhow::Result<()> {
     // One displayable state per tick + the pre-game initial state at tick 0.
     let n_states = replay.outputs.len() + 1;
 
@@ -118,7 +121,14 @@ pub async fn run<V: Visualize>(replay: Replay<V::Game>) -> anyhow::Result<()> {
     let mut game = V::Game::new(replay.num_players, replay.seed);
     let mut game_tick: usize = 0;
 
+    // Intercept window-close so we can return cleanly instead of macroquad
+    // calling exit(0) and skipping caller-side teardown.
+    prevent_quit();
+
     loop {
+        if is_quit_requested() {
+            return Ok(());
+        }
         clear_background(BG);
         advance(&mut state, n_states);
         handle_keys(&mut state, n_states);
@@ -144,7 +154,7 @@ pub async fn run<V: Visualize>(replay: Replay<V::Game>) -> anyhow::Result<()> {
 fn sync_game<V: Visualize>(
     game: &mut V::Game,
     current: &mut usize,
-    replay: &Replay<V::Game>,
+    replay: &Replay<<V::Game as Game>::Output>,
     target: usize,
 ) {
     if target < *current {
@@ -312,4 +322,81 @@ fn build_side_panel<V: Visualize>(ctx: &egui::Context, game: &V::Game) {
             ui.separator();
             V::side_panel(game, ui);
         });
+}
+
+/// Default 4-player palette — blue, red, green, yellow. Games with > 4
+/// players (or specific aesthetic needs) can ignore it and use their own.
+pub const PALETTE: [Color; 4] = [
+    Color::new(0.30, 0.65, 1.00, 1.0),
+    Color::new(1.00, 0.40, 0.40, 1.0),
+    Color::new(0.40, 0.90, 0.50, 1.0),
+    Color::new(1.00, 0.85, 0.30, 1.0),
+];
+
+/// Convert a macroquad `Color` to an egui `Color32` (preserves alpha).
+pub fn to_egui(c: Color) -> egui::Color32 {
+    egui::Color32::from_rgba_unmultiplied(
+        (c.r * 255.0) as u8,
+        (c.g * 255.0) as u8,
+        (c.b * 255.0) as u8,
+        (c.a * 255.0) as u8,
+    )
+}
+
+/// Draw a small filled square in the current egui layout — handy for
+/// "player N is this color" legends inside side / bottom panels.
+pub fn color_chip(ui: &mut egui::Ui, color: Color) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 2.0, to_egui(color));
+}
+
+/// If `argv[1]` is set, read a framed replay from it; otherwise return `None`
+/// so the caller can fall through to a built-in demo.
+pub fn load_replay_from_argv<G: Game>() -> anyhow::Result<Option<Replay<G::Output>>>
+where
+    G::Output: serde::de::DeserializeOwned,
+{
+    let Some(path) = std::env::args().nth(1) else {
+        return Ok(None);
+    };
+    let mut file =
+        std::fs::File::open(&path).with_context(|| format!("opening replay {path}"))?;
+    read_replay::<G>(&mut file).map(Some)
+}
+
+/// Per-game viz binaries collapse to:
+///
+/// ```ignore
+/// viz::run_viz!(TronViz, demo_replay());
+/// ```
+///
+/// Generates `fn main()` that creates a macroquad window titled with
+/// `G::NAME`, loads the replay from `argv[1]` (or evaluates `$demo` if no
+/// path was given), and runs the playback loop. Errors print to stderr and
+/// exit non-zero.
+#[macro_export]
+macro_rules! run_viz {
+    ($viz:ty, $demo:expr $(,)?) => {
+        fn main() {
+            $crate::macroquad::Window::new(
+                <<$viz as $crate::Visualize>::Game as $crate::Game>::NAME,
+                async move {
+                    let replay = match $crate::load_replay_from_argv::<
+                        <$viz as $crate::Visualize>::Game,
+                    >() {
+                        Ok(Some(r)) => r,
+                        Ok(None) => $demo,
+                        Err(e) => {
+                            ::std::eprintln!("error: {e:#}");
+                            ::std::process::exit(1);
+                        }
+                    };
+                    if let Err(e) = $crate::run::<$viz>(replay).await {
+                        ::std::eprintln!("viz error: {e:#}");
+                        ::std::process::exit(1);
+                    }
+                },
+            );
+        }
+    };
 }

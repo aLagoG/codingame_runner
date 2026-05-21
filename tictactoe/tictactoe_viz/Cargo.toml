@@ -10,4 +10,3 @@ tictactoe_game.workspace = true
 viz.workspace = true
 macroquad.workspace = true
 anyhow.workspace = true
-bincode.workspace = true

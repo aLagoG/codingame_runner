@@ -1,9 +1,7 @@
-use anyhow::Context;
-use common::engine::Replay;
 use macroquad::prelude::*;
 use tictactoe_defs::{Cell, Pos, TurnOutput};
 use tictactoe_game::TicTacToeGame;
-use viz::{CellGrid, Visualize, egui};
+use viz::{CellGrid, Replay, Visualize, color_chip, egui, to_egui};
 
 const X_COLOR: Color = Color::new(0.30, 0.70, 1.00, 1.0);
 const O_COLOR: Color = Color::new(1.00, 0.40, 0.40, 1.0);
@@ -78,7 +76,7 @@ impl Visualize for TicTacToeViz {
     fn bottom_panel(game: &TicTacToeGame, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             for pid in 0..2u32 {
-                ui.colored_label(to_egui(player_color(pid)), "■");
+                color_chip(ui, player_color(pid));
                 ui.label(format!("{}:", player_label(pid)));
                 let played = match game.last_move() {
                     Some((p, pos)) if p == pid => format!("({}, {})", pos.row, pos.col),
@@ -105,14 +103,6 @@ fn player_label(pid: u32) -> &'static str {
     }
 }
 
-fn to_egui(c: Color) -> egui::Color32 {
-    egui::Color32::from_rgb(
-        (c.r * 255.0) as u8,
-        (c.g * 255.0) as u8,
-        (c.b * 255.0) as u8,
-    )
-}
-
 fn draw_x(c: Vec2, r: f32) {
     draw_line(c.x - r, c.y - r, c.x + r, c.y + r, 8.0, X_COLOR);
     draw_line(c.x - r, c.y + r, c.x + r, c.y - r, 8.0, X_COLOR);
@@ -123,7 +113,7 @@ fn draw_o(c: Vec2, r: f32) {
 }
 
 /// Demo replay: X plays the top row, O blocks down the middle column — X wins.
-fn demo_replay() -> Replay<TicTacToeGame> {
+fn demo_replay() -> Replay<TurnOutput> {
     let moves = [(0, 0), (1, 1), (0, 1), (2, 1), (0, 2)];
     let outputs: Vec<Vec<Option<TurnOutput>>> = moves
         .iter()
@@ -144,22 +134,4 @@ fn demo_replay() -> Replay<TicTacToeGame> {
     }
 }
 
-fn load_or_demo() -> anyhow::Result<Replay<TicTacToeGame>> {
-    let Some(path) = std::env::args().nth(1) else {
-        return Ok(demo_replay());
-    };
-    let bytes = std::fs::read(&path).with_context(|| format!("reading replay {path}"))?;
-    bincode::deserialize::<Replay<TicTacToeGame>>(&bytes).context("deserializing replay")
-}
-
-#[macroquad::main("tictactoe_viz")]
-async fn main() {
-    let replay = match load_or_demo() {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error: {e:#}");
-            std::process::exit(1);
-        }
-    };
-    viz::run::<TicTacToeViz>(replay).await.unwrap();
-}
+viz::run_viz!(TicTacToeViz, demo_replay());

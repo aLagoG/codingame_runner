@@ -4,6 +4,11 @@
 #include <ostream>
 #include <new>
 
+/// Bumped on any wire-type change. Plugins built against an older `tron_defs`
+/// export an older value; `PluginPlayer::load` reads it through `abi_version()`
+/// and refuses mismatches before any UB-prone call lands.
+constexpr static const uint32_t ABI_VERSION = 1;
+
 enum class BotStatus : uint8_t {
   Ok = 0,
   Panic = 1,
@@ -43,6 +48,8 @@ struct TurnInputFFI {
 
 extern "C" {
 
-TurnResult take_turn(TurnInputFFI);
+extern TurnResult take_turn(TurnInputFFI input);
+
+extern uint32_t abi_version();
 
 }  // extern "C"

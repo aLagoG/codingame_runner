@@ -88,9 +88,19 @@ pub struct TurnResult {
     pub output: TurnOutput,
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn take_turn(_: TurnInputFFI<'_>) -> TurnResult {
-    unreachable!()
+/// Bumped on any wire-type change. Plugins built against an older `tron_defs`
+/// export an older value; `PluginPlayer::load` reads it through `abi_version()`
+/// and refuses mismatches before any UB-prone call lands.
+pub const ABI_VERSION: u32 = 1;
+
+// `extern "C" { ... }` block: declares the FFI signatures bots must export.
+// Used only by cbindgen as a reachability root for the header — no symbols
+// are introduced into `_defs.rlib` (so no collision with the real ones the
+// bot's `common::ffi_bot!` macro defines downstream). Keep in sync with the
+// macro.
+unsafe extern "C" {
+    pub fn take_turn(input: TurnInputFFI<'_>) -> TurnResult;
+    pub fn abi_version() -> u32;
 }
 
 // region: Inherent impls

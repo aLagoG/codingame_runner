@@ -311,7 +311,6 @@ name = "codingame_runner"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "bincode",
  "clap",
  "codingame_macros",
  "common",
@@ -337,6 +336,7 @@ name = "common"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bincode",
  "libloading 0.9.0",
  "serde",
  "thiserror",
@@ -1626,7 +1626,6 @@ name = "tictactoe_viz"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "bincode",
  "common",
  "macroquad",
  "tictactoe_defs",
@@ -1761,7 +1760,6 @@ name = "tron_viz"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "bincode",
  "common",
  "macroquad",
  "tron_defs",
@@ -1825,6 +1823,7 @@ dependencies = [
  "common",
  "egui-macroquad",
  "macroquad",
+ "serde",
 ]
 
 [[package]]

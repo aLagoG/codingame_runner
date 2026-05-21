@@ -1,16 +1,7 @@
-use anyhow::Context;
-use common::engine::Replay;
 use macroquad::prelude::*;
 use tron_defs::{Direction, TurnOutput};
 use tron_game::TronGame;
-use viz::{CellGrid, Visualize, egui};
-
-const PALETTE: [Color; 4] = [
-    Color::new(0.30, 0.65, 1.00, 1.0), // blue
-    Color::new(1.00, 0.40, 0.40, 1.0), // red
-    Color::new(0.40, 0.90, 0.50, 1.0), // green
-    Color::new(1.00, 0.85, 0.30, 1.0), // yellow
-];
+use viz::{CellGrid, PALETTE, Replay, Visualize, color_chip, egui};
 
 struct TronViz;
 
@@ -95,19 +86,8 @@ impl Visualize for TronViz {
     }
 }
 
-fn color_chip(ui: &mut egui::Ui, color: Color) {
-    let c = egui::Color32::from_rgba_unmultiplied(
-        (color.r * 255.0) as u8,
-        (color.g * 255.0) as u8,
-        (color.b * 255.0) as u8,
-        255,
-    );
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
-    ui.painter().rect_filled(rect, 2.0, c);
-}
-
 /// Hand-rolled demo: 4 players snake inward from their corners.
-fn demo_replay() -> Replay<TronGame> {
+fn demo_replay() -> Replay<TurnOutput> {
     use Direction::*;
 
     // Starts: 0=(0,0)  1=(29,19)  2=(0,19)  3=(29,0)
@@ -138,22 +118,4 @@ fn demo_replay() -> Replay<TronGame> {
     }
 }
 
-fn load_or_demo() -> anyhow::Result<Replay<TronGame>> {
-    let Some(path) = std::env::args().nth(1) else {
-        return Ok(demo_replay());
-    };
-    let bytes = std::fs::read(&path).with_context(|| format!("reading replay {path}"))?;
-    bincode::deserialize::<Replay<TronGame>>(&bytes).context("deserializing replay")
-}
-
-#[macroquad::main("tron_viz")]
-async fn main() {
-    let replay = match load_or_demo() {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error: {e:#}");
-            std::process::exit(1);
-        }
-    };
-    viz::run::<TronViz>(replay).await.unwrap();
-}
+viz::run_viz!(TronViz, demo_replay());

@@ -64,3 +64,43 @@ impl WriteTo for () {
         Ok(())
     }
 }
+
+/// Define the FFI surface for a bot dynamic library.
+///
+/// Use from a `cdylib` crate that depends on `common` and the game's `_defs`
+/// crate (which must expose `TurnInputFFI<'_>`, `TurnOutput: Default`,
+/// `TurnResult`, `BotStatus::{Ok, Panic}`, and an `ABI_VERSION: u32`
+/// constant — matching the `extern "C" { … }` block in that `_defs/lib.rs`):
+///
+/// ```ignore
+/// // tron_rs/src/lib.rs
+/// pub fn decide(turn: tron_defs::TurnRef<'_>) -> tron_defs::TurnOutput { … }
+/// common::ffi_bot!(tron_defs, decide);
+/// ```
+///
+/// Generates `take_turn` and `abi_version` `extern "C"` exports, wrapping
+/// `decide` in `catch_unwind` so a panic doesn't unwind across the FFI
+/// boundary (UB).
+#[macro_export]
+macro_rules! ffi_bot {
+    ($defs:ident, $decide:expr) => {
+        #[unsafe(no_mangle)]
+        pub extern "C" fn take_turn(input: $defs::TurnInputFFI<'_>) -> $defs::TurnResult {
+            match ::std::panic::catch_unwind(|| ($decide)(input.as_ref())) {
+                Ok(output) => $defs::TurnResult {
+                    status: $defs::BotStatus::Ok,
+                    output,
+                },
+                Err(_) => $defs::TurnResult {
+                    status: $defs::BotStatus::Panic,
+                    output: <$defs::TurnOutput as ::std::default::Default>::default(),
+                },
+            }
+        }
+
+        #[unsafe(no_mangle)]
+        pub extern "C" fn abi_version() -> u32 {
+            $defs::ABI_VERSION
+        }
+    };
+}

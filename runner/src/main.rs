@@ -1,66 +1,43 @@
-use std::{env, ffi::OsString, fmt::Debug, path::PathBuf, process, process::Command};
+use std::{fmt::Debug, path::PathBuf, process::Command};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
+use clap::Parser;
 use common::engine::{
     FfiGame, MatchResult, Player, PluginPlayer, RunConfig, SubprocessPlayer, run_match,
+    write_replay,
 };
 use serde::Serialize;
 use tictactoe_game::TicTacToeGame;
 use tron_game::TronGame;
 
+#[derive(Parser)]
+#[command(
+    about = "Run a CodinGame-style match between two or more bots.",
+    long_about = "Bots can be either dynamic libraries (.so/.dylib/.dll, \
+                  loaded via FFI) or standalone binaries (spawned as a \
+                  subprocess that talks over stdin/stdout)."
+)]
 struct Args {
+    /// Which game to run.
+    #[arg(long, default_value = "tron")]
     game: String,
+
+    /// Write a compact replay (seed + per-tick outputs) to this path.
+    #[arg(long, value_name = "PATH")]
     save_replay: Option<PathBuf>,
+
+    /// Bot binaries or dynamic libraries. One per player.
+    #[arg(required = true)]
     bots: Vec<PathBuf>,
 }
 
 fn main() -> Result<()> {
-    let args = parse_args();
+    let args = Args::parse();
     match args.game.as_str() {
         "tron" => run_for_game::<TronGame>(args.bots, args.save_replay),
         "tictactoe" => run_for_game::<TicTacToeGame>(args.bots, args.save_replay),
-        other => fail(&format!("unknown game: {other}")),
+        other => bail!("unknown game: {other} (expected `tron` or `tictactoe`)"),
     }
-}
-
-fn parse_args() -> Args {
-    let mut argv: Vec<OsString> = env::args_os().skip(1).collect();
-    let mut game = "tron".to_string();
-    let mut save_replay: Option<PathBuf> = None;
-
-    while let Some(first) = argv.first() {
-        if first == "--game" {
-            argv.remove(0);
-            game = argv
-                .first()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_else(|| fail("--game needs a value"));
-            argv.remove(0);
-        } else if first == "--save-replay" {
-            argv.remove(0);
-            save_replay = Some(PathBuf::from(
-                argv.first().cloned().unwrap_or_else(|| fail("--save-replay needs a path")),
-            ));
-            argv.remove(0);
-        } else {
-            break;
-        }
-    }
-
-    let bots: Vec<PathBuf> = argv.into_iter().map(PathBuf::from).collect();
-    if bots.is_empty() {
-        fail("no bots given");
-    }
-    Args { game, save_replay, bots }
-}
-
-fn fail(msg: &str) -> ! {
-    eprintln!("error: {msg}");
-    eprintln!(
-        "usage: codingame_runner [--game tron|tictactoe] [--save-replay <path>] <bot1> [bot2 ...]"
-    );
-    eprintln!("  bot is a dynamic library (.so/.dylib/.dll) or a subprocess binary");
-    process::exit(2);
 }
 
 fn run_for_game<G: FfiGame + 'static>(
@@ -108,10 +85,12 @@ where
     }
 
     if let Some(path) = save_replay {
-        let bytes = bincode::serialize(&replay).context("serializing replay")?;
-        std::fs::write(&path, &bytes)
+        let mut file = std::fs::File::create(&path)
+            .with_context(|| format!("creating replay file {}", path.display()))?;
+        write_replay::<G>(&replay, &mut file)
             .with_context(|| format!("writing replay to {}", path.display()))?;
-        println!("saved replay ({} bytes) to {}", bytes.len(), path.display());
+        let size = file.metadata().map(|m| m.len()).unwrap_or(0);
+        println!("saved replay ({size} bytes) to {}", path.display());
     }
 
     Ok(())

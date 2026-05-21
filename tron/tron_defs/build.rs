@@ -1,7 +1,6 @@
 fn main() {
     let crate_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let pkg_name = std::env::var("CARGO_PKG_NAME").unwrap();
-
     let output_path = format!("include/{pkg_name}.h");
 
     cbindgen::Builder::new()

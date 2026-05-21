@@ -6,5 +6,6 @@ edition.workspace = true
 [dependencies]
 anyhow.workspace = true
 common.workspace = true
+serde.workspace = true
 macroquad.workspace = true
 egui-macroquad.workspace = true

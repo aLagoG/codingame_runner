@@ -81,6 +81,15 @@ If you want a starting set: **#1A, #3A, #7A** are the three "silent failure" fix
 
 **Recommendation:** **4A + 4C.** A removes the footgun by codegen; C is the defense-in-depth that catches missing-shim cases. They compose cleanly.
 
+**4C perf investigation** (microbenchmark, x86_64 macOS, `--release` + LTO):
+
+| | ns/call (3 runs) |
+|---|---|
+| Bare FFI call | 1.07 / 0.89 / 0.81 |
+| `catch_unwind`-wrapped | 0.73 / 0.75 / 0.79 |
+
+Both inside measurement noise — Rust's table-based unwinding makes `catch_unwind` zero-cost on the no-panic path. The wrap also doesn't block the call from being scheduled efficiently (the closure is trivially inlined). At our actual FFI-call scale (~µs/call), this is rounding error. **Take 4C.** Repro: see commit history for `/tmp/ce_bench`.
+
 ---
 
 ### 5. `PluginPlayer::load` doesn't verify the plugin's ABI
@@ -113,8 +122,36 @@ If you want a starting set: **#1A, #3A, #7A** are the three "silent failure" fix
 - **B.** Hand-write the C++ header. Drop cbindgen entirely. Header is ~30 lines, rarely changes.
 - **C.** Move the stub to a separate `_abi` crate that only cbindgen sees. Pure indirection, no real win.
 - **D.** Use cbindgen's config to declare external functions without needing a Rust stub (the `[export]` config section). Cleaner long-term but requires reading cbindgen docs.
+- **E.** Declare via an `unsafe extern "C" { ... }` block in `lib.rs`. Rust treats this as *importing* the symbols (no definition → no exported symbol from `_defs.rlib`), but cbindgen sees the extern "C" function signatures and (a) emits them in the header and (b) uses them as reachability roots so it still walks the data types — no `.include_item(...)` config needed.
 
-**Recommendation:** **6A.** Minimum change, keeps cbindgen automation, kills the duplicate-symbol risk. Look at **6D** if we add a third game and the stub pattern starts feeling like cargo cult.
+**Recommendation:** **6E.** Found this after a deep dive on cbindgen — the cleanest answer.
+
+**Empirical results.** Tested 8 variants in a throwaway crate ([`/tmp/cbg_test`](#)) and captured both the cbindgen output and `nm` output:
+
+| Variant | Form | In header? | In `_defs.rlib`? |
+|---|---|---|---|
+| 1 | `#[no_mangle] pub extern "C" fn ...` (current) | ✅ | ✅ as `take_turn` (collides) |
+| 2 | `pub extern "C" fn ...` (no `no_mangle`) | ❌ — cbindgen skips | mangled (no collision but useless) |
+| 3 | `#[cfg(any())] pub extern "C" fn ...` | ❌ — cbindgen evaluates `cfg(any())` | absent |
+| 4 | `#[doc(hidden)] #[no_mangle] pub extern "C" fn ...` | ✅ | ✅ as `take_turn` (still collides) |
+| **5** | **`unsafe extern "C" { pub fn take_turn(...) -> ...; }`** | **✅** as `extern TurnResult take_turn(...);` | **❌ — no symbol** |
+| 6 | `#[cfg(any())] pub mod m { pub extern "C" fn ... }` | ✅ (cbindgen ignores `cfg(any())` on modules) | absent — but brittle |
+| 7 | `#[cfg(feature = "cbindgen_only")] pub extern "C" fn ...` | ✅ (cbindgen ignores unset features in non-expand mode) | absent — but fragile if cbindgen ever respects features here |
+| 8 | private `#[no_mangle] extern "C" fn ...` | ✅ | ✅ (still collides — `no_mangle` overrides privacy) |
+
+Variant 5 is the only option that's both clean and semantically honest: an `extern "C" {}` block in Rust *declares* external functions — it says "these exist somewhere else, please link them in" — which is exactly the story for our case (the bot's cdylib will define them). cbindgen emits a valid C++ declaration; `_defs.rlib` introduces no symbol because nothing in `_defs` calls them.
+
+**Implemented as:**
+
+```rust
+// in tron_defs/src/lib.rs (and tictactoe_defs/src/lib.rs)
+unsafe extern "C" {
+    pub fn take_turn(input: TurnInputFFI<'_>) -> TurnResult;
+    pub fn abi_version() -> u32;
+}
+```
+
+…and `build.rs` is now just the basic cbindgen invocation — no manual header append, no `.include_item(...)` calls, no feature gates. The block in `lib.rs` is the single source of truth for the FFI surface, kept in sync with the `*_bot!` macro by hand. Verified with `nm`: `_defs.rlib` exports zero `take_turn`/`abi_version` symbols; the bot's cdylib exports them correctly.
 
 ---
 
@@ -335,6 +372,63 @@ If you want a starting set: **#1A, #3A, #7A** are the three "silent failure" fix
 
 ---
 
+### 19. `ffi_bot!` contract is informal — errors land deep in the macro expansion
+
+**File:** `common/src/lib.rs` (the `ffi_bot!` macro)
+
+**What's wrong:** The macro expects the `$defs` crate it's pointed at to expose a specific set of items by name: `TurnInputFFI<'_>` with an `as_ref()` method, `TurnOutput: Default`, `TurnResult { status, output }`, `BotStatus::{Ok, Panic}`, and `ABI_VERSION: u32`. The contract lives in a doc comment, not the type system. If a future `_defs` crate gets one of these names wrong (or someone passes the wrong crate as `$defs`), the error fires *inside the macro expansion* and complains about a missing field or unresolved path, not about "this crate doesn't satisfy the FFI contract".
+
+**Why it matters:** Two related pain points:
+1. **Discoverability.** A new game's author writing `_defs` has no compiler-checked list of what `_defs` must expose. They find out by trying to invoke the macro and reading expansion errors.
+2. **Refactor safety.** Renaming `TurnInputFFI` → `TurnInput` in `tron_defs` compiles cleanly until the *bot* crate is rebuilt. If a CI configuration skips the bot crate, the breakage ships.
+
+It's not a soundness issue — everything is checked *somewhere* — but the failure mode is "weird error from inside `macro_rules!`" rather than "your defs crate is missing trait X".
+
+**Options:**
+
+- **A.** Status quo + better doc. Expand the macro's doc comment into a concrete checklist with a code snippet showing the minimum `_defs/lib.rs`. Cheapest. Doesn't move the check into the type system.
+
+- **B.** **Static-assertion preamble in the macro.** Prepend a `const _: fn() = || { … };` block to the expansion that touches every required item:
+  ```rust
+  const _: fn() = || {
+      let _: u32 = $defs::ABI_VERSION;
+      let _ = <$defs::TurnOutput as ::std::default::Default>::default;
+      let _: $defs::BotStatus = $defs::BotStatus::Ok;
+      let _: $defs::BotStatus = $defs::BotStatus::Panic;
+      let _: fn($defs::TurnOutput) -> $defs::TurnResult =
+          |output| $defs::TurnResult { status: $defs::BotStatus::Ok, output };
+  };
+  ```
+  Errors still fire from inside the macro, but they're concentrated at the top of the expansion in one obvious "contract check" block instead of scattered through the `take_turn` body. Doesn't catch errors at the `_defs` side — only when the bot crate is built.
+
+- **C.** **`FfiDefs` trait in `common`.** Each `_defs` crate implements it on a marker type (`TronFfi`/`TicTacToeFfi`). The macro becomes a thin shell that calls trait methods:
+  ```rust
+  pub trait FfiDefs {
+      type InputFFI<'a>;            // GAT
+      type Output: Default;
+      type Result;
+      const ABI_VERSION: u32;
+      fn ok(output: Self::Output) -> Self::Result;
+      fn panic() -> Self::Result;
+      /// `input` is owned by the C caller; the returned ref borrows from it.
+      fn as_input<'a>(ffi: &'a Self::InputFFI<'a>) -> /* borrowed view */;
+  }
+  // common::ffi_bot!(TronFfi, decide);
+  ```
+  Errors fire at the `impl FfiDefs for TronFfi` site — `_defs`-local — so refactoring `tron_defs` types breaks `tron_defs`, not the bot. Discoverability is good: the trait *is* the contract. Cost: GATs for the lifetime-carrying `InputFFI<'a>` add complexity, the as_input return type either needs another GAT or a separate "borrowed view" trait, and each `_defs` now has a marker type + trait impl boilerplate.
+
+- **D.** **Attribute proc-macro on `_defs`**, e.g. `#[ffi_defs] mod defs { struct TurnInputFFI<'_> { … } struct TurnOutput { … } }`. Generates the trait impl, the `extern "C" {}` block, the ABI version, and exports a single `ffi_bot_for!(decide)` entry point. Maximum hand-holding, maximum implementation cost (new `ffi_bot_macros` crate, proc-macro2 + syn + quote, separate compile step). Probably overkill.
+
+**Recommendation:** **19B** as a near-term win (≈15 lines added to the existing macro, no other crates affected, errors immediately become clearer), with **19C** as the proper fix when we add a third game and the marker-type story stabilises. **19A** alone leaves the rake on the floor; **19D** is too much machinery for the size of the contract.
+
+**Implementation note for 19C.** The trickiest piece is `InputFFI<'a>` returning a borrowed view. Today the borrowed view is `tron_defs::TurnRef<'a>` and the conversion is `TurnInputFFI::as_ref(&self) -> TurnRef<'a>`. A trait would need either:
+- A second GAT `type InputView<'a>` plus `fn as_view<'a>(ffi: &'a Self::InputFFI<'a>) -> Self::InputView<'a>`, or
+- Passing `InputView` directly to `decide` from the trait method, and making `_decide_` itself a trait-bound function rather than a free closure.
+
+Either is straightforward in modern Rust (GATs are stable as of 1.65); the cost is in the prose someone needs to write to explain it.
+
+---
+
 ## Suggested ordering
 
 If we work through these piecewise, here's a sensible order — adjacent items share scope and can be done in one sitting:
@@ -343,7 +437,7 @@ If we work through these piecewise, here's a sensible order — adjacent items s
 2. **Pass 2 — UB hardening**: 4A+4C, 5A, 15A+15B, 6A
 3. **Pass 3 — ergonomics**: 8A, 9A, 10A, 12A
 4. **Pass 4 — format evolution**: 11C, 5A integration with 11C (header includes ABI version)
-5. **Pass 5 — quality of life**: 14A, 16A, 18A, 13C
-6. **Pass 6 — fancy hardening** (only if needed): 2A (subprocess timeouts)
+5. **Pass 5 — quality of life**: 14A, 16A, 18A, 13C, 19B
+6. **Pass 6 — fancy hardening** (only if needed): 2A (subprocess timeouts), 19C (trait-based FFI contract)
 
-We've explicitly *not* recommended: **17** (keep marker pattern), **2D** / **3C** / **4B** / **6B** etc. (status-quo options listed for completeness).
+We've explicitly *not* recommended: **17** (keep marker pattern), **2D** / **3C** / **4B** / **6B** / **19A** / **19D** etc. (status-quo / overkill options listed for completeness).
