@@ -2,6 +2,12 @@
 name = "{{name}}_defs"
 version.workspace = true
 edition.workspace = true
+# Claims a unique "native lib" name in cargo's dep graph so that cargo
+# enforces strict build-script ordering for dependents — specifically,
+# `{{name}}_cpp/build.rs` won't start until this crate's `build.rs` (which
+# generates `include/{{name}}_defs.h`) has finished. We don't actually link
+# a native library here.
+links = "{{name}}_defs"
 
 [dependencies]
 anyhow.workspace = true

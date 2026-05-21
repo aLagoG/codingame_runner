@@ -1,20 +1,12 @@
-// C++ bot for tron. Compile as a shared library:
+// C++ bot for tron. Build + run via cargo (from workspace root):
 //
-//   Linux:   c++ -shared -fPIC -O2 -std=c++17 \
-//                -I../tron_defs/include \
-//                bot.cpp -o libtron_bot.so
+//   cargo build -p tron_cpp
+//   cargo run -p codingame_runner -- --game tron \
+//       target/debug/libtron_cpp.dylib \         # .so on Linux, .dll on Windows
+//       target/debug/libtron_cpp.dylib
 //
-//   macOS:   c++ -dynamiclib -O2 -std=c++17 \
-//                -I../tron_defs/include \
-//                bot.cpp -o libtron_bot.dylib
-//
-//   Windows: cl /LD /O2 /std:c++17 ^
-//                /I../tron_defs/include ^
-//                bot.cpp /Fe:tron_bot.dll
-//
-// Then run with the codingame runner:
-//
-//   codingame_runner --game tron libtron_bot.so   (or .dylib / .dll)
+// The crate's `build.rs` invokes `cc-rs` to compile this file, then
+// force-loads its symbols into the cdylib so the runner can `dlsym` them.
 //
 // The three `extern "C"` exports below are the FFI contract — every bot
 // must define all of them. Their signatures and the required type/constant

@@ -96,9 +96,10 @@ fn new_game(name: &str) -> Result<()> {
     let vars = TemplateVars::new(name);
     render_template("game", name, &vars)?;
 
-    // All four crates are members; only `_defs` and `_game` are surfaced as
-    // workspace dependencies (the `_rs` cdylib and `_viz` binary are leaves).
-    for suffix in ["_defs", "_game", "_rs", "_viz"] {
+    // All five crates are members; only `_defs` and `_game` are surfaced as
+    // workspace dependencies (the `_rs` / `_cpp` cdylibs and the `_viz`
+    // binary are leaves).
+    for suffix in ["_defs", "_game", "_rs", "_viz", "_cpp"] {
         let crate_path = format!("{name}/{name}{suffix}");
         add_workspace_member("Cargo.toml", &crate_path)?;
     }
@@ -119,7 +120,7 @@ fn new_game(name: &str) -> Result<()> {
 fn print_next_steps(name: &str, name_pascal: &str) {
     let s = Style::new();
     println!(
-        "{} Created game {} in {} (4 crates + C++ starter) and updated workspace {}",
+        "{} Created game {} in {} (5 crates incl. C++ bot) and updated workspace {}",
         s.ok("✓"),
         s.name(name),
         s.path(&format!("{name}/")),
@@ -172,11 +173,13 @@ fn print_next_steps(name: &str, name_pascal: &str) {
         s.path(&format!("{name}/{name}_viz/src/main.rs")),
     );
     println!(
-        "  6. (optional) C++ bot starter at {} — compiles to a `.so`/`.dylib`/`.dll`",
+        "  6. (optional) C++ bot starter at {} — build with {} and pass",
         s.path(&format!("{name}/{name}_cpp/bot.cpp")),
+        s.code(&format!("cargo build -p {name}_cpp")),
     );
     println!(
-        "     the runner can load. Build instructions are in the file header.",
+        "     {} to the runner.",
+        s.path(&format!("target/debug/lib{name}_cpp.dylib")),
     );
     println!();
     println!(

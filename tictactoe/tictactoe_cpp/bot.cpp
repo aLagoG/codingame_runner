@@ -1,22 +1,12 @@
-// C++ bot for tic-tac-toe. Compile as a shared library:
+// C++ bot for tic-tac-toe. Build + run via cargo (from workspace root):
 //
-//   Linux:   c++ -shared -fPIC -O2 -std=c++17 \
-//                -I../tictactoe_defs/include \
-//                bot.cpp -o libtictactoe_bot.so
+//   cargo build -p tictactoe_cpp
+//   cargo run -p codingame_runner -- --game tictactoe \
+//       target/debug/libtictactoe_cpp.dylib \      # .so on Linux, .dll on Windows
+//       target/debug/libtictactoe_cpp.dylib
 //
-//   macOS:   c++ -dynamiclib -O2 -std=c++17 \
-//                -I../tictactoe_defs/include \
-//                bot.cpp -o libtictactoe_bot.dylib
-//
-//   Windows: cl /LD /O2 /std:c++17 ^
-//                /I../tictactoe_defs/include ^
-//                bot.cpp /Fe:tictactoe_bot.dll
-//
-// Then run with the codingame runner (from the workspace root):
-//
-//   codingame_runner --game tictactoe \
-//       tictactoe/tictactoe_cpp/libtictactoe_bot.dylib \
-//       tictactoe/tictactoe_cpp/libtictactoe_bot.dylib
+// The crate's `build.rs` invokes `cc-rs` to compile this file, then
+// force-loads its symbols into the cdylib so the runner can `dlsym` them.
 //
 // The three `extern "C"` exports below are the FFI contract — every bot
 // must define all of them. Their signatures and the required type/constant
