@@ -1,5 +1,7 @@
 pub mod engine;
 
+pub use engine::{BotStatus, TurnResult};
+
 use std::{
     fmt::Display,
     io::{self, BufRead, Write},
@@ -85,14 +87,16 @@ impl WriteTo for () {
 macro_rules! ffi_bot {
     ($defs:ident, $decide:expr) => {
         #[unsafe(no_mangle)]
-        pub extern "C" fn take_turn(input: $defs::TurnInputFFI<'_>) -> $defs::TurnResult {
+        pub extern "C" fn take_turn(
+            input: $defs::TurnInputFFI<'_>,
+        ) -> $crate::TurnResult<$defs::TurnOutput> {
             match ::std::panic::catch_unwind(|| ($decide)(input.as_ref())) {
-                Ok(output) => $defs::TurnResult {
-                    status: $defs::BotStatus::Ok,
+                Ok(output) => $crate::TurnResult {
+                    status: $crate::BotStatus::Ok,
                     output,
                 },
-                Err(_) => $defs::TurnResult {
-                    status: $defs::BotStatus::Panic,
+                Err(_) => $crate::TurnResult {
+                    status: $crate::BotStatus::Panic,
                     output: <$defs::TurnOutput as ::std::default::Default>::default(),
                 },
             }

@@ -1,7 +1,5 @@
-use common::engine::{FfiGame, Game, PlayerError, PlayerId};
-use tron_defs::{
-    BotStatus, Direction, Line, Pos, TurnInput, TurnInputFFI, TurnOutput, TurnResult,
-};
+use common::engine::{BotStatus, FfiGame, Game, PlayerError, PlayerId, TurnResult};
+use tron_defs::{Direction, Line, Pos, TurnInput, TurnInputFFI, TurnOutput};
 
 const WIDTH: i32 = 30;
 const HEIGHT: i32 = 20;
@@ -197,7 +195,7 @@ fn apply_direction(p: Pos, d: Direction) -> Pos {
 // talk to a tron bot. `PluginPlayer<TronGame>` is the concrete type the runner
 // uses; we don't need a tron-specific player struct.
 impl FfiGame for TronGame {
-    type Symbol = for<'a> unsafe extern "C" fn(TurnInputFFI<'a>) -> TurnResult;
+    type Symbol = for<'a> unsafe extern "C" fn(TurnInputFFI<'a>) -> TurnResult<TurnOutput>;
     // Tron has no per-bot init; the symbol below is never loaded because tron
     // bots don't export `initialize`. The type only exists to satisfy the trait.
     type InitSymbol = unsafe extern "C" fn();

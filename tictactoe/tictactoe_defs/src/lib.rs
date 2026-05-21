@@ -6,7 +6,7 @@ use std::{
 };
 
 use anyhow::{Context, bail};
-use common::{ReadFrom, SingleLine, WriteTo};
+use common::{ReadFrom, SingleLine, TurnResult, WriteTo};
 
 pub const BOARD_SIZE: usize = 3;
 pub const BOARD_CELLS: usize = BOARD_SIZE * BOARD_SIZE;
@@ -74,21 +74,6 @@ impl Default for TurnOutput {
     }
 }
 
-#[repr(u8)]
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
-pub enum BotStatus {
-    Ok = 0,
-    Panic = 1,
-}
-
-#[repr(C)]
-#[derive(Debug)]
-pub struct TurnResult {
-    pub status: BotStatus,
-    // Valid iff `status == BotStatus::Ok`; otherwise a placeholder.
-    pub output: TurnOutput,
-}
-
 /// Bumped on any wire-type change. Plugins built against an older
 /// `tictactoe_defs` export an older value; `PluginPlayer::load` reads it
 /// through `abi_version()` and refuses mismatches before any UB-prone call
@@ -99,9 +84,10 @@ pub const ABI_VERSION: u32 = 1;
 // Used only by cbindgen as a reachability root for the header — no symbols
 // are introduced into `_defs.rlib` (so no collision with the real ones the
 // bot's `common::ffi_bot!` macro defines downstream). Keep in sync with the
-// macro.
+// macro. `TurnResult` is generic over the per-game output; cbindgen
+// monomorphises it into a concrete C++ struct.
 unsafe extern "C" {
-    pub fn take_turn(input: TurnInputFFI<'_>) -> TurnResult;
+    pub fn take_turn(input: TurnInputFFI<'_>) -> TurnResult<TurnOutput>;
     pub fn abi_version() -> u32;
 }
 

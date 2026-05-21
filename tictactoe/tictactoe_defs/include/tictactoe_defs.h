@@ -14,6 +14,10 @@ constexpr static const uintptr_t BOARD_CELLS = (BOARD_SIZE * BOARD_SIZE);
 /// lands.
 constexpr static const uint32_t ABI_VERSION = 1;
 
+/// Status byte returned by every bot's `take_turn` FFI call. Same shape for
+/// every game — `Ok` means `TurnResult::output` is valid; `Panic` means the
+/// bot's `catch_unwind` shim intercepted a panic and `output` is placeholder
+/// data that the runner must ignore.
 enum class BotStatus : uint8_t {
   Ok = 0,
   Panic = 1,
@@ -34,9 +38,13 @@ struct TurnOutput {
   Pos pos;
 };
 
+/// FFI return type of every bot's `take_turn`. Generic over the per-game
+/// `O` (the game's `TurnOutput`), monomorphised by cbindgen into a concrete
+/// C++ struct per game.
+template<typename O>
 struct TurnResult {
   BotStatus status;
-  TurnOutput output;
+  O output;
 };
 
 struct TurnInputFFI {
@@ -46,7 +54,7 @@ struct TurnInputFFI {
 
 extern "C" {
 
-extern TurnResult take_turn(TurnInputFFI input);
+extern TurnResult<TurnOutput> take_turn(TurnInputFFI input);
 
 extern uint32_t abi_version();
 

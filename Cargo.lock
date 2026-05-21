@@ -314,7 +314,6 @@ dependencies = [
  "clap",
  "codingame_macros",
  "common",
- "pong_game",
  "serde",
  "tictactoe_game",
  "tron_game",
@@ -1270,45 +1269,6 @@ dependencies = [
  "pin-project-lite",
  "rustix",
  "windows-sys",
-]
-
-[[package]]
-name = "pong_defs"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "cbindgen",
- "common",
- "serde",
-]
-
-[[package]]
-name = "pong_game"
-version = "0.1.0"
-dependencies = [
- "common",
- "pong_defs",
-]
-
-[[package]]
-name = "pong_rs"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "common",
- "pong_defs",
-]
-
-[[package]]
-name = "pong_viz"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "common",
- "macroquad",
- "pong_defs",
- "pong_game",
- "viz",
 ]
 
 [[package]]

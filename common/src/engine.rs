@@ -45,6 +45,27 @@ pub enum MatchError {
     PlayerPlay(PlayerId, #[source] PlayerError),
 }
 
+/// Status byte returned by every bot's `take_turn` FFI call. Same shape for
+/// every game — `Ok` means `TurnResult::output` is valid; `Panic` means the
+/// bot's `catch_unwind` shim intercepted a panic and `output` is placeholder
+/// data that the runner must ignore.
+#[repr(u8)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+pub enum BotStatus {
+    Ok = 0,
+    Panic = 1,
+}
+
+/// FFI return type of every bot's `take_turn`. Generic over the per-game
+/// `O` (the game's `TurnOutput`), monomorphised by cbindgen into a concrete
+/// C++ struct per game.
+#[repr(C)]
+#[derive(Debug)]
+pub struct TurnResult<O> {
+    pub status: BotStatus,
+    pub output: O,
+}
+
 /// A `Game` is the rules + state for a match. Generic over its I/O types so the
 /// same runner can drive any CodinGame-style game.
 pub trait Game: Sized {

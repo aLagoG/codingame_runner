@@ -14,10 +14,6 @@ members = [
     "tictactoe/tictactoe_rs",
     "tictactoe/tictactoe_game",
     "tictactoe/tictactoe_viz",
-    "pong/pong_defs",
-    "pong/pong_game",
-    "pong/pong_rs",
-    "pong/pong_viz",
 ]
 
 [workspace.package]
@@ -40,5 +36,3 @@ macroquad = "0.4"
 egui-macroquad = "0.17"
 serde = { version = "1", features = ["derive"] }
 bincode = "1.3"
-pong_defs = { path = "pong/pong_defs" }
-pong_game = { path = "pong/pong_game" }

@@ -5,7 +5,7 @@ use std::{
     str::FromStr,
 };
 
-use common::{ReadFrom, SingleLine, WriteTo};
+use common::{ReadFrom, SingleLine, TurnResult, WriteTo};
 
 /// Bumped on any wire-type change. Plugins built against an older
 /// `{{name}}_defs` export an older value; `PluginPlayer::load` reads it and
@@ -36,27 +36,13 @@ pub struct TurnInputFFI<'a> {
 #[derive(Debug, Default, PartialEq, Eq, Copy, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TurnOutput {}
 
-#[repr(u8)]
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
-pub enum BotStatus {
-    Ok = 0,
-    Panic = 1,
-}
-
-#[repr(C)]
-#[derive(Debug)]
-pub struct TurnResult {
-    pub status: BotStatus,
-    // Valid iff `status == BotStatus::Ok`; otherwise a placeholder.
-    pub output: TurnOutput,
-}
-
 // cbindgen reachability root — generates the `extern "C" { ... }` block in
 // the C++ header. No symbols introduced into `_defs.rlib`; the real
 // `take_turn` / `abi_version` are emitted by `common::ffi_bot!` in the bot
-// crate. Keep in sync with that macro.
+// crate. Keep in sync with that macro. `TurnResult` is generic over the
+// per-game output; cbindgen monomorphises it into a concrete C++ struct.
 unsafe extern "C" {
-    pub fn take_turn(input: TurnInputFFI<'_>) -> TurnResult;
+    pub fn take_turn(input: TurnInputFFI<'_>) -> TurnResult<TurnOutput>;
     pub fn abi_version() -> u32;
 }
 

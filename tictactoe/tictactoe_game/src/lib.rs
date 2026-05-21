@@ -1,7 +1,5 @@
-use common::engine::{FfiGame, Game, PlayerError, PlayerId};
-use tictactoe_defs::{
-    BOARD_CELLS, BOARD_SIZE, BotStatus, Cell, Pos, TurnInput, TurnInputFFI, TurnOutput, TurnResult,
-};
+use common::engine::{BotStatus, FfiGame, Game, PlayerError, PlayerId, TurnResult};
+use tictactoe_defs::{BOARD_CELLS, BOARD_SIZE, Cell, Pos, TurnInput, TurnInputFFI, TurnOutput};
 
 pub struct TicTacToeGame {
     board: [Cell; BOARD_CELLS],
@@ -146,7 +144,7 @@ fn check_winner(board: &[Cell; BOARD_CELLS]) -> Option<PlayerId> {
 // Plugin glue: tells the generic `PluginPlayer<G>` how to call a tic-tac-toe
 // bot through its `take_turn` FFI symbol. Bots don't export an init symbol.
 impl FfiGame for TicTacToeGame {
-    type Symbol = for<'a> unsafe extern "C" fn(TurnInputFFI<'a>) -> TurnResult;
+    type Symbol = for<'a> unsafe extern "C" fn(TurnInputFFI<'a>) -> TurnResult<TurnOutput>;
     type InitSymbol = unsafe extern "C" fn();
 
     const SYMBOL_NAME: &'static [u8] = b"take_turn";

@@ -9,11 +9,6 @@
 /// and refuses mismatches before any UB-prone call lands.
 constexpr static const uint32_t ABI_VERSION = 1;
 
-enum class BotStatus : uint8_t {
-  Ok = 0,
-  Panic = 1,
-};
-
 enum class Direction : uint8_t {
   Up,
   Down,
@@ -21,13 +16,26 @@ enum class Direction : uint8_t {
   Right,
 };
 
+/// Status byte returned by every bot's `take_turn` FFI call. Same shape for
+/// every game — `Ok` means `TurnResult::output` is valid; `Panic` means the
+/// bot's `catch_unwind` shim intercepted a panic and `output` is placeholder
+/// data that the runner must ignore.
+enum class BotStatus : uint8_t {
+  Ok = 0,
+  Panic = 1,
+};
+
 struct TurnOutput {
   Direction direction;
 };
 
+/// FFI return type of every bot's `take_turn`. Generic over the per-game
+/// `O` (the game's `TurnOutput`), monomorphised by cbindgen into a concrete
+/// C++ struct per game.
+template<typename O>
 struct TurnResult {
   BotStatus status;
-  TurnOutput output;
+  O output;
 };
 
 struct Pos {
@@ -48,7 +56,7 @@ struct TurnInputFFI {
 
 extern "C" {
 
-extern TurnResult take_turn(TurnInputFFI input);
+extern TurnResult<TurnOutput> take_turn(TurnInputFFI input);
 
 extern uint32_t abi_version();
 

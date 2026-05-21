@@ -1,7 +1,5 @@
-use common::engine::{FfiGame, Game, PlayerError, PlayerId};
-use {{name}}_defs::{
-    ABI_VERSION, BotStatus, TurnInput, TurnInputFFI, TurnOutput, TurnResult,
-};
+use common::engine::{BotStatus, FfiGame, Game, PlayerError, PlayerId, TurnResult};
+use {{name}}_defs::{ABI_VERSION, TurnInput, TurnInputFFI, TurnOutput};
 
 pub struct {{name_pascal}}Game {
     active: Vec<PlayerId>,
@@ -51,7 +49,7 @@ impl Game for {{name_pascal}}Game {
 // its `take_turn` FFI symbol. The `*_bot!` macro on the bot side and the
 // `extern "C"` block in `_defs/lib.rs` must agree on this signature.
 impl FfiGame for {{name_pascal}}Game {
-    type Symbol = for<'a> unsafe extern "C" fn(TurnInputFFI<'a>) -> TurnResult;
+    type Symbol = for<'a> unsafe extern "C" fn(TurnInputFFI<'a>) -> TurnResult<TurnOutput>;
     type InitSymbol = unsafe extern "C" fn();
 
     const SYMBOL_NAME: &'static [u8] = b"take_turn";
