@@ -3,11 +3,21 @@ name = "tron_cpp"
 version.workspace = true
 edition.workspace = true
 
-# The bot is a C++ source file; this crate exists only to drive its
-# compilation + linking through cargo. `crate-type = ["cdylib"]` is what
-# produces the `.so`/`.dylib`/`.dll` the runner loads.
+# Two artifacts share this crate:
+#   * `cdylib`  — `bot.cpp` compiled with FFI exports, loaded by the
+#                 runner's `PluginPlayer`.
+#   * `[[bin]]` — `main.cpp` compiled with an `int main()`-style loop
+#                 reading from stdin / writing to stdout, spawned by the
+#                 runner's `SubprocessPlayer`.
+# Both compilations live in `build.rs`; per-target linker args (see
+# `cargo::rustc-link-arg-cdylib` there) keep the FFI export-list flags
+# off the binary.
 [lib]
 crate-type = ["cdylib"]
+
+[[bin]]
+name = "tron_cpp_stdio"
+path = "src/main.rs"
 
 [dependencies]
 # Pure ordering dep — ensures `tron_defs/build.rs` regenerates the C++
