@@ -16,6 +16,7 @@ members = [
     "tictactoe/tictactoe_viz",
     "tictactoe/tictactoe_cpp",
     "tron/tron_cpp",
+    "cpp_flatten",
 ]
 
 [workspace.package]

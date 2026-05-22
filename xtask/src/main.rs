@@ -62,6 +62,18 @@ enum Command {
         /// Name of the feature (snake_case)
         name: String,
     },
+    /// Bundle a game's C++ bot into a single self-contained `.cpp`
+    /// file ready to paste into CodinGame's web editor. Runs the
+    /// `cpp_flatten` binary on the game's `_cpp/main.cpp` entry.
+    Bundle {
+        /// Game name (e.g. `tron`, `tictactoe`). Resolved to the
+        /// `<game>/<game>_cpp/main.cpp` entry point.
+        game: String,
+        /// Override the output path. Defaults to
+        /// `target/codingame/<game>_bot.cpp`.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
 }
 
 /// Variables available in all templates
@@ -87,8 +99,60 @@ fn main() -> Result<()> {
 
     match cli.command {
         Command::NewGame { name } => new_game(&name)?,
+        Command::Bundle { game, output } => bundle(&game, output.as_deref())?,
     }
 
+    Ok(())
+}
+
+/// Run `cpp_flatten` over `<game>/<game>_cpp/main.cpp` and write the
+/// result somewhere paste-ready. We shell out to the binary instead of
+/// linking the library so xtask stays a thin orchestrator — the flatten
+/// logic, its tests, and its CLI all live in one crate.
+fn bundle(game: &str, output_override: Option<&Path>) -> Result<()> {
+    let entry = PathBuf::from(game)
+        .join(format!("{game}_cpp"))
+        .join("main.cpp");
+    anyhow::ensure!(
+        entry.exists(),
+        "no C++ bot at {} — is `{}` a real game?",
+        entry.display(),
+        game,
+    );
+
+    let output: PathBuf = output_override.map(Path::to_path_buf).unwrap_or_else(|| {
+        PathBuf::from("target")
+            .join("codingame")
+            .join(format!("{game}_bot.cpp"))
+    });
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+
+    // `CARGO` is set whenever xtask is invoked through `cargo xtask`.
+    // Fall back to `cargo` on PATH for direct-binary invocations.
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let status = std::process::Command::new(cargo)
+        .args(["run", "--quiet", "-p", "cpp_flatten", "--"])
+        .arg(&entry)
+        .arg("-o")
+        .arg(&output)
+        .status()
+        .context("invoking cpp_flatten binary")?;
+    anyhow::ensure!(status.success(), "cpp_flatten exited with {status}");
+
+    let s = Style::new();
+    println!(
+        "{} Bundled {} → {}",
+        s.ok("✓"),
+        s.name(game),
+        s.path(&output.display().to_string()),
+    );
+    println!(
+        "  Paste the contents of {} into CodinGame's editor.",
+        s.path(&output.display().to_string()),
+    );
     Ok(())
 }
 
