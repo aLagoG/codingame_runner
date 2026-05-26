@@ -1,0 +1,810 @@
+//! Tournament harness. The CLI in `main.rs` calls into here; this
+//! crate has no I/O code beyond JSONL serialization so it stays
+//! easy to unit-test.
+//!
+//! Architecture (matches `docs/tournament.md`):
+//!
+//!   * [`BotSpec`] — a name + path for one entrant.
+//!   * [`ScheduledMatch`] — a generated pairing: ordered bot indices
+//!     + seed.
+//!   * [`Schedule`] — `Vec<ScheduledMatch>` produced by
+//!     [`build_schedule`] from the user's settings.
+//!   * [`MatchRecord`] — the result of running one match, written
+//!     one-per-line to the JSONL output and read back by the report.
+//!   * [`run_match_named`] — runs one match by game name + paths,
+//!     returning a `MatchRecord`.
+//!   * [`report`] — reads a JSONL log, prints summary + win-rate
+//!     matrix.
+//!
+//! The game-name dispatch lives in [`run_match_named`] and grows as
+//! we add games; that's the same dispatch the runner does. Keeping it
+//! here (instead of pushing into `Game`) avoids an `Any`-typed
+//! result trait object.
+
+use std::path::PathBuf;
+use std::time::Duration;
+
+use anyhow::{Context, Result, bail};
+use codingame_runner::make_player;
+use common::engine::{
+    FfiGame, MatchResult, Player, PlayerStats, RunConfig, run_match,
+};
+use serde::{Deserialize, Serialize};
+
+// ============================================================
+//  Inputs
+// ============================================================
+
+/// One entrant in the tournament.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BotSpec {
+    pub name: String,
+    pub path: PathBuf,
+}
+
+/// One generated match: indices into the bot pool in seat order, plus
+/// the seed to play it at. The schedule is a deterministic enumeration
+/// of these.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScheduledMatch {
+    /// Indices into the bot pool. `bot_idx[0]` is player 0, etc.
+    pub bot_idx: Vec<usize>,
+    pub seed: u64,
+}
+
+/// Settings that determine the matches we run. The lib is dumb
+/// about seed selection — the caller (CLI) hands over the final
+/// list it wants to play, including any random/sequential filler.
+#[derive(Debug, Clone)]
+pub struct ScheduleConfig {
+    /// Players per match. Default 2.
+    pub bots_per_match: usize,
+    /// Seeds to play. Each seed is played once per (combination ×
+    /// seat rotation). Empty means an empty schedule — the lib does
+    /// no rounding/defaulting.
+    pub seeds: Vec<u64>,
+    /// If true (default), every combination is played in every cyclic
+    /// seat rotation (N rotations for N bots). If false, only the
+    /// order produced by the combination generator is used.
+    pub rotate_seats: bool,
+}
+
+impl Default for ScheduleConfig {
+    fn default() -> Self {
+        Self {
+            bots_per_match: 2,
+            seeds: Vec::new(),
+            rotate_seats: true,
+        }
+    }
+}
+
+// ============================================================
+//  Schedule generation
+// ============================================================
+
+/// Generate every match the tournament should run.
+pub fn build_schedule(num_bots: usize, cfg: &ScheduleConfig) -> Result<Vec<ScheduledMatch>> {
+    if cfg.bots_per_match < 2 {
+        bail!("--bots-per-match must be at least 2 (got {})", cfg.bots_per_match);
+    }
+    if cfg.bots_per_match > num_bots {
+        bail!(
+            "--bots-per-match {} exceeds bot pool size {}",
+            cfg.bots_per_match,
+            num_bots,
+        );
+    }
+
+    let combos = combinations(num_bots, cfg.bots_per_match);
+    let mut out = Vec::new();
+    for combo in &combos {
+        let assignments: Vec<Vec<usize>> = if cfg.rotate_seats {
+            cyclic_rotations(combo)
+        } else {
+            vec![combo.clone()]
+        };
+        for assignment in &assignments {
+            for &seed in &cfg.seeds {
+                out.push(ScheduledMatch {
+                    bot_idx: assignment.clone(),
+                    seed,
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// All `k`-element combinations of `0..n`, in lexicographic order.
+fn combinations(n: usize, k: usize) -> Vec<Vec<usize>> {
+    fn rec(n: usize, k: usize, start: usize, cur: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {
+        if cur.len() == k {
+            out.push(cur.clone());
+            return;
+        }
+        for i in start..n {
+            cur.push(i);
+            rec(n, k, i + 1, cur, out);
+            cur.pop();
+        }
+    }
+    let mut out = Vec::new();
+    let mut cur = Vec::with_capacity(k);
+    rec(n, k, 0, &mut cur, &mut out);
+    out
+}
+
+/// `[a, b, c, d]` → `[[a,b,c,d], [b,c,d,a], [c,d,a,b], [d,a,b,c]]`.
+fn cyclic_rotations(items: &[usize]) -> Vec<Vec<usize>> {
+    (0..items.len())
+        .map(|i| {
+            let mut v: Vec<usize> = items[i..].to_vec();
+            v.extend_from_slice(&items[..i]);
+            v
+        })
+        .collect()
+}
+
+// ============================================================
+//  Records (JSONL line format)
+// ============================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MatchRecord {
+    pub game: String,
+    /// Bots in seat order. `bots[0]` was player 0, etc.
+    pub bots: Vec<String>,
+    pub seed: u64,
+    /// Index into `bots`, or `None` for a draw.
+    pub winner: Option<usize>,
+    /// Final rank of each bot, 1-indexed, in seat order. Tied players
+    /// share a rank (competition ranking). Driven by `Game::placement`
+    /// — for tron that means survivors share rank 1 and dead players
+    /// are ordered by death tick. Optional for backward compatibility
+    /// with logs written before placement existed; missing placement
+    /// is reconstructed from `winner` at read time.
+    #[serde(default)]
+    pub placement: Vec<u32>,
+    /// Per-bot scores in seat order, from `Game::scores`. `None` for
+    /// games where score isn't meaningful (tic-tac-toe). `Some` for
+    /// games that track a continuous metric (tron's trail length,
+    /// etc.). The report aggregates these as a tiebreaker alongside
+    /// placement.
+    #[serde(default)]
+    pub scores: Option<Vec<f64>>,
+    pub ticks: usize,
+    pub stats: Vec<BotMatchStats>,
+}
+
+impl MatchRecord {
+    /// Returns `placement` if set, or a best-effort reconstruction
+    /// from `winner` (winner = 1, others = 2; draw = all 1). Older
+    /// JSONL files written before the placement field exists get a
+    /// reasonable degradation.
+    pub fn placement_or_derive(&self) -> Vec<u32> {
+        if !self.placement.is_empty() {
+            return self.placement.clone();
+        }
+        match self.winner {
+            Some(w) => (0..self.bots.len())
+                .map(|i| if i == w { 1 } else { 2 })
+                .collect(),
+            None => vec![1; self.bots.len()],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BotMatchStats {
+    pub turns: usize,
+    pub avg_ms: Option<f64>,
+    pub max_ms: Option<f64>,
+    pub p50_ms: Option<f64>,
+    pub p95_ms: Option<f64>,
+    pub p99_ms: Option<f64>,
+}
+
+impl BotMatchStats {
+    fn from(stats: &PlayerStats) -> Self {
+        let p = |q: f64| percentile_ms(&stats.turn_times, q);
+        Self {
+            turns: stats.turn_times.len(),
+            avg_ms: stats.average().map(d_ms),
+            max_ms: stats.max().map(d_ms),
+            p50_ms: p(0.50),
+            p95_ms: p(0.95),
+            p99_ms: p(0.99),
+        }
+    }
+}
+
+fn d_ms(d: Duration) -> f64 {
+    d.as_secs_f64() * 1000.0
+}
+
+fn percentile_ms(times: &[Duration], q: f64) -> Option<f64> {
+    if times.is_empty() {
+        return None;
+    }
+    let mut sorted: Vec<f64> = times.iter().map(|d| d_ms(*d)).collect();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let idx = ((sorted.len() as f64 - 1.0) * q).round() as usize;
+    Some(sorted[idx.min(sorted.len() - 1)])
+}
+
+// ============================================================
+//  Match execution
+// ============================================================
+
+/// Run one match. `game` selects the dispatch arm; `bots` lists the
+/// entrants in seat order.
+pub fn run_match_named(game: &str, bots: &[BotSpec], seed: u64) -> Result<MatchRecord> {
+    match game {
+        "tictactoe" => run_match_typed::<tictactoe_game::TicTacToeGame>(game, bots, seed),
+        "tron" => run_match_typed::<tron_game::TronGame>(game, bots, seed),
+        other => bail!("unknown game: {other}"),
+    }
+}
+
+fn run_match_typed<G: FfiGame + 'static>(
+    game_name: &str,
+    bots: &[BotSpec],
+    seed: u64,
+) -> Result<MatchRecord> {
+    let num_players = bots.len() as u32;
+    let mut players: Vec<Box<dyn Player<G>>> = Vec::with_capacity(bots.len());
+    for bot in bots {
+        players.push(
+            make_player::<G>(&bot.path)
+                .with_context(|| format!("building player for {}", bot.name))?,
+        );
+    }
+
+    let MatchResult { outcome, stats, replay } =
+        run_match::<G>(num_players, seed, players, RunConfig::default())
+            .with_context(|| format!("running match for game {game_name}"))?;
+
+    let winner = G::winner(&outcome).map(|p| p as usize);
+    let placement = G::placement(&outcome);
+    let scores = G::scores(&outcome);
+
+    Ok(MatchRecord {
+        game: game_name.to_string(),
+        bots: bots.iter().map(|b| b.name.clone()).collect(),
+        seed,
+        winner,
+        placement,
+        scores,
+        ticks: replay.outputs.len(),
+        stats: stats.iter().map(BotMatchStats::from).collect(),
+    })
+}
+
+// ============================================================
+//  Report
+// ============================================================
+
+#[derive(Debug, Clone, Default)]
+pub struct BotSummary {
+    pub games: u32,
+    pub wins: u32,
+    pub losses: u32,
+    pub draws: u32,
+    /// `placement_counts[k]` = number of matches where this bot
+    /// finished at rank `k + 1`. Length grows to fit the largest
+    /// rank observed across the log; missing tail entries are
+    /// implicit zeros.
+    pub placement_counts: Vec<u32>,
+    /// Mean placement across all matches (lower is better). Computed
+    /// as `sum_of_ranks / games`. `0.0` if no games played.
+    pub avg_placement: f64,
+    /// Aggregated score stats — `None` if this bot's game never
+    /// emitted scores. The interpretation of "score" is per-game
+    /// (trail length for tron, points for a scored game, ...);
+    /// the tournament treats them as opaque floats.
+    pub score_summary: Option<ScoreSummary>,
+    /// Aggregated decision-time summaries. We don't carry raw turn
+    /// times through the JSONL, so these are "stats of per-match
+    /// stats" — useful for ranking but not exact distribution
+    /// percentiles. If we need true global p95 across all turns,
+    /// log raw turn times into the record and re-derive at report
+    /// time.
+    pub time_summary: TimeSummary,
+    pub elo: f64,
+}
+
+impl BotSummary {
+    fn record_placement(&mut self, rank: u32) {
+        let idx = (rank - 1) as usize;
+        if self.placement_counts.len() <= idx {
+            self.placement_counts.resize(idx + 1, 0);
+        }
+        self.placement_counts[idx] += 1;
+        // Incremental mean: `avg += (x - avg) / n`.
+        let n = self.games as f64;
+        self.avg_placement += (rank as f64 - self.avg_placement) / n;
+    }
+
+    fn record_score(&mut self, score: f64) {
+        self.score_summary
+            .get_or_insert_with(ScoreSummary::default)
+            .add(score);
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ScoreSummary {
+    pub avg: f64,
+    pub min: f64,
+    pub max: f64,
+    samples: u32,
+}
+
+impl ScoreSummary {
+    fn add(&mut self, x: f64) {
+        self.samples += 1;
+        let n = self.samples as f64;
+        self.avg += (x - self.avg) / n;
+        if self.samples == 1 {
+            self.min = x;
+            self.max = x;
+        } else {
+            if x < self.min { self.min = x; }
+            if x > self.max { self.max = x; }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TimeSummary {
+    /// Average of per-match `avg_ms`.
+    pub avg_of_avg_ms: f64,
+    /// Average of per-match `p95_ms`.
+    pub avg_of_p95_ms: f64,
+    /// Worst per-match `max_ms` we ever observed.
+    pub worst_max_ms: f64,
+    /// Number of matches contributing to the averages (== games).
+    samples: u32,
+}
+
+impl TimeSummary {
+    fn add(&mut self, m: &BotMatchStats) {
+        self.samples += 1;
+        let n = self.samples as f64;
+        let mix = |old: f64, new_sample: Option<f64>| -> f64 {
+            match new_sample {
+                Some(x) => old + (x - old) / n,
+                None => old,
+            }
+        };
+        self.avg_of_avg_ms = mix(self.avg_of_avg_ms, m.avg_ms);
+        self.avg_of_p95_ms = mix(self.avg_of_p95_ms, m.p95_ms);
+        if let Some(x) = m.max_ms {
+            if x > self.worst_max_ms {
+                self.worst_max_ms = x;
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Report {
+    /// Bot name → summary.
+    pub per_bot: std::collections::BTreeMap<String, BotSummary>,
+    /// `pair_wins[(a, b)]` = matches in which `a` beat `b` directly
+    /// (decomposing N-player matches as "winner beats each loser").
+    pub pair_wins: std::collections::BTreeMap<(String, String), u32>,
+    /// `pair_games[(a, b)]` = matches in which `a` and `b` appeared
+    /// together (excluding draws from `pair_wins`).
+    pub pair_games: std::collections::BTreeMap<(String, String), u32>,
+}
+
+/// Build a [`Report`] from a sequence of [`MatchRecord`]s. Pure: no
+/// I/O; the CLI is responsible for reading the JSONL stream.
+///
+/// Elo update model:
+///   * For every ordered pair of bots (a, b) in a match, compute
+///     their relative rank: a "beats" b if `placement[a] < placement[b]`,
+///     loses if greater, draws if equal.
+///   * Each pair contributes one standard Elo update — every bot's
+///     rating ends up shaped by where it placed relative to *every*
+///     other bot, not just whether anyone won.
+///   * This generalizes the original "winner beats each loser"
+///     scheme — at 2 players it reduces to it exactly; at 4 players
+///     it correctly rewards "consistently 2nd" over "consistently
+///     4th" even when both have zero wins.
+pub fn build_report(records: &[MatchRecord]) -> Report {
+    use std::collections::BTreeMap;
+
+    let mut per_bot: BTreeMap<String, BotSummary> = BTreeMap::new();
+    let mut pair_wins: BTreeMap<(String, String), u32> = BTreeMap::new();
+    let mut pair_games: BTreeMap<(String, String), u32> = BTreeMap::new();
+    let init_elo = 1500.0;
+    let k_factor = 24.0;
+
+    for rec in records {
+        let placement = rec.placement_or_derive();
+
+        // Track participation. `games` is incremented *before*
+        // `record_placement` because the incremental-mean formula
+        // expects `n` to already include the new sample.
+        for name in &rec.bots {
+            let s = per_bot.entry(name.clone()).or_default();
+            s.games += 1;
+            if s.elo == 0.0 {
+                s.elo = init_elo;
+            }
+        }
+        for (i, name_i) in rec.bots.iter().enumerate() {
+            let s = per_bot.get_mut(name_i).unwrap();
+            s.time_summary.add(&rec.stats[i]);
+            s.record_placement(placement[i]);
+            if let Some(scores) = &rec.scores
+                && let Some(score) = scores.get(i)
+            {
+                s.record_score(*score);
+            }
+        }
+
+        // Wins / losses / draws are projected from rank: rank 1 wins
+        // (or draws if shared); anyone not at rank 1 loses (or
+        // shares the draw if everyone is at rank 1).
+        let firsts: Vec<usize> = (0..rec.bots.len())
+            .filter(|&i| placement[i] == 1)
+            .collect();
+        if firsts.len() == rec.bots.len() {
+            for name in &rec.bots {
+                per_bot.get_mut(name).unwrap().draws += 1;
+            }
+        } else {
+            for i in 0..rec.bots.len() {
+                let s = per_bot.get_mut(&rec.bots[i]).unwrap();
+                if placement[i] == 1 {
+                    s.wins += 1;
+                } else {
+                    s.losses += 1;
+                }
+            }
+        }
+
+        // pair_games counts every ordered (a, b) where both played
+        // together. Done unconditionally so the matrix denominator
+        // is "matches in which a met b".
+        for a in &rec.bots {
+            for b in &rec.bots {
+                if a != b {
+                    *pair_games.entry((a.clone(), b.clone())).or_insert(0) += 1;
+                }
+            }
+        }
+
+        // Placement-pairwise pair_wins + Elo. For every ordered pair
+        // (i, j) with i ≠ j: better rank → +1 to pair_wins[(i, j)],
+        // equal rank → no pair_wins update but a draw Elo move,
+        // worse rank → handled by the symmetric (j, i) iteration.
+        for i in 0..rec.bots.len() {
+            for j in (i + 1)..rec.bots.len() {
+                let (name_i, name_j) = (&rec.bots[i], &rec.bots[j]);
+                let (rank_i, rank_j) = (placement[i], placement[j]);
+
+                let (score_i, score_j) = match rank_i.cmp(&rank_j) {
+                    std::cmp::Ordering::Less => {
+                        *pair_wins
+                            .entry((name_i.clone(), name_j.clone()))
+                            .or_insert(0) += 1;
+                        (1.0, 0.0)
+                    }
+                    std::cmp::Ordering::Greater => {
+                        *pair_wins
+                            .entry((name_j.clone(), name_i.clone()))
+                            .or_insert(0) += 1;
+                        (0.0, 1.0)
+                    }
+                    std::cmp::Ordering::Equal => (0.5, 0.5),
+                };
+
+                let elo_i = per_bot[name_i].elo;
+                let elo_j = per_bot[name_j].elo;
+                let (new_i, new_j) = elo_compute_score(elo_i, elo_j, score_i, score_j, k_factor);
+                per_bot.get_mut(name_i).unwrap().elo = new_i;
+                per_bot.get_mut(name_j).unwrap().elo = new_j;
+            }
+        }
+    }
+
+    Report {
+        per_bot,
+        pair_wins,
+        pair_games,
+    }
+}
+
+/// Generalised Elo update — scores can be anything in `[0.0, 1.0]`
+/// summing to 1.0 (typical: 1/0 for a decisive outcome, 0.5/0.5 for
+/// a draw). Returns `(new_a, new_b)`.
+fn elo_compute_score(a: f64, b: f64, score_a: f64, score_b: f64, k: f64) -> (f64, f64) {
+    let ea = 1.0 / (1.0 + 10f64.powf((b - a) / 400.0));
+    let eb = 1.0 - ea;
+    (a + k * (score_a - ea), b + k * (score_b - eb))
+}
+
+// ============================================================
+//  Tests
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn combinations_basic() {
+        assert_eq!(
+            combinations(4, 2),
+            vec![
+                vec![0, 1],
+                vec![0, 2],
+                vec![0, 3],
+                vec![1, 2],
+                vec![1, 3],
+                vec![2, 3],
+            ],
+        );
+        assert_eq!(combinations(3, 3), vec![vec![0, 1, 2]]);
+        assert_eq!(combinations(3, 1), vec![vec![0], vec![1], vec![2]]);
+    }
+
+    #[test]
+    fn cyclic_rotations_basic() {
+        assert_eq!(
+            cyclic_rotations(&[0, 1, 2]),
+            vec![vec![0, 1, 2], vec![1, 2, 0], vec![2, 0, 1]],
+        );
+    }
+
+    #[test]
+    fn schedule_pairs_with_rotation_and_seeds() {
+        let cfg = ScheduleConfig {
+            bots_per_match: 2,
+            seeds: vec![10, 20],
+            rotate_seats: true,
+        };
+        let sched = build_schedule(3, &cfg).unwrap();
+        // 3 combos × 2 rotations × 2 seeds = 12
+        assert_eq!(sched.len(), 12);
+        // First combo (0, 1): both seat orders, both seeds.
+        assert!(sched.contains(&ScheduledMatch { bot_idx: vec![0, 1], seed: 10 }));
+        assert!(sched.contains(&ScheduledMatch { bot_idx: vec![1, 0], seed: 10 }));
+    }
+
+    #[test]
+    fn schedule_three_player_full_pool() {
+        let cfg = ScheduleConfig {
+            bots_per_match: 3,
+            seeds: vec![0],
+            rotate_seats: true,
+        };
+        let sched = build_schedule(3, &cfg).unwrap();
+        // 1 combo × 3 rotations × 1 seed = 3
+        assert_eq!(sched.len(), 3);
+    }
+
+    #[test]
+    fn schedule_rejects_oversize_match() {
+        let cfg = ScheduleConfig {
+            bots_per_match: 5,
+            ..Default::default()
+        };
+        assert!(build_schedule(3, &cfg).is_err());
+    }
+
+    #[test]
+    fn schedule_empty_seeds_is_empty() {
+        // Lib doesn't default-fill; the CLI is responsible for
+        // providing the final seed list.
+        let cfg = ScheduleConfig {
+            bots_per_match: 2,
+            seeds: vec![],
+            rotate_seats: false,
+        };
+        assert!(build_schedule(2, &cfg).unwrap().is_empty());
+    }
+
+    fn rec(bots: &[&str], winner: Option<usize>) -> MatchRecord {
+        // 2-player rec helper; placement derived from winner.
+        let placement = match winner {
+            Some(w) => (0..bots.len())
+                .map(|i| if i == w { 1 } else { 2 } as u32)
+                .collect(),
+            None => vec![1u32; bots.len()],
+        };
+        MatchRecord {
+            game: "tictactoe".into(),
+            bots: bots.iter().map(|s| s.to_string()).collect(),
+            seed: 0,
+            winner,
+            placement,
+            scores: None,
+            ticks: 5,
+            stats: (0..bots.len())
+                .map(|_| BotMatchStats {
+                    turns: 1,
+                    avg_ms: Some(1.0),
+                    max_ms: Some(1.0),
+                    p50_ms: Some(1.0),
+                    p95_ms: Some(1.0),
+                    p99_ms: Some(1.0),
+                })
+                .collect(),
+        }
+    }
+
+    fn rec_placement(bots: &[&str], placement: Vec<u32>) -> MatchRecord {
+        rec_placement_scores(bots, placement, None)
+    }
+
+    fn rec_placement_scores(
+        bots: &[&str],
+        placement: Vec<u32>,
+        scores: Option<Vec<f64>>,
+    ) -> MatchRecord {
+        let firsts: Vec<usize> = (0..bots.len()).filter(|&i| placement[i] == 1).collect();
+        let winner = if firsts.len() == 1 { Some(firsts[0]) } else { None };
+        MatchRecord {
+            game: "tron".into(),
+            bots: bots.iter().map(|s| s.to_string()).collect(),
+            seed: 0,
+            winner,
+            placement,
+            scores,
+            ticks: 5,
+            stats: (0..bots.len())
+                .map(|_| BotMatchStats {
+                    turns: 1,
+                    avg_ms: Some(1.0),
+                    max_ms: Some(1.0),
+                    p50_ms: Some(1.0),
+                    p95_ms: Some(1.0),
+                    p99_ms: Some(1.0),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn report_counts_wins_losses_draws() {
+        let records = vec![
+            rec(&["a", "b"], Some(0)), // a beats b
+            rec(&["a", "b"], Some(1)), // b beats a
+            rec(&["a", "b"], None),    // draw
+            rec(&["a", "b"], Some(0)), // a beats b
+        ];
+        let report = build_report(&records);
+        let a = &report.per_bot["a"];
+        let b = &report.per_bot["b"];
+        assert_eq!((a.games, a.wins, a.losses, a.draws), (4, 2, 1, 1));
+        assert_eq!((b.games, b.wins, b.losses, b.draws), (4, 1, 2, 1));
+        // 'a' has higher Elo because they won the net.
+        assert!(a.elo > b.elo);
+    }
+
+    #[test]
+    fn report_decomposes_multiplayer_match_into_pairs() {
+        let records = vec![rec(&["a", "b", "c"], Some(0))]; // a wins
+        let report = build_report(&records);
+        assert_eq!(report.per_bot["a"].wins, 1);
+        assert_eq!(report.per_bot["b"].losses, 1);
+        assert_eq!(report.per_bot["c"].losses, 1);
+        assert_eq!(report.pair_wins[&("a".into(), "b".into())], 1);
+        assert_eq!(report.pair_wins[&("a".into(), "c".into())], 1);
+    }
+
+    #[test]
+    fn report_pair_games_counts_all_pairs_regardless_of_outcome() {
+        // Three-player match. a wins; the matrix needs pair_games to
+        // include (b, c) and (c, b) too — those bots *did* meet.
+        let records = vec![rec(&["a", "b", "c"], Some(0))];
+        let report = build_report(&records);
+        // Every ordered pair appears exactly once.
+        for (a, b) in [("a", "b"), ("a", "c"), ("b", "a"), ("b", "c"), ("c", "a"), ("c", "b")] {
+            assert_eq!(
+                report.pair_games[&(a.into(), b.into())], 1,
+                "pair_games[({a}, {b})] should be 1",
+            );
+        }
+    }
+
+    #[test]
+    fn report_pair_games_counts_draws() {
+        let records = vec![rec(&["a", "b"], None)];
+        let report = build_report(&records);
+        assert_eq!(report.pair_games[&("a".into(), "b".into())], 1);
+        assert_eq!(report.pair_games[&("b".into(), "a".into())], 1);
+        // No wins.
+        assert_eq!(report.pair_wins.get(&("a".into(), "b".into())), None);
+    }
+
+    #[test]
+    fn placement_pairwise_elo_separates_2nd_from_4th() {
+        // The motivating case: a is always 2nd, b is always 4th.
+        // Both lose every match (rank > 1), but a should out-rate b.
+        let records = vec![
+            rec_placement(&["w", "a", "x", "b"], vec![1, 2, 3, 4]),
+            rec_placement(&["w", "a", "x", "b"], vec![1, 2, 3, 4]),
+            rec_placement(&["w", "a", "x", "b"], vec![1, 2, 3, 4]),
+        ];
+        let report = build_report(&records);
+        let a = &report.per_bot["a"];
+        let b = &report.per_bot["b"];
+        // Both have 0 wins, 3 losses — binary win-rate is a tie.
+        assert_eq!((a.wins, a.losses, b.wins, b.losses), (0, 3, 0, 3));
+        // But avg placement and Elo separate them.
+        assert!(a.avg_placement < b.avg_placement);
+        assert!(a.elo > b.elo);
+        // a placed 2nd 3 times.
+        assert_eq!(a.placement_counts[1], 3);
+        // b placed 4th 3 times.
+        assert_eq!(b.placement_counts[3], 3);
+    }
+
+    #[test]
+    fn placement_pairwise_elo_two_player_equals_winner_loser_form() {
+        // Sanity: with 2 players the placement-pairwise update has
+        // to coincide with the old winner/loser update — this is
+        // the invariant that keeps existing 2-player results stable.
+        let records = vec![
+            rec(&["a", "b"], Some(0)),
+            rec(&["a", "b"], Some(0)),
+            rec(&["a", "b"], Some(1)),
+        ];
+        let report = build_report(&records);
+        // After 2 wins for a, 1 win for b: a's Elo > 1500, b's < 1500.
+        assert!(report.per_bot["a"].elo > 1500.0);
+        assert!(report.per_bot["b"].elo < 1500.0);
+    }
+
+    #[test]
+    fn scores_aggregate_separately_from_placement() {
+        // Two matches: a and b tied for 1st in both. Same placement,
+        // different score profile. Aggregation should reflect that.
+        let records = vec![
+            rec_placement_scores(&["a", "b"], vec![1, 1], Some(vec![100.0, 50.0])),
+            rec_placement_scores(&["a", "b"], vec![1, 1], Some(vec![80.0, 60.0])),
+        ];
+        let report = build_report(&records);
+        let a = &report.per_bot["a"];
+        let b = &report.per_bot["b"];
+        // Same placement.
+        assert_eq!(a.avg_placement, b.avg_placement);
+        // Different scores.
+        let a_s = a.score_summary.as_ref().unwrap();
+        let b_s = b.score_summary.as_ref().unwrap();
+        assert!((a_s.avg - 90.0).abs() < 1e-9);
+        assert!((b_s.avg - 55.0).abs() < 1e-9);
+        assert_eq!((a_s.min, a_s.max), (80.0, 100.0));
+        assert_eq!((b_s.min, b_s.max), (50.0, 60.0));
+    }
+
+    #[test]
+    fn missing_scores_leave_summary_none() {
+        // tic-tac-toe records have scores: None — bot's score_summary
+        // stays None throughout.
+        let records = vec![rec(&["a", "b"], Some(0)), rec(&["a", "b"], None)];
+        let report = build_report(&records);
+        assert!(report.per_bot["a"].score_summary.is_none());
+        assert!(report.per_bot["b"].score_summary.is_none());
+    }
+
+    #[test]
+    fn placement_handles_tied_survivors() {
+        // 4-player mutual death (everyone rank 1). Should count as
+        // a draw for everyone (no wins/losses), and no Elo movement.
+        let records = vec![rec_placement(&["a", "b", "c", "d"], vec![1, 1, 1, 1])];
+        let report = build_report(&records);
+        for name in ["a", "b", "c", "d"] {
+            let s = &report.per_bot[name];
+            assert_eq!((s.wins, s.losses, s.draws), (0, 0, 1));
+            assert!((s.elo - 1500.0).abs() < 1e-9, "{name} elo drifted");
+        }
+    }
+}

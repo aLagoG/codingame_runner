@@ -267,6 +267,53 @@ pub trait Game: Sized {
     /// Players who still need to submit a move this tick.
     /// Simultaneous games return many; sequential games return one.
     fn active_players(&self) -> &[PlayerId];
+
+    /// Final rank of each player in a finished match, 1-indexed.
+    /// `placement[i]` is player `i`'s rank — 1 is the winner, larger
+    /// numbers are worse. Tied players share a rank using
+    /// *competition ranking* (1, 1, 3 — not 1, 1, 2), so the rank
+    /// gaps make the placement-pairwise Elo decomposition come out
+    /// right. Returned vector has length `num_players` (one entry
+    /// per player, in player-id order).
+    ///
+    /// For binary win/loss games (e.g. tic-tac-toe), the natural
+    /// mapping is winner = rank 1, loser = rank 2, draw = all
+    /// rank 1. For tron, the implementation tracks death tick and
+    /// ranks survivors first, then dead players in reverse death
+    /// order (later death = better rank, ties allowed).
+    fn placement(outcome: &Self::Outcome) -> Vec<u32>;
+
+    /// The unique winner of a finished match, or `None` if no single
+    /// player came first (draw, tied survivors, all-mutual-death).
+    /// Default impl derives from [`placement`] — games rarely need
+    /// to override.
+    fn winner(outcome: &Self::Outcome) -> Option<PlayerId> {
+        let p = Self::placement(outcome);
+        let mut firsts = p
+            .iter()
+            .enumerate()
+            .filter(|&(_, &r)| r == 1)
+            .map(|(i, _)| i as PlayerId);
+        let first = firsts.next()?;
+        if firsts.next().is_some() { None } else { Some(first) }
+    }
+
+    /// Per-player numeric scores from a finished match, in player-id
+    /// order. `None` if score isn't a meaningful concept for this
+    /// game (tic-tac-toe is binary — winner / not). `Some` for
+    /// games that track a continuous metric: trail length in tron,
+    /// points in a scored game, etc.
+    ///
+    /// Scores are *informational*; placement is the authoritative
+    /// ranking. They exist so tournaments can surface tiebreakers
+    /// like "both bots tied for 1st, but A averaged 80 cells claimed
+    /// vs B's 40" — useful for tracking improvement across
+    /// otherwise-identical outcomes.
+    ///
+    /// Default returns `None` so games opt in.
+    fn scores(_outcome: &Self::Outcome) -> Option<Vec<f64>> {
+        None
+    }
 }
 
 /// Anything that can act as a player for game `G`. Implemented by the FFI

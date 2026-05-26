@@ -3,6 +3,15 @@ name = "codingame_runner"
 version.workspace = true
 edition.workspace = true
 
+# `lib` exposes `make_player` etc. to the `tournament` crate; `bin`
+# (main.rs) is the user-facing CLI wrapper.
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "codingame_runner"
+path = "src/main.rs"
+
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true

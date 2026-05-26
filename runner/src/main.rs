@@ -1,11 +1,9 @@
-use std::{fmt::Debug, path::PathBuf, process::Command};
+use std::{fmt::Debug, path::PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
-use common::engine::{
-    FfiGame, MatchResult, Player, PluginPlayer, RunConfig, SubprocessPlayer, run_match,
-    write_replay,
-};
+use codingame_runner::make_player;
+use common::engine::{FfiGame, MatchResult, Player, RunConfig, run_match, write_replay};
 use tictactoe_game::TicTacToeGame;
 use tron_game::TronGame;
 
@@ -51,18 +49,7 @@ where
 
     let mut players: Vec<Box<dyn Player<G>>> = Vec::with_capacity(paths.len());
     for path in &paths {
-        let player: Box<dyn Player<G>> = if is_plugin(path) {
-            Box::new(
-                unsafe { PluginPlayer::<G>::load(path) }
-                    .with_context(|| format!("loading plugin {}", path.display()))?,
-            )
-        } else {
-            Box::new(
-                SubprocessPlayer::<G>::spawn(&mut Command::new(path))
-                    .with_context(|| format!("spawning subprocess {}", path.display()))?,
-            )
-        };
-        players.push(player);
+        players.push(make_player::<G>(path)?);
     }
 
     let MatchResult {
@@ -92,11 +79,4 @@ where
     }
 
     Ok(())
-}
-
-fn is_plugin(path: &std::path::Path) -> bool {
-    matches!(
-        path.extension().and_then(|e| e.to_str()),
-        Some("so") | Some("dylib") | Some("dll")
-    )
 }

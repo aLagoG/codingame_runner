@@ -103,6 +103,19 @@ impl Game for TicTacToeGame {
     fn active_players(&self) -> &[PlayerId] {
         &self.active
     }
+
+    fn placement(outcome: &TicTacToeOutcome) -> Vec<u32> {
+        // 2-player game: winner = rank 1, loser = rank 2; draw =
+        // both rank 1.
+        match outcome.winner {
+            Some(w) => {
+                let mut p = vec![2u32; 2];
+                p[w as usize] = 1;
+                p
+            }
+            None => vec![1, 1],
+        }
+    }
 }
 
 impl TicTacToeGame {

@@ -35,11 +35,27 @@ pub struct TronGame {
     alive: Vec<bool>,
     active: Vec<PlayerId>,
     last_moves: Vec<Option<Direction>>,
+    /// Tick at which each player died, or None if still alive when
+    /// the match ended. Populated by `step()` as `alive[i]` flips
+    /// false. Drives placement: later death = better rank.
+    death_tick: Vec<Option<u32>>,
+    /// Number of completed steps so far. Used to stamp `death_tick`.
+    tick: u32,
 }
 
 #[derive(Debug, Clone)]
 pub struct TronOutcome {
     pub winner: Option<PlayerId>,
+    /// Final ranking, 1-indexed, in player-id order. Survivors share
+    /// rank 1; dead players are ranked by death tick descending
+    /// (later death = better rank). Mutual same-tick deaths produce
+    /// tied ranks via competition ranking (e.g. `[1, 1, 3, 3]`).
+    pub placement: Vec<u32>,
+    /// Trail length per player at game end, in player-id order.
+    /// A natural continuous metric for tron — survives the rank
+    /// tiebreaker case "two bots both made it to rank 1 but one
+    /// carved a 200-cell snake and the other carved 50".
+    pub trail_lengths: Vec<u32>,
 }
 
 impl TronGame {
@@ -82,6 +98,7 @@ impl Game for TronGame {
         let alive = vec![true; n];
         let active: Vec<PlayerId> = (0..num_players).collect();
         let last_moves = vec![None; n];
+        let death_tick = vec![None; n];
         TronGame {
             num_players,
             heads,
@@ -90,6 +107,8 @@ impl Game for TronGame {
             alive,
             active,
             last_moves,
+            death_tick,
+            tick: 0,
         }
     }
 
@@ -165,12 +184,28 @@ impl Game for TronGame {
             .filter(|&p| self.alive[p as usize])
             .collect();
 
-        // 5. Game ends when ≤ 1 alive.
+        // 5. Stamp newly-dead players with this tick's number, so
+        //    placement can rank them by death order at game-end.
+        for i in 0..self.num_players as usize {
+            if !self.alive[i] && self.death_tick[i].is_none() {
+                self.death_tick[i] = Some(self.tick);
+            }
+        }
+        self.tick += 1;
+
+        // 6. Game ends when ≤ 1 alive.
+        let make_outcome = |winner| TronOutcome {
+            winner,
+            placement: compute_placement(&self.alive, &self.death_tick),
+            trail_lengths: self
+                .trails
+                .iter()
+                .map(|t| t.len() as u32)
+                .collect(),
+        };
         match self.active.len() {
-            0 => Some(TronOutcome { winner: None }),
-            1 => Some(TronOutcome {
-                winner: Some(self.active[0]),
-            }),
+            0 => Some(make_outcome(None)),
+            1 => Some(make_outcome(Some(self.active[0]))),
             _ => None,
         }
     }
@@ -178,6 +213,46 @@ impl Game for TronGame {
     fn active_players(&self) -> &[PlayerId] {
         &self.active
     }
+
+    fn placement(outcome: &TronOutcome) -> Vec<u32> {
+        outcome.placement.clone()
+    }
+
+    fn scores(outcome: &TronOutcome) -> Option<Vec<f64>> {
+        Some(outcome.trail_lengths.iter().map(|&n| n as f64).collect())
+    }
+}
+
+/// Competition ranking from alive flags + death ticks. Survivors get
+/// rank 1; dead players are ranked by death tick descending (later
+/// death = better rank); ties share a rank with gaps (1, 1, 3 — not
+/// 1, 1, 2). For player `i`, rank = 1 + (number of strictly-better
+/// other players).
+fn compute_placement(alive: &[bool], death_tick: &[Option<u32>]) -> Vec<u32> {
+    let n = alive.len();
+    let mut placement = vec![0u32; n];
+    for i in 0..n {
+        let mut strictly_better = 0u32;
+        for j in 0..n {
+            if i == j {
+                continue;
+            }
+            let j_better = match (alive[i], alive[j]) {
+                (true, true) => false,            // both alive → tie
+                (true, false) => false,           // i alive > j dead
+                (false, true) => true,            // j alive > i dead
+                (false, false) => match (death_tick[i], death_tick[j]) {
+                    (Some(ti), Some(tj)) => tj > ti, // j died later → j better
+                    _ => false,
+                },
+            };
+            if j_better {
+                strictly_better += 1;
+            }
+        }
+        placement[i] = 1 + strictly_better;
+    }
+    placement
 }
 
 fn in_bounds(p: Pos) -> bool {
