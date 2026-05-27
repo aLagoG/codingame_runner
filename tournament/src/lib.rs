@@ -237,6 +237,27 @@ fn percentile_ms(times: &[Duration], q: f64) -> Option<f64> {
 //  Match execution
 // ============================================================
 
+/// Play `schedule` sequentially against `bots`, emitting one JSONL
+/// line per match to `writer` (flushed after each). Shared by the
+/// sequential run path and the parallel worker subcommand — anything
+/// "play a list of matches and stream results" goes through here.
+pub fn play_schedule<W: std::io::Write>(
+    game: &str,
+    bots: &[BotSpec],
+    schedule: &[ScheduledMatch],
+    mut writer: W,
+) -> Result<()> {
+    for m in schedule {
+        let bots: Vec<BotSpec> = m.bot_idx.iter().map(|&j| bots[j].clone()).collect();
+        let rec = run_match_named(game, &bots, m.seed)?;
+        serde_json::to_writer(&mut writer, &rec)
+            .map_err(|e| anyhow::anyhow!("serialize match record: {e}"))?;
+        writeln!(writer)?;
+        writer.flush()?;
+    }
+    Ok(())
+}
+
 /// Run one match. `game` selects the dispatch arm; `bots` lists the
 /// entrants in seat order.
 pub fn run_match_named(game: &str, bots: &[BotSpec], seed: u64) -> Result<MatchRecord> {

@@ -11,11 +11,15 @@ use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::PathBuf;
+use std::process::{Command as ProcCommand, Stdio};
+use std::sync::mpsc;
+use std::thread;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use tournament::{
-    BotSpec, MatchRecord, ScheduleConfig, build_report, build_schedule, run_match_named,
+    BotSpec, MatchRecord, ScheduleConfig, ScheduledMatch, build_report, build_schedule,
+    play_schedule,
 };
 
 #[derive(Parser)]
@@ -32,6 +36,12 @@ struct Cli {
 enum Command {
     Run(RunArgs),
     Report(ReportArgs),
+    /// Internal: play a schedule chunk read from stdin and write
+    /// JSONL results to stdout. Not for direct use — `run --parallel
+    /// N` spawns N of these. `clap`'s `hide = true` keeps it out of
+    /// `--help`.
+    #[command(hide = true)]
+    Worker(WorkerArgs),
 }
 
 #[derive(Parser)]
@@ -85,6 +95,29 @@ struct RunArgs {
     /// Where to write the JSONL match log. Parent dirs are created.
     #[arg(short, long)]
     output: PathBuf,
+
+    /// Number of matches to run in parallel. Defaults to the number
+    /// of available logical cores. Set to 1 for clean per-turn
+    /// decision-time measurements; higher values trade timing
+    /// fidelity for wall-clock speedup. When >1, the matches run in
+    /// separate worker processes so FFI plugins (which have shared
+    /// global state) stay safely isolated.
+    #[arg(long, default_value_t = default_parallel())]
+    parallel: usize,
+}
+
+#[derive(Parser)]
+struct WorkerArgs {
+    #[arg(long)]
+    game: String,
+    #[arg(long = "bot", value_parser = parse_bot_spec, required = true)]
+    bots: Vec<BotSpec>,
+}
+
+fn default_parallel() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
 }
 
 #[derive(Parser)]
@@ -97,6 +130,7 @@ fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Run(args) => cmd_run(args),
         Command::Report(args) => cmd_report(args),
+        Command::Worker(args) => cmd_worker(args),
     }
 }
 
@@ -132,12 +166,40 @@ fn cmd_run(args: RunArgs) -> Result<()> {
     }
     let file = File::create(&args.output)
         .with_context(|| format!("creating {}", args.output.display()))?;
-    let mut out = BufWriter::new(file);
+    let out = BufWriter::new(file);
 
-    eprintln!("Running {total} matches of {}…", args.game);
+    // Clamp `--parallel` to something useful: at most one worker
+    // per match, and at least 1.
+    let parallel = args.parallel.clamp(1, total).max(1);
+    if parallel > 1 {
+        eprintln!(
+            "⚠ Running with --parallel {parallel}. Per-turn decision-time \
+             numbers will be affected by CPU contention; use --parallel 1 \
+             for clean timing baselines."
+        );
+    }
+
+    eprintln!("Running {total} matches of {} (--parallel {parallel})…", args.game);
+    if parallel == 1 {
+        run_sequential(&args.game, &args.bots, &schedule, out, total)?;
+    } else {
+        run_parallel(&args.game, &args.bots, schedule, out, parallel)?;
+    }
+
+    eprintln!("Wrote {} → {}", total, args.output.display());
+    Ok(())
+}
+
+fn run_sequential(
+    game: &str,
+    bots: &[BotSpec],
+    schedule: &[ScheduledMatch],
+    mut out: BufWriter<File>,
+    total: usize,
+) -> Result<()> {
     for (i, m) in schedule.iter().enumerate() {
-        let bots: Vec<BotSpec> = m.bot_idx.iter().map(|&j| args.bots[j].clone()).collect();
-        let names: Vec<&str> = bots.iter().map(|b| b.name.as_str()).collect();
+        let entries: Vec<BotSpec> = m.bot_idx.iter().map(|&j| bots[j].clone()).collect();
+        let names: Vec<&str> = entries.iter().map(|b| b.name.as_str()).collect();
         eprintln!(
             "  [{:>4}/{}] seed={} {}",
             i + 1,
@@ -145,15 +207,141 @@ fn cmd_run(args: RunArgs) -> Result<()> {
             m.seed,
             names.join(" vs ")
         );
-        let rec = run_match_named(&args.game, &bots, m.seed)
+        let rec = tournament::run_match_named(game, &entries, m.seed)
             .with_context(|| format!("match {} ({})", i + 1, names.join(" vs ")))?;
         serde_json::to_writer(&mut out, &rec)?;
         writeln!(out)?;
         out.flush()?;
     }
-
-    eprintln!("Wrote {} → {}", total, args.output.display());
     Ok(())
+}
+
+/// Spawn `parallel` copies of the tournament binary in `worker`
+/// mode, hand each a partition of the schedule on stdin, collect
+/// JSONL records from each stdout via a per-worker reader thread,
+/// and write them to the output file as they arrive.
+///
+/// Partitioning is round-robin (`schedule[i] → worker[i % N]`)
+/// rather than contiguous chunks — adjacent schedule entries share
+/// the same combo + rotation, so round-robin balances both bot
+/// strength and game-length variance across workers more evenly.
+fn run_parallel(
+    game: &str,
+    bots: &[BotSpec],
+    schedule: Vec<ScheduledMatch>,
+    mut out: BufWriter<File>,
+    parallel: usize,
+) -> Result<()> {
+    let total = schedule.len();
+    let exe = std::env::current_exe().context("locating tournament binary")?;
+
+    // Round-robin partition the schedule across `parallel` workers.
+    let mut partitions: Vec<Vec<ScheduledMatch>> =
+        (0..parallel).map(|_| Vec::new()).collect();
+    for (i, m) in schedule.into_iter().enumerate() {
+        partitions[i % parallel].push(m);
+    }
+
+    // Spawn all workers + reader threads first, *then* write to
+    // their stdins. Writing first risks deadlock: workers can
+    // block on output backpressure if their stdouts have nowhere
+    // to drain to yet.
+    let (tx, rx) = mpsc::channel::<String>();
+    let mut workers = Vec::with_capacity(parallel);
+    let mut readers = Vec::with_capacity(parallel);
+    for _ in 0..parallel {
+        let mut cmd = ProcCommand::new(&exe);
+        cmd.args(["worker", "--game", game]);
+        for bot in bots {
+            cmd.arg("--bot")
+                .arg(format!("{}={}", bot.name, bot.path.display()));
+        }
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit());
+        let mut child = cmd.spawn().context("spawning tournament worker")?;
+
+        let stdout = child.stdout.take().expect("piped");
+        let tx = tx.clone();
+        let handle = thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                match line {
+                    Ok(l) if l.trim().is_empty() => continue,
+                    Ok(l) => {
+                        // The receiver is gone only if main bailed;
+                        // in that case dropping the message is fine.
+                        if tx.send(l).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        readers.push(handle);
+        workers.push(child);
+    }
+    drop(tx); // rx ends once every cloned tx (one per reader) drops.
+
+    // Write each partition into its worker's stdin. Spawn a thread
+    // per writer so a slow stdin pipe doesn't block scheduling of
+    // the next partition.
+    let mut writers = Vec::with_capacity(parallel);
+    for (worker, partition) in workers.iter_mut().zip(partitions.into_iter()) {
+        let stdin = worker.stdin.take().expect("piped");
+        writers.push(thread::spawn(move || -> std::io::Result<()> {
+            let mut stdin = BufWriter::new(stdin);
+            serde_json::to_writer(&mut stdin, &partition)
+                .map_err(std::io::Error::other)?;
+            stdin.flush()?;
+            // Dropping `stdin` here closes the pipe → worker sees
+            // EOF on its end and starts playing.
+            Ok(())
+        }));
+    }
+
+    // Stream records to the output file as they arrive. Order is
+    // by completion time, not by schedule index — the report
+    // doesn't care, and each record carries enough metadata
+    // (bots, seed) to be self-identifying.
+    let mut done = 0usize;
+    for line in rx {
+        writeln!(out, "{line}")?;
+        out.flush()?;
+        done += 1;
+        eprintln!("  [{done:>4}/{total}] match completed");
+    }
+
+    // Join all background threads + reap workers, surfacing the
+    // first non-success exit if any.
+    for w in writers {
+        w.join()
+            .map_err(|_| anyhow::anyhow!("writer thread panicked"))?
+            .context("writing partition to worker stdin")?;
+    }
+    for r in readers {
+        r.join()
+            .map_err(|_| anyhow::anyhow!("reader thread panicked"))?;
+    }
+    for (i, mut w) in workers.into_iter().enumerate() {
+        let status = w.wait().context("waiting for worker")?;
+        if !status.success() {
+            bail!("worker {i} exited with {status}");
+        }
+    }
+    Ok(())
+}
+
+fn cmd_worker(args: WorkerArgs) -> Result<()> {
+    // Read the partition handed over by main on stdin.
+    let stdin = std::io::stdin();
+    let schedule: Vec<ScheduledMatch> = serde_json::from_reader(stdin.lock())
+        .context("parsing schedule chunk from stdin")?;
+
+    // Play it and stream JSONL on stdout. Each line is one
+    // MatchRecord; main's reader thread picks them up by line.
+    let stdout = std::io::stdout();
+    play_schedule(&args.game, &args.bots, &schedule, stdout.lock())
 }
 
 /// Build the final seed list for the scheduler. `explicit` is the
