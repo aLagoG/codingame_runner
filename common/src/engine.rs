@@ -1,6 +1,10 @@
 use std::{
+    cell::RefCell,
+    collections::HashMap,
+    ffi::CStr,
     io::{self, BufRead, BufReader, Write},
     marker::PhantomData,
+    os::raw::c_char,
     panic::AssertUnwindSafe,
     path::Path,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
@@ -321,6 +325,14 @@ pub trait Game: Sized {
 pub trait Player<G: Game> {
     fn initialize(&mut self, input: &G::InitialInput) -> Result<(), PlayerError>;
     fn take_turn(&mut self, input: &G::Input) -> Result<G::Output, PlayerError>;
+
+    /// Return the counter map this player accumulated during the
+    /// most recent `take_turn`, then clear its internal slot.
+    /// Default is empty — subprocess players and FFI bots that
+    /// don't opt into the counter callback report nothing.
+    fn drain_counters(&mut self) -> HashMap<String, f64> {
+        HashMap::new()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -416,6 +428,11 @@ pub fn read_replay<G: Game>(r: &mut impl io::Read) -> anyhow::Result<Replay<G::O
 #[derive(Debug, Default, Clone)]
 pub struct PlayerStats {
     pub turn_times: Vec<Duration>,
+    /// Per-turn map of counter name → value the bot reported via the
+    /// FFI counter callback. Length is parallel to `turn_times`; an
+    /// empty inner map means "the bot didn't emit anything that
+    /// turn" (or counters are disabled / unsupported).
+    pub turn_counters: Vec<HashMap<String, f64>>,
 }
 
 impl PlayerStats {
@@ -430,6 +447,60 @@ impl PlayerStats {
     pub fn max(&self) -> Option<Duration> {
         self.turn_times.iter().max().copied()
     }
+}
+
+// ============================================================
+//  Counter accumulator (FFI-only)
+// ============================================================
+//
+// FFI bots opt in to runtime instrumentation by exporting a
+// `set_counter_callback` symbol. The runner (PluginPlayer) looks it
+// up and registers `cgr_emit_counter` as the callback. The bot then
+// calls the callback during `take_turn` with `(key, value)` pairs.
+//
+// Storage is a thread-local `RefCell<HashMap>`. Each worker process
+// is single-threaded for match execution, so a thread-local is
+// sufficient and cheaper than a `Mutex`. `PluginPlayer::take_turn`
+// clears the accumulator before the FFI call and drains it
+// immediately after — that's what binds the values to the right
+// player's tick.
+//
+// The function's address is what bots store; it does NOT need to
+// be #[no_mangle] / exported, because nothing ever looks it up by
+// name. We hand the pointer over inside the process.
+
+thread_local! {
+    static COUNTER_ACCUMULATOR: RefCell<HashMap<String, f64>> =
+        RefCell::new(HashMap::new());
+}
+
+/// FFI callback the runner hands plugins via `set_counter_callback`.
+/// SAFETY: `key` must be a valid pointer to a NUL-terminated UTF-8
+/// string that lives for the duration of the call. Bots that pass
+/// bad pointers get their counter silently dropped — we never
+/// dereference past the NUL.
+pub unsafe extern "C" fn cgr_emit_counter(key: *const c_char, value: f64) {
+    if key.is_null() {
+        return;
+    }
+    // SAFETY: caller's contract per above.
+    let cstr = unsafe { CStr::from_ptr(key) };
+    let Ok(s) = cstr.to_str() else { return };
+    let owned = s.to_string();
+    COUNTER_ACCUMULATOR.with(|a| {
+        a.borrow_mut().insert(owned, value);
+    });
+}
+
+/// Public type alias for the FFI callback bots are expected to store
+/// and call. Plugins receive a `CounterFn` via their
+/// `set_counter_callback(cb: CounterFn)` symbol.
+pub type CounterFn = unsafe extern "C" fn(*const c_char, f64);
+
+/// Empty the accumulator (used right before each instrumented
+/// `take_turn`).
+pub(crate) fn counter_take() -> HashMap<String, f64> {
+    COUNTER_ACCUMULATOR.with(|a| std::mem::take(&mut *a.borrow_mut()))
 }
 
 pub struct MatchResult<G: Game> {
@@ -480,7 +551,10 @@ pub fn run_match<G: Game>(
             let input = game.input_for(p);
             let start = Instant::now();
             let result = players[p as usize].take_turn(&input);
-            stats[p as usize].turn_times.push(start.elapsed());
+            let elapsed = start.elapsed();
+            let counters = players[p as usize].drain_counters();
+            stats[p as usize].turn_times.push(elapsed);
+            stats[p as usize].turn_counters.push(counters);
 
             match result {
                 Ok(out) => outputs[p as usize] = Some(out),
@@ -622,10 +696,26 @@ pub type FfiInitialize<G> = for<'a> unsafe extern "C" fn(
 const TAKE_TURN_SYMBOL: &[u8] = b"take_turn";
 const INITIALIZE_SYMBOL: &[u8] = b"initialize";
 const ABI_VERSION_SYMBOL: &[u8] = b"abi_version";
+/// Optional. Bots that export this take a `CounterFn` and store it
+/// internally, then call it during `take_turn`. Absence is fine —
+/// PluginPlayer just falls back to "no counters reported".
+const SET_COUNTER_CALLBACK_SYMBOL: &[u8] = b"set_counter_callback";
+
+/// Signature of the plugin-side hook the runner calls to wire the
+/// counter callback. Plugins that don't define it simply don't
+/// participate in counter capture.
+type SetCounterCallback = unsafe extern "C" fn(CounterFn);
 
 pub struct PluginPlayer<G: FfiGame> {
     init: FfiInitialize<G>,
     take_turn: FfiTakeTurn<G>,
+    /// True iff `enable_counters` succeeded for this player. Drives
+    /// whether `take_turn` clears + drains the thread-local
+    /// accumulator into `last_counters`.
+    counters_enabled: bool,
+    /// Counters drained from the accumulator after the last
+    /// `take_turn`. Replaced (not merged) per turn.
+    last_counters: HashMap<String, f64>,
     _lib: Library,
 }
 
@@ -658,8 +748,28 @@ impl<G: FfiGame> PluginPlayer<G> {
         Ok(PluginPlayer {
             init,
             take_turn,
+            counters_enabled: false,
+            last_counters: HashMap::new(),
             _lib: lib,
         })
+    }
+
+    /// Register the runner's counter callback with the plugin (if
+    /// the plugin exports `set_counter_callback`). Returns `true` if
+    /// the plugin opted in, `false` if the symbol is absent. Either
+    /// case is fine — counters are purely informational.
+    pub fn enable_counters(&mut self) -> bool {
+        let set_cb: Symbol<SetCounterCallback> =
+            match unsafe { self._lib.get(SET_COUNTER_CALLBACK_SYMBOL) } {
+                Ok(s) => s,
+                Err(_) => return false,
+            };
+        // SAFETY: we just looked the symbol up out of the same
+        // library; calling it with our own `cgr_emit_counter` is
+        // ABI-safe — both sides agree on the `CounterFn` signature.
+        unsafe { set_cb(cgr_emit_counter) };
+        self.counters_enabled = true;
+        true
     }
 }
 
@@ -679,7 +789,13 @@ impl<G: FfiGame> Player<G> for PluginPlayer<G> {
     fn take_turn(&mut self, input: &G::Input) -> Result<G::Output, PlayerError> {
         let take_turn = self.take_turn;
         let ffi = input.as_ffi();
-        catch_into_player_err(AssertUnwindSafe(move || {
+        // If counters are on, drop anything left over from a prior
+        // call (defensive — should already be drained) so this
+        // turn's accumulator starts clean.
+        if self.counters_enabled {
+            let _ = counter_take();
+        }
+        let result = catch_into_player_err(AssertUnwindSafe(move || {
             // SAFETY: `take_turn` was obtained by `load`, which verified
             // the plugin's ABI version. The macro-generated `take_turn`
             // on the bot side catches its own panics — so a Panic status
@@ -689,7 +805,15 @@ impl<G: FfiGame> Player<G> for PluginPlayer<G> {
                 BotStatus::Ok => Ok(result.output),
                 BotStatus::Panic => Err(PlayerError::Panic),
             }
-        }))
+        }));
+        if self.counters_enabled {
+            self.last_counters = counter_take();
+        }
+        result
+    }
+
+    fn drain_counters(&mut self) -> HashMap<String, f64> {
+        std::mem::take(&mut self.last_counters)
     }
 }
 

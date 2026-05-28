@@ -49,7 +49,7 @@ where
 
     let mut players: Vec<Box<dyn Player<G>>> = Vec::with_capacity(paths.len());
     for path in &paths {
-        players.push(make_player::<G>(path)?);
+        players.push(make_player::<G>(path, false)?);
     }
 
     let MatchResult {

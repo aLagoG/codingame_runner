@@ -68,8 +68,15 @@ fn main() {
     println!("cargo::rerun-if-changed={}", io_header.display());
 }
 
-/// The three symbols the runner expects from every FFI bot.
-const EXPORTED_SYMBOLS: &[&str] = &["initialize", "take_turn", "abi_version"];
+/// The four symbols the runner expects from every FFI bot.
+// `set_counter_callback` is optional — see the matching comment in
+// `tron_cpp/build.rs`.
+const EXPORTED_SYMBOLS: &[&str] = &[
+    "initialize",
+    "take_turn",
+    "abi_version",
+    "set_counter_callback",
+];
 
 /// Emit linker args that force every symbol from `archive` into the
 /// cdylib's link AND name them in the cdylib's exported-symbols list.

@@ -21,6 +21,7 @@
 //! here (instead of pushing into `Game`) avoids an `Any`-typed
 //! result trait object.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -173,8 +174,56 @@ pub struct MatchRecord {
     /// placement.
     #[serde(default)]
     pub scores: Option<Vec<f64>>,
+    /// Per-bot FFI counter aggregates from the match. `None` when
+    /// the run wasn't started with `--counters`, or when no bot
+    /// emitted anything. When `Some`, the outer Vec is in seat
+    /// order; the inner map keys are the counter names the bots
+    /// chose to emit. Aggregated over the match's ticks (avg/max/
+    /// sum/samples) so the JSONL stays compact.
+    #[serde(default)]
+    pub counters: Option<Vec<HashMap<String, CounterStats>>>,
     pub ticks: usize,
     pub stats: Vec<BotMatchStats>,
+}
+
+/// Per-counter, per-match aggregate. The runner streams individual
+/// per-tick values; the tournament collapses them to summary stats
+/// before persisting to JSONL.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CounterStats {
+    pub avg: f64,
+    pub max: f64,
+    pub sum: f64,
+    pub samples: u32,
+}
+
+impl CounterStats {
+    /// Collapse `turn_counters` (per-turn maps) into one summary
+    /// map keyed by counter name. Counters can appear in any subset
+    /// of turns — the `samples` count tracks how many turns actually
+    /// emitted each key.
+    pub fn aggregate(turn_counters: &[HashMap<String, f64>]) -> HashMap<String, CounterStats> {
+        let mut out: HashMap<String, CounterStats> = HashMap::new();
+        for turn in turn_counters {
+            for (k, &v) in turn {
+                let e = out.entry(k.clone()).or_insert(CounterStats {
+                    avg: 0.0,
+                    max: f64::NEG_INFINITY,
+                    sum: 0.0,
+                    samples: 0,
+                });
+                e.samples += 1;
+                e.sum += v;
+                if v > e.max {
+                    e.max = v;
+                }
+                // Recompute avg from sum at the end to avoid
+                // numerical drift; cheap since `samples` is small.
+                e.avg = e.sum / e.samples as f64;
+            }
+        }
+        out
+    }
 }
 
 impl MatchRecord {
@@ -245,11 +294,12 @@ pub fn play_schedule<W: std::io::Write>(
     game: &str,
     bots: &[BotSpec],
     schedule: &[ScheduledMatch],
+    enable_counters: bool,
     mut writer: W,
 ) -> Result<()> {
     for m in schedule {
         let bots: Vec<BotSpec> = m.bot_idx.iter().map(|&j| bots[j].clone()).collect();
-        let rec = run_match_named(game, &bots, m.seed)?;
+        let rec = run_match_named(game, &bots, m.seed, enable_counters)?;
         serde_json::to_writer(&mut writer, &rec)
             .map_err(|e| anyhow::anyhow!("serialize match record: {e}"))?;
         writeln!(writer)?;
@@ -259,11 +309,19 @@ pub fn play_schedule<W: std::io::Write>(
 }
 
 /// Run one match. `game` selects the dispatch arm; `bots` lists the
-/// entrants in seat order.
-pub fn run_match_named(game: &str, bots: &[BotSpec], seed: u64) -> Result<MatchRecord> {
+/// entrants in seat order. `enable_counters` opts plugin players
+/// into FFI counter capture (no-op for subprocess bots).
+pub fn run_match_named(
+    game: &str,
+    bots: &[BotSpec],
+    seed: u64,
+    enable_counters: bool,
+) -> Result<MatchRecord> {
     match game {
-        "tictactoe" => run_match_typed::<tictactoe_game::TicTacToeGame>(game, bots, seed),
-        "tron" => run_match_typed::<tron_game::TronGame>(game, bots, seed),
+        "tictactoe" => {
+            run_match_typed::<tictactoe_game::TicTacToeGame>(game, bots, seed, enable_counters)
+        }
+        "tron" => run_match_typed::<tron_game::TronGame>(game, bots, seed, enable_counters),
         other => bail!("unknown game: {other}"),
     }
 }
@@ -272,12 +330,13 @@ fn run_match_typed<G: FfiGame + 'static>(
     game_name: &str,
     bots: &[BotSpec],
     seed: u64,
+    enable_counters: bool,
 ) -> Result<MatchRecord> {
     let num_players = bots.len() as u32;
     let mut players: Vec<Box<dyn Player<G>>> = Vec::with_capacity(bots.len());
     for bot in bots {
         players.push(
-            make_player::<G>(&bot.path)
+            make_player::<G>(&bot.path, enable_counters)
                 .with_context(|| format!("building player for {}", bot.name))?,
         );
     }
@@ -289,6 +348,11 @@ fn run_match_typed<G: FfiGame + 'static>(
     let winner = G::winner(&outcome).map(|p| p as usize);
     let placement = G::placement(&outcome);
     let scores = G::scores(&outcome);
+    let per_bot_counters: Vec<HashMap<String, CounterStats>> = stats
+        .iter()
+        .map(|s| CounterStats::aggregate(&s.turn_counters))
+        .collect();
+    let has_any_counters = per_bot_counters.iter().any(|m| !m.is_empty());
 
     Ok(MatchRecord {
         game: game_name.to_string(),
@@ -297,6 +361,11 @@ fn run_match_typed<G: FfiGame + 'static>(
         winner,
         placement,
         scores,
+        counters: if has_any_counters {
+            Some(per_bot_counters)
+        } else {
+            None
+        },
         ticks: replay.outputs.len(),
         stats: stats.iter().map(BotMatchStats::from).collect(),
     })
@@ -325,6 +394,11 @@ pub struct BotSummary {
     /// (trail length for tron, points for a scored game, ...);
     /// the tournament treats them as opaque floats.
     pub score_summary: Option<ScoreSummary>,
+    /// Aggregated FFI counter stats across every match this bot
+    /// played. Keys are counter names; values are "avg of per-match
+    /// avg" + cumulative sum + worst observed max. Empty when no
+    /// match emitted any counters for this bot.
+    pub counter_summary: HashMap<String, CounterAgg>,
     /// Aggregated decision-time summaries. We don't carry raw turn
     /// times through the JSONL, so these are "stats of per-match
     /// stats" — useful for ranking but not exact distribution
@@ -351,6 +425,43 @@ impl BotSummary {
         self.score_summary
             .get_or_insert_with(ScoreSummary::default)
             .add(score);
+    }
+
+    fn record_counters(&mut self, per_match: &HashMap<String, CounterStats>) {
+        for (name, s) in per_match {
+            let agg = self.counter_summary.entry(name.clone()).or_default();
+            agg.add_match(s);
+        }
+    }
+}
+
+/// Cross-match counter aggregate. Matches contribute their
+/// per-match `CounterStats` summary; we don't reconstruct the raw
+/// per-tick distribution (would need it in the JSONL, which we
+/// don't want to bloat).
+#[derive(Debug, Clone, Default)]
+pub struct CounterAgg {
+    /// Average of per-match averages.
+    pub avg_of_avg: f64,
+    /// Max across all matches' per-match max.
+    pub worst_max: f64,
+    /// Total samples contributing.
+    pub total_samples: u64,
+    /// Sum across all matches.
+    pub total_sum: f64,
+    matches: u32,
+}
+
+impl CounterAgg {
+    fn add_match(&mut self, s: &CounterStats) {
+        self.matches += 1;
+        let n = self.matches as f64;
+        self.avg_of_avg += (s.avg - self.avg_of_avg) / n;
+        if s.max > self.worst_max {
+            self.worst_max = s.max;
+        }
+        self.total_samples += s.samples as u64;
+        self.total_sum += s.sum;
     }
 }
 
@@ -465,6 +576,11 @@ pub fn build_report(records: &[MatchRecord]) -> Report {
                 && let Some(score) = scores.get(i)
             {
                 s.record_score(*score);
+            }
+            if let Some(counters) = &rec.counters
+                && let Some(cmap) = counters.get(i)
+            {
+                s.record_counters(cmap);
             }
         }
 
@@ -646,6 +762,7 @@ mod tests {
             winner,
             placement,
             scores: None,
+            counters: None,
             ticks: 5,
             stats: (0..bots.len())
                 .map(|_| BotMatchStats {
@@ -678,6 +795,7 @@ mod tests {
             winner,
             placement,
             scores,
+            counters: None,
             ticks: 5,
             stats: (0..bots.len())
                 .map(|_| BotMatchStats {
@@ -804,6 +922,81 @@ mod tests {
         assert!((b_s.avg - 55.0).abs() < 1e-9);
         assert_eq!((a_s.min, a_s.max), (80.0, 100.0));
         assert_eq!((b_s.min, b_s.max), (50.0, 60.0));
+    }
+
+    #[test]
+    fn counter_aggregation_per_match() {
+        // Three "ticks" of counters; nodes should sum to 60, max 30,
+        // avg 20; tt_hits only on two ticks → samples=2 there.
+        let turns = vec![
+            HashMap::from([("nodes".to_string(), 10.0)]),
+            HashMap::from([
+                ("nodes".to_string(), 20.0),
+                ("tt_hits".to_string(), 5.0),
+            ]),
+            HashMap::from([
+                ("nodes".to_string(), 30.0),
+                ("tt_hits".to_string(), 9.0),
+            ]),
+        ];
+        let agg = CounterStats::aggregate(&turns);
+        let nodes = &agg["nodes"];
+        assert_eq!(nodes.samples, 3);
+        assert_eq!(nodes.sum, 60.0);
+        assert_eq!(nodes.max, 30.0);
+        assert!((nodes.avg - 20.0).abs() < 1e-9);
+        let hits = &agg["tt_hits"];
+        assert_eq!(hits.samples, 2);
+        assert_eq!(hits.sum, 14.0);
+        assert_eq!(hits.max, 9.0);
+        assert!((hits.avg - 7.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn counter_summary_aggregates_across_matches() {
+        // Two matches with different per-match avgs; summary's
+        // avg_of_avg should be the simple mean of the per-match
+        // values.
+        let make_match = |bot_a_avg: f64, bot_a_max: f64| MatchRecord {
+            game: "tron".into(),
+            bots: vec!["a".into(), "b".into()],
+            seed: 0,
+            winner: Some(0),
+            placement: vec![1, 2],
+            scores: None,
+            counters: Some(vec![
+                HashMap::from([(
+                    "nodes".to_string(),
+                    CounterStats {
+                        avg: bot_a_avg,
+                        max: bot_a_max,
+                        sum: bot_a_avg * 10.0,
+                        samples: 10,
+                    },
+                )]),
+                HashMap::new(), // bot b emits nothing
+            ]),
+            ticks: 10,
+            stats: (0..2)
+                .map(|_| BotMatchStats {
+                    turns: 10,
+                    avg_ms: Some(1.0),
+                    max_ms: Some(1.0),
+                    p50_ms: Some(1.0),
+                    p95_ms: Some(1.0),
+                    p99_ms: Some(1.0),
+                })
+                .collect(),
+        };
+        let report = build_report(&[make_match(100.0, 200.0), make_match(300.0, 500.0)]);
+        let a = &report.per_bot["a"];
+        let nodes = &a.counter_summary["nodes"];
+        assert!((nodes.avg_of_avg - 200.0).abs() < 1e-9);
+        assert_eq!(nodes.worst_max, 500.0);
+        assert_eq!(nodes.total_samples, 20);
+        assert_eq!(nodes.total_sum, 4000.0);
+        // bot b never emitted any counters, so its summary is empty.
+        assert!(report.per_bot["b"].counter_summary.is_empty());
     }
 
     #[test]

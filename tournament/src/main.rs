@@ -104,6 +104,13 @@ struct RunArgs {
     /// global state) stay safely isolated.
     #[arg(long, default_value_t = default_parallel())]
     parallel: usize,
+
+    /// Enable FFI counter capture. Subprocess bots ignore this;
+    /// plugin bots that export `set_counter_callback` get a
+    /// callback registered and their per-tick counter emissions
+    /// are aggregated into the JSONL log + report.
+    #[arg(long)]
+    counters: bool,
 }
 
 #[derive(Parser)]
@@ -112,6 +119,11 @@ struct WorkerArgs {
     game: String,
     #[arg(long = "bot", value_parser = parse_bot_spec, required = true)]
     bots: Vec<BotSpec>,
+    /// Mirror of the parent's `--counters` flag — propagated through
+    /// the worker spawn so plugin players in each worker register
+    /// the callback independently.
+    #[arg(long)]
+    counters: bool,
 }
 
 fn default_parallel() -> usize {
@@ -181,9 +193,9 @@ fn cmd_run(args: RunArgs) -> Result<()> {
 
     eprintln!("Running {total} matches of {} (--parallel {parallel})…", args.game);
     if parallel == 1 {
-        run_sequential(&args.game, &args.bots, &schedule, out, total)?;
+        run_sequential(&args.game, &args.bots, &schedule, args.counters, out, total)?;
     } else {
-        run_parallel(&args.game, &args.bots, schedule, out, parallel)?;
+        run_parallel(&args.game, &args.bots, schedule, args.counters, out, parallel)?;
     }
 
     eprintln!("Wrote {} → {}", total, args.output.display());
@@ -194,6 +206,7 @@ fn run_sequential(
     game: &str,
     bots: &[BotSpec],
     schedule: &[ScheduledMatch],
+    enable_counters: bool,
     mut out: BufWriter<File>,
     total: usize,
 ) -> Result<()> {
@@ -207,7 +220,7 @@ fn run_sequential(
             m.seed,
             names.join(" vs ")
         );
-        let rec = tournament::run_match_named(game, &entries, m.seed)
+        let rec = tournament::run_match_named(game, &entries, m.seed, enable_counters)
             .with_context(|| format!("match {} ({})", i + 1, names.join(" vs ")))?;
         serde_json::to_writer(&mut out, &rec)?;
         writeln!(out)?;
@@ -229,6 +242,7 @@ fn run_parallel(
     game: &str,
     bots: &[BotSpec],
     schedule: Vec<ScheduledMatch>,
+    enable_counters: bool,
     mut out: BufWriter<File>,
     parallel: usize,
 ) -> Result<()> {
@@ -252,6 +266,9 @@ fn run_parallel(
     for _ in 0..parallel {
         let mut cmd = ProcCommand::new(&exe);
         cmd.args(["worker", "--game", game]);
+        if enable_counters {
+            cmd.arg("--counters");
+        }
         for bot in bots {
             cmd.arg("--bot")
                 .arg(format!("{}={}", bot.name, bot.path.display()));
@@ -341,7 +358,7 @@ fn cmd_worker(args: WorkerArgs) -> Result<()> {
     // Play it and stream JSONL on stdout. Each line is one
     // MatchRecord; main's reader thread picks them up by line.
     let stdout = std::io::stdout();
-    play_schedule(&args.game, &args.bots, &schedule, stdout.lock())
+    play_schedule(&args.game, &args.bots, &schedule, args.counters, stdout.lock())
 }
 
 /// Build the final seed list for the scheduler. `explicit` is the
@@ -465,6 +482,14 @@ fn print_summary(report: &tournament::Report) {
         .per_bot
         .values()
         .any(|s| s.score_summary.is_some());
+    // Collect the union of counter names across all bots so we
+    // print one column per counter, with `-` for bots that didn't
+    // emit it.
+    let counter_keys: std::collections::BTreeSet<String> = report
+        .per_bot
+        .values()
+        .flat_map(|s| s.counter_summary.keys().cloned())
+        .collect();
 
     let mut header = format!(
         "{:<width$}  {:>5}  {:>5}  {:>6}  {:>5}  {:>5}  {:>6}  {:>6}",
@@ -476,6 +501,12 @@ fn print_summary(report: &tournament::Report) {
     }
     if any_scores {
         header.push_str(&format!("  {:>8}  {:>7}  {:>7}", "avg sc", "min sc", "max sc"));
+    }
+    for key in &counter_keys {
+        // Headline: average across matches of the per-match average.
+        // Tight ~9-char column so a handful of counters fit on one
+        // line without wrapping.
+        header.push_str(&format!("  {:>9}", truncate(key, 9)));
     }
     header.push_str(&format!("  {:>7}  {:>7}  {:>7}", "avg ms", "p95 ms", "max ms"));
     println!("{header}");
@@ -509,6 +540,12 @@ fn print_summary(report: &tournament::Report) {
                 None => row.push_str(&format!("  {:>8}  {:>7}  {:>7}", "-", "-", "-")),
             }
         }
+        for key in &counter_keys {
+            match s.counter_summary.get(key) {
+                Some(c) => row.push_str(&format!("  {:>9.2}", c.avg_of_avg)),
+                None => row.push_str(&format!("  {:>9}", "-")),
+            }
+        }
         row.push_str(&format!(
             "  {:>7.2}  {:>7.2}  {:>7.2}",
             s.time_summary.avg_of_avg_ms,
@@ -516,6 +553,14 @@ fn print_summary(report: &tournament::Report) {
             s.time_summary.worst_max_ms,
         ));
         println!("{row}");
+    }
+}
+
+fn truncate(s: &str, n: usize) -> String {
+    if s.len() <= n {
+        s.to_string()
+    } else {
+        format!("{}…", &s[..n.saturating_sub(1)])
     }
 }
 

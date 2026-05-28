@@ -14,6 +14,13 @@
 
 #include "../tictactoe_defs/include/tictactoe_defs.h"
 
+// Counter-callback stub. Bots that want to emit performance counters
+// can override the body to store `cb` in a global and call it from
+// take_turn. Even the no-op form must exist because the cdylib's
+// exported-symbols list (see `build.rs`) names it — the runner
+// `dlsym`s it when `tournament --counters` is set.
+extern "C" void set_counter_callback(void (* /*cb*/)(const char*, double)) {}
+
 extern "C" {
 
 // Called once per player at match start. Tic-tac-toe's `InitialInput` is

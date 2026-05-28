@@ -53,7 +53,17 @@ fn main() {
     println!("cargo::rerun-if-changed={}", io_header.display());
 }
 
-const EXPORTED_SYMBOLS: &[&str] = &["initialize", "take_turn", "abi_version"];
+// `set_counter_callback` is optional from the runner's POV — it's
+// looked up with `dlsym` and silently ignored if missing. We list
+// it here so bots that *do* define it get the symbol exposed on the
+// cdylib's exported-symbol table; without this, rustc's empty
+// export list would strip it.
+const EXPORTED_SYMBOLS: &[&str] = &[
+    "initialize",
+    "take_turn",
+    "abi_version",
+    "set_counter_callback",
+];
 
 fn force_load_cdylib(archive: &str) {
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
