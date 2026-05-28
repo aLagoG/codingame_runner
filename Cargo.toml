@@ -18,6 +18,7 @@ members = [
     "tron/tron_cpp",
     "cpp_flatten",
     "tournament",
+    "cg_statement",
 ]
 
 [workspace.package]

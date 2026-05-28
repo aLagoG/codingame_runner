@@ -1,0 +1,84 @@
+<!-- Simulated devtools paste: a chunk of unrelated CSS (the kind a
+     DevTools "Copy → outerHTML" capture brings along) followed by
+     the actual CodinGame statement HTML.  Mirrors the shape of the
+     real tron paste we cleaned by hand.  Edit freely — the e2e
+     test only relies on the patterns this exercises, not the
+     specific content. -->
+
+<style>
+:root {
+  --vscode-icon-add-content: '\ea60';
+  --vscode-icon-arrow-down-content: '\ea9a';
+  --vscode-icon-arrow-left-content: '\ea9b';
+  --vscode-icon-bell-content: '\eaa2';
+  --vscode-icon-bold-content: '\eaa3';
+}
+.monaco-editor { font-family: monospace; }
+</style>
+
+<!-- ↓↓↓ statement content starts here ↓↓↓ -->
+
+<div style="color: #7cc576;
+            background-color: rgba(124, 197, 118,.1);
+            padding: 20px;
+            margin-right: 15px;
+            margin-left: 15px;
+            margin-bottom: 10px;
+            text-align: left;">
+<div style="text-align: center; margin-bottom: 6px">
+  <img src="//cdn.codingame.com/some/badge.png">
+</div>
+<p style="text-align: center; font-weight: 700; margin-bottom: 6px;">Summary of new rules</p>
+Battles can now have up to <strong>4</strong> players.
+</div>
+
+<div class="statement-section statement-goal">
+<h1><span class="icon icon-goal">&nbsp;</span> <span>The Goal</span></h1>
+<div class="statement-goal-content">Tron-like game body.</div>
+</div>
+
+<div class="statement-section statement-rules">
+<h1><span class="icon icon-rules">&nbsp;</span> <span>Rules</span></h1>
+<div class="statement-rules-content">
+The grid is <const>30</const> by <const>20</const> cells.
+Output one of <action>UP</action>, <action>DOWN</action>, <action>LEFT</action> or <action>RIGHT</action>.
+
+<div class="statement-victory-conditions">
+<div class="icon victory">&nbsp;</div>
+<div class="blk">
+<div class="title">Victory Conditions</div>
+<div class="text">Be the last remaining player</div>
+</div>
+</div>
+</div>
+</div>
+
+<div class="statement-section statement-protocol">
+<h1><span class="icon icon-protocol">&nbsp;</span> <span>Game Input</span></h1>
+
+<div class="blk">
+<div class="title">Input for one game turn</div>
+<div class="text">
+<p><span class="statement-lineno">Line 1: </span>Two integers <var>N</var> and <var>P</var>.</p>
+</div>
+</div>
+
+<div class="blk">
+<div class="title">Example</div>
+<div class="text">
+<div class="statement-inout">
+<div class="statement-inout-in" style="width: 50%; background-color: white">
+<div class="title" style="color: #989898; padding:0">Input for turn 1</div>
+<pre>2 0	(N P)
+9 5	9 5</pre>
+</div>
+<div class="statement-inout-out" style="width: 50%; background-color: white">
+<div class="title" style="color: #989898; padding:0">Output for turn 1</div>
+<action>RIGHT</action><br>
+Moving from (9,5) to (10,5)
+</div>
+</div>
+</div>
+</div>
+
+</div>

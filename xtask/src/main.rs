@@ -74,6 +74,32 @@ enum Command {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+    /// Convert a copy-pasted CodinGame statement (devtools HTML
+    /// blob) into the dark-themed `instructions.html` next to the
+    /// given game crate. Shells out to the `cg_statement` binary.
+    ///
+    /// Input comes from one of:
+    ///   * `--input <file>` — read the paste from disk
+    ///   * `--clipboard`     — pull from the system clipboard
+    ///                         (pbpaste / xclip / Get-Clipboard)
+    ///   * otherwise         — stdin. When stdin is a TTY, the
+    ///                         command prints a prompt and waits
+    ///                         for Ctrl-D to terminate the input.
+    Statement {
+        /// Game name (e.g. `tron`, `tictactoe`). The output goes to
+        /// `<game>/<game>_game/instructions.html` unless `--output`
+        /// is set.
+        game: String,
+        /// Read paste from this file instead of stdin.
+        #[arg(short, long)]
+        input: Option<PathBuf>,
+        /// Override the output path.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Read paste from the system clipboard.
+        #[arg(short, long)]
+        clipboard: bool,
+    },
     /// Profile a tournament run with `samply`. Builds the workspace
     /// in release mode (so symbols and optimizations match what
     /// you'd actually deploy), records a profile, then opens it in
@@ -127,6 +153,12 @@ fn main() -> Result<()> {
     match cli.command {
         Command::NewGame { name } => new_game(&name)?,
         Command::Bundle { game, output } => bundle(&game, output.as_deref())?,
+        Command::Statement {
+            game,
+            input,
+            output,
+            clipboard,
+        } => statement(&game, input.as_deref(), output.as_deref(), clipboard)?,
         Command::Profile {
             no_open,
             output,
@@ -135,6 +167,130 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Pipe a CodinGame statement paste through `cg_statement` and
+/// write the result next to the named game crate. Input source
+/// priority: explicit `--input` file > `--clipboard` > stdin.
+fn statement(
+    game: &str,
+    input_path: Option<&Path>,
+    output_override: Option<&Path>,
+    clipboard: bool,
+) -> Result<()> {
+    use std::io::{IsTerminal, Read, Write};
+
+    let s = Style::new();
+
+    // Resolve the output path. Default lives next to the game
+    // crate so it's easy to find from the source tree.
+    let output: PathBuf = output_override.map(Path::to_path_buf).unwrap_or_else(|| {
+        PathBuf::from(game)
+            .join(format!("{game}_game"))
+            .join("instructions.html")
+    });
+    if let Some(parent) = output.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
+        }
+    }
+
+    // Read the paste from the chosen source.
+    let paste = if let Some(p) = input_path {
+        fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))?
+    } else if clipboard {
+        read_clipboard()?
+    } else {
+        // Stdin. If we're attached to a terminal, the user is
+        // pasting interactively — show them how to end the input.
+        if std::io::stdin().is_terminal() {
+            eprintln!(
+                "{} Paste your HTML, then press {} when done:",
+                s.heading("→"),
+                s.code(if cfg!(windows) { "Ctrl-Z, Enter" } else { "Ctrl-D" }),
+            );
+        }
+        let mut buf = String::new();
+        std::io::stdin()
+            .read_to_string(&mut buf)
+            .context("reading stdin")?;
+        buf
+    };
+
+    if paste.trim().is_empty() {
+        anyhow::bail!("empty paste — nothing to clean");
+    }
+
+    // Shell out to `cg_statement` (matches the bundle → cpp_flatten
+    // pattern). Pipe the paste through its stdin; let it write the
+    // file directly via --output so we don't have to round-trip the
+    // (potentially large) cleaned HTML through this process.
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let mut child = std::process::Command::new(cargo)
+        .args(["run", "--quiet", "-p", "cg_statement", "--", "--output"])
+        .arg(&output)
+        .stdin(std::process::Stdio::piped())
+        // Inherit stderr so cg_statement's warnings reach the user
+        // verbatim, and stdout (which it won't use since --output
+        // is set) is fine to inherit too.
+        .stderr(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .spawn()
+        .context("spawning cg_statement")?;
+    {
+        let mut stdin = child.stdin.take().expect("piped stdin");
+        stdin
+            .write_all(paste.as_bytes())
+            .context("writing paste to cg_statement stdin")?;
+        // Dropping `stdin` here closes the pipe so cg_statement
+        // sees EOF and starts processing.
+    }
+    let status = child.wait().context("waiting on cg_statement")?;
+    anyhow::ensure!(status.success(), "cg_statement exited with {status}");
+
+    println!(
+        "{} Wrote {}",
+        s.ok("✓"),
+        s.path(&output.display().to_string()),
+    );
+    Ok(())
+}
+
+/// Pull the current clipboard contents using whatever the platform's
+/// CLI tool is. We shell out rather than take a `clipboard` crate
+/// dep — it's one command per OS and avoids dragging in a new
+/// runtime dependency.
+fn read_clipboard() -> Result<String> {
+    let (cmd, args): (&str, &[&str]) = if cfg!(target_os = "macos") {
+        ("pbpaste", &[])
+    } else if cfg!(target_os = "windows") {
+        ("powershell", &["-NoProfile", "-Command", "Get-Clipboard"])
+    } else {
+        // Linux/BSD: prefer wl-paste if it exists (Wayland), else xclip.
+        if std::process::Command::new("wl-paste")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
+            ("wl-paste", &[])
+        } else {
+            ("xclip", &["-selection", "clipboard", "-o"])
+        }
+    };
+    let out = std::process::Command::new(cmd)
+        .args(args)
+        .output()
+        .with_context(|| format!("running `{cmd}` to read clipboard"))?;
+    anyhow::ensure!(
+        out.status.success(),
+        "{cmd} exited with {} — is it installed and is the clipboard reachable?",
+        out.status,
+    );
+    String::from_utf8(out.stdout).context("clipboard contents weren't valid UTF-8")
 }
 
 /// Build a release tournament binary, then drive it with `samply
