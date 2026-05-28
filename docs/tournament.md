@@ -215,3 +215,29 @@ cargo run -p tournament -- report v1_vs_v2.jsonl
 ```
 
 Followed (if perf-analysis counters from `docs/perf-analysis.md` are in) by per-decision histograms in the same run — and we have a clean story about both *who wins* and *how hard each bot worked to get there*.
+
+---
+
+## Deferred — dlopen caching across matches
+
+samply traces of the tournament show that for fast bots (sub-100ms matches), most of the wall time per match is spent in `dlopen` + relocations + constructor runs, not in the bot's actual decisions. Each match today does a full load → play → unload cycle per FFI bot. The OS page cache makes the file I/O free but the per-process work (mmap, relocations, `__mod_init_func`) repeats every time.
+
+### Picked direction (when we get to it): explicit per-match reset
+
+- Add an optional FFI symbol `reset_for_match`. Runner caches the `Library` for the worker's lifetime (`HashMap<PathBuf, Arc<Library>>`); per match, it calls `reset_for_match` if present, then `initialize`, then plays.
+- Bots that don't export `reset_for_match` keep today's "fresh load per match" semantic (runner falls back to the current dlopen/dlclose path) so this is backwards-compatible.
+- Bot authors with persistent globals (e.g. a v2-style TT + board) implement the reset by clearing those structures. Stateless bots define nothing and get the speedup for free once they opt in by simply not having state.
+- ~50 lines of runner change + macro-level support so `ffi_bot!` can generate a default `reset_for_match` that clears bot-side statics declared via a `register_reset!` helper.
+
+Expected payoff: 10-100× speedup on sub-100ms matches; negligible for long matches. Useful both for "compare two trivial bots across thousands of seeds" and for any future ablation where iteration speed matters.
+
+### Considered and rejected
+
+- **`fork()`-per-match.** Loads bot once, fork()s a fresh COW child per match. Best on Linux. But macOS post-Sierra makes fork-without-exec fragile (codesigning + libdispatch interactions), and we want to support macOS-as-dev-host. Could revisit as an opt-in `--isolation fork` mode if we ever need it.
+- **`__DATA` snapshot + memcpy restore.** Conceptually clean: snapshot the bot's data segment after first init, memcpy back between matches. Only resets static storage, not heap — any bot using `Vec`/`unique_ptr` would silently corrupt. Brittle, not worth it.
+- **`dlmopen(LM_ID_NEWLM)`.** Doesn't actually save the relocation + constructor cost; only gives fresh data. Linux-only. No win.
+- **CRIU process snapshot/restore.** Heavyweight, needs special caps, won't run portably.
+
+### Trigger to build
+
+When we have at least one slow-loading bot (e.g. v2 with its 1 MB Zobrist table) being run across many short tournaments and the load cost shows up as the top frame in samply.

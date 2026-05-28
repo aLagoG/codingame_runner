@@ -74,6 +74,33 @@ enum Command {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+    /// Profile a tournament run with `samply`. Builds the workspace
+    /// in release mode (so symbols and optimizations match what
+    /// you'd actually deploy), records a profile, then opens it in
+    /// the Firefox-profiler view via samply's built-in local server.
+    ///
+    /// Anything after `--` is forwarded verbatim to
+    /// `tournament run`, so a typical invocation looks like:
+    ///
+    ///   cargo xtask profile -- --game tron \
+    ///       --bot a=target/release/libtron_rs.dylib \
+    ///       --bot b=target/release/libtron_cpp.dylib \
+    ///       --rounds 2000 --parallel 1 \
+    ///       --output /tmp/profile_run.jsonl
+    Profile {
+        /// Skip opening the UI (just record + save). Useful in CI.
+        #[arg(long)]
+        no_open: bool,
+        /// Override the output path for the recorded profile.
+        /// Defaults to `target/samply/profile.json.gz`.
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Forwarded to `tournament run`. Use `--` to separate
+        /// from xtask's own flags, e.g.
+        /// `cargo xtask profile -- --game tron --bot a=… …`.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        tournament_args: Vec<String>,
+    },
 }
 
 /// Variables available in all templates
@@ -100,8 +127,104 @@ fn main() -> Result<()> {
     match cli.command {
         Command::NewGame { name } => new_game(&name)?,
         Command::Bundle { game, output } => bundle(&game, output.as_deref())?,
+        Command::Profile {
+            no_open,
+            output,
+            tournament_args,
+        } => profile(no_open, output.as_deref(), &tournament_args)?,
     }
 
+    Ok(())
+}
+
+/// Build a release tournament binary, then drive it with `samply
+/// record`. samply's local server opens the Firefox-profiler view
+/// for the recorded trace unless `--no-open` was passed.
+fn profile(no_open: bool, output_override: Option<&Path>, tournament_args: &[String]) -> Result<()> {
+    let s = Style::new();
+
+    // 1. Verify samply is on PATH; point the user at the install
+    //    command if not. `which`-style probe via running the binary
+    //    with --version.
+    let samply_ok = std::process::Command::new("samply")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|st| st.success())
+        .unwrap_or(false);
+    anyhow::ensure!(
+        samply_ok,
+        "samply not found on PATH — install with `cargo install samply` and try again",
+    );
+
+    // 2. Build the workspace in release. With the
+    //    `[profile.release] debug = "line-tables-only"` setting in
+    //    the top-level Cargo.toml, both Rust and (via cc-rs) C++
+    //    end up with line-table symbols, which is what makes the
+    //    profile actually navigable.
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    println!(
+        "{} Building workspace in release (with line-tables-only debug info)…",
+        s.ok("→"),
+    );
+    let status = std::process::Command::new(&cargo)
+        .args(["build", "--release", "--workspace"])
+        .status()
+        .context("running cargo build")?;
+    anyhow::ensure!(status.success(), "cargo build failed");
+
+    // 3. Resolve paths. The release tournament binary is the
+    //    target we'll profile; the user supplied the rest of the
+    //    args (game, bots, etc.).
+    let target_dir = PathBuf::from(
+        std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string()),
+    );
+    let tournament_bin = target_dir.join("release").join("tournament");
+    anyhow::ensure!(
+        tournament_bin.exists(),
+        "expected {} after build — was the build profile changed?",
+        tournament_bin.display(),
+    );
+
+    let output: PathBuf = output_override.map(Path::to_path_buf).unwrap_or_else(|| {
+        target_dir.join("samply").join("profile.json.gz")
+    });
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+
+    // 4. Spawn samply. With `--save-only` set we just record and
+    //    exit; without it samply boots its local server and (by
+    //    default) opens the UI in a browser tab.
+    let mut cmd = std::process::Command::new("samply");
+    cmd.arg("record");
+    if no_open {
+        cmd.args(["--save-only", "--no-open"]);
+    }
+    cmd.arg("--output").arg(&output);
+    cmd.arg("--");
+    cmd.arg(&tournament_bin);
+    cmd.arg("run");
+    cmd.args(tournament_args);
+
+    println!(
+        "{} samply record → {}",
+        s.ok("→"),
+        s.path(&output.display().to_string()),
+    );
+    let status = cmd.status().context("running samply")?;
+    anyhow::ensure!(status.success(), "samply exited with {status}");
+
+    if no_open {
+        println!(
+            "{} Profile saved to {}. Open later with {}.",
+            s.ok("✓"),
+            s.path(&output.display().to_string()),
+            s.code(&format!("samply load {}", output.display())),
+        );
+    }
     Ok(())
 }
 

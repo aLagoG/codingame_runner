@@ -24,6 +24,14 @@ members = [
 version = "0.1.0"
 edition = "2024"
 
+# Keep symbols + line tables in release builds so profilers (samply,
+# Instruments, perf) can map sampled addresses back to function +
+# line. Near-zero binary-size cost vs full debug info; absolutely
+# essential for flamegraphs to be useful. cargo also propagates this
+# to cc-rs via `DEBUG=true`, so C++ FFI bots get `-g1` automatically.
+[profile.release]
+debug = "line-tables-only"
+
 [workspace.dependencies]
 anyhow = "1.0.102"
 clap = { version = "4.6.1", features = ["derive"] }
