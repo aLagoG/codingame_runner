@@ -12,8 +12,22 @@ use std::{
 };
 
 use libloading::{Library, Symbol};
+use rand::SeedableRng;
+use rand::rngs::StdRng;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
+
+/// The RNG type every game receives in [`Game::new`]. Concrete (not
+/// `<R: Rng>` generic) so the `Game` trait stays object-safe — we
+/// don't use `Box<dyn Game>` today, but a generic method would
+/// permanently rule it out. Games can still pass `&mut StdRng` to
+/// anything that takes `impl Rng` internally.
+pub type GameRng = StdRng;
+
+/// Re-exported so callers that build a `GameRng` (the runner, viz,
+/// tests) don't have to pull `rand` into their `Cargo.toml` just
+/// for the `seed_from_u64` constructor.
+pub use rand::SeedableRng as GameRngSeed;
 
 use crate::{ReadFrom, WriteTo};
 
@@ -258,7 +272,13 @@ pub trait Game: Sized {
     /// Final result of the match (winner, scores, …).
     type Outcome;
 
-    fn new(num_players: u32, seed: u64) -> Self;
+    /// Build a fresh game. The runner builds the `rng` from a `u64`
+    /// seed (see [`run_match`]) and persists that seed in the
+    /// [`Replay`], so re-running a replay reconstructs the same
+    /// RNG and produces the same game stream. Games consume the
+    /// RNG however they want — store it as a field, draw eagerly,
+    /// or ignore it entirely.
+    fn new(num_players: u32, rng: &mut GameRng) -> Self;
 
     fn initial_input(&self, player: PlayerId) -> Self::InitialInput;
     fn input_for(&self, player: PlayerId) -> Self::Input;
@@ -273,26 +293,26 @@ pub trait Game: Sized {
     fn active_players(&self) -> &[PlayerId];
 
     /// Final rank of each player in a finished match, 1-indexed.
-    /// `placement[i]` is player `i`'s rank — 1 is the winner, larger
-    /// numbers are worse. Tied players share a rank using
+    /// `standings[i]` is player `i`'s rank — 1 is the winner,
+    /// larger numbers are worse. Tied players share a rank using
     /// *competition ranking* (1, 1, 3 — not 1, 1, 2), so the rank
-    /// gaps make the placement-pairwise Elo decomposition come out
-    /// right. Returned vector has length `num_players` (one entry
-    /// per player, in player-id order).
+    /// gaps make the standings-pairwise Elo decomposition come
+    /// out right. Returned vector has length `num_players` (one
+    /// entry per player, in player-id order).
     ///
     /// For binary win/loss games (e.g. tic-tac-toe), the natural
     /// mapping is winner = rank 1, loser = rank 2, draw = all
     /// rank 1. For tron, the implementation tracks death tick and
     /// ranks survivors first, then dead players in reverse death
     /// order (later death = better rank, ties allowed).
-    fn placement(outcome: &Self::Outcome) -> Vec<u32>;
+    fn standings(outcome: &Self::Outcome) -> Vec<u32>;
 
     /// The unique winner of a finished match, or `None` if no single
     /// player came first (draw, tied survivors, all-mutual-death).
-    /// Default impl derives from [`placement`] — games rarely need
+    /// Default impl derives from [`standings`] — games rarely need
     /// to override.
     fn winner(outcome: &Self::Outcome) -> Option<PlayerId> {
-        let p = Self::placement(outcome);
+        let p = Self::standings(outcome);
         let mut firsts = p
             .iter()
             .enumerate()
@@ -308,7 +328,7 @@ pub trait Game: Sized {
     /// games that track a continuous metric: trail length in tron,
     /// points in a scored game, etc.
     ///
-    /// Scores are *informational*; placement is the authoritative
+    /// Scores are *informational*; standings is the authoritative
     /// ranking. They exist so tournaments can surface tiebreakers
     /// like "both bots tied for 1st, but A averaged 80 cells claimed
     /// vs B's 40" — useful for tracking improvement across
@@ -354,7 +374,8 @@ impl Default for RunConfig {
 /// Compact recording of a finished match: the seed, the player count, and the
 /// outputs each player submitted on each tick. Combined with a deterministic
 /// [`Game`] implementation this is enough to reconstruct the whole match by
-/// calling `Game::new(num_players, seed)` and replaying `outputs` through
+/// rebuilding the RNG via `StdRng::seed_from_u64(seed)`, calling
+/// `Game::new(num_players, &mut rng)`, and replaying `outputs` through
 /// `Game::step`.
 ///
 /// `outputs` is indexed `[tick][player]`. The inner Vec is the same shape
@@ -515,7 +536,11 @@ pub fn run_match<G: Game>(
     mut players: Vec<Box<dyn Player<G>>>,
     config: RunConfig,
 ) -> Result<MatchResult<G>, MatchError> {
-    let mut game = G::new(num_players, seed);
+    // Build the RNG from the seed and hand it to the game. The
+    // seed itself still rides into `Replay` below so re-runs are
+    // deterministic.
+    let mut rng = StdRng::seed_from_u64(seed);
+    let mut game = G::new(num_players, &mut rng);
     let mut stats: Vec<PlayerStats> =
         (0..players.len()).map(|_| PlayerStats::default()).collect();
     let mut outputs_per_tick: Vec<Vec<Option<G::Output>>> = Vec::new();

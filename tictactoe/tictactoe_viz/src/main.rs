@@ -1,7 +1,7 @@
 use macroquad::prelude::*;
 use tictactoe_defs::{Cell, Pos, TurnOutput};
 use tictactoe_game::TicTacToeGame;
-use viz::{CellGrid, Replay, Visualize, color_chip, egui, to_egui};
+use viz::{CellGrid, Replay, VizCtx, Visualize, color_chip, egui, to_egui};
 
 const X_COLOR: Color = Color::new(0.30, 0.70, 1.00, 1.0);
 const O_COLOR: Color = Color::new(1.00, 0.40, 0.40, 1.0);
@@ -73,7 +73,7 @@ impl Visualize for TicTacToeViz {
         ui.weak(format!("{empty} empty"));
     }
 
-    fn bottom_panel(game: &TicTacToeGame, ui: &mut egui::Ui) {
+    fn bottom_panel(game: &TicTacToeGame, _ctx: &VizCtx<'_, Self>, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             for pid in 0..2u32 {
                 color_chip(ui, player_color(pid));

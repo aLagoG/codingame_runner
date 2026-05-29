@@ -15,7 +15,7 @@ use macroquad::prelude::*;
 // Re-exported so per-game viz crates can reference them through `viz::*`
 // without adding their own deps, and stay in lockstep with whatever
 // `egui-macroquad` / `common` pull in.
-pub use common::engine::{Game, Replay, read_replay};
+pub use common::engine::{Game, GameRng, GameRngSeed, Replay, read_replay};
 pub use egui_macroquad::egui;
 pub use macroquad;
 
@@ -49,7 +49,24 @@ pub trait Visualize {
 
     /// Bottom panel (above the controls) for per-tick per-player info — e.g.
     /// the move each player submitted this tick. Default is empty.
-    fn bottom_panel(_game: &Self::Game, _ui: &mut egui::Ui) {}
+    ///
+    /// `ctx` carries the displayed tick and the full replay so the panel can
+    /// look at the just-played move (`ctx.replay.outputs[ctx.current_tick - 1]`)
+    /// without TronGame having to retain a `last_moves` mirror.
+    fn bottom_panel(_game: &Self::Game, _ctx: &VizCtx<'_, Self>, _ui: &mut egui::Ui) {}
+}
+
+/// Per-frame context passed to panel methods that need to look beyond the
+/// current `Game` snapshot — typically the just-played move(s). Kept narrow
+/// on purpose: only what panels actually need today (the tick the viz is
+/// currently showing + the full replay it was built from).
+pub struct VizCtx<'a, V: Visualize + ?Sized> {
+    /// Number of steps applied to reach the displayed state. `0` means the
+    /// pre-game initial state (no moves yet); `N` means after step N-1 has
+    /// been applied. Use `current_tick.checked_sub(1)` to index into
+    /// `replay.outputs` for the most recent move.
+    pub current_tick: usize,
+    pub replay: &'a Replay<<V::Game as Game>::Output>,
 }
 
 /// Pixel geometry of the rendered board for the current frame.
@@ -118,7 +135,7 @@ pub async fn run<V: Visualize>(
         accum: 0.0,
     };
 
-    let mut game = V::Game::new(replay.num_players, replay.seed);
+    let mut game = build_game::<V>(&replay);
     let mut game_tick: usize = 0;
 
     // Intercept window-close so we can return cleanly instead of macroquad
@@ -140,7 +157,7 @@ pub async fn run<V: Visualize>(
 
         let status = V::status(&game);
         egui_macroquad::ui(|ctx| {
-            build_panels::<V>(ctx, &mut state, n_states, &game, &status);
+            build_panels::<V>(ctx, &mut state, n_states, &game, &status, &replay);
         });
         egui_macroquad::draw();
 
@@ -158,13 +175,23 @@ fn sync_game<V: Visualize>(
     target: usize,
 ) {
     if target < *current {
-        *game = V::Game::new(replay.num_players, replay.seed);
+        *game = build_game::<V>(replay);
         *current = 0;
     }
     while *current < target {
         let _ = game.step(&replay.outputs[*current]);
         *current += 1;
     }
+}
+
+/// Build a fresh `V::Game` from a replay — same pattern the runner
+/// uses in `run_match`: reconstruct an `StdRng` from the replay's
+/// seed and pass it to `Game::new`. Centralised here so the two
+/// call sites (initial build + backward-scrub rebuild) stay in
+/// lockstep.
+fn build_game<V: Visualize>(replay: &Replay<<V::Game as Game>::Output>) -> V::Game {
+    let mut rng = GameRng::seed_from_u64(replay.seed);
+    V::Game::new(replay.num_players, &mut rng)
 }
 
 fn fit_grid<V: Visualize>() -> CellGrid {
@@ -238,12 +265,13 @@ fn build_panels<V: Visualize>(
     n: usize,
     game: &V::Game,
     status: &str,
+    replay: &Replay<<V::Game as Game>::Output>,
 ) {
     // Order matters: each panel claims space from what's left. Bottom panels
     // first → they span the full window width. Then the side panel takes the
     // right edge of the remaining (game) area only.
     build_controls(ctx, s, n, status);
-    build_bottom_panel::<V>(ctx, game);
+    build_bottom_panel::<V>(ctx, game, s.tick, replay);
     build_side_panel::<V>(ctx, game);
 }
 
@@ -299,7 +327,12 @@ fn build_controls(ctx: &egui::Context, s: &mut State, n: usize, status: &str) {
         });
 }
 
-fn build_bottom_panel<V: Visualize>(ctx: &egui::Context, game: &V::Game) {
+fn build_bottom_panel<V: Visualize>(
+    ctx: &egui::Context,
+    game: &V::Game,
+    current_tick: usize,
+    replay: &Replay<<V::Game as Game>::Output>,
+) {
     egui::TopBottomPanel::bottom("players")
         .min_height(PLAYERS_H)
         .max_height(PLAYERS_H)
@@ -307,7 +340,11 @@ fn build_bottom_panel<V: Visualize>(ctx: &egui::Context, game: &V::Game) {
             ui.add_space(4.0);
             ui.heading("This tick");
             ui.separator();
-            V::bottom_panel(game, ui);
+            let viz_ctx = VizCtx {
+                current_tick,
+                replay,
+            };
+            V::bottom_panel(game, &viz_ctx, ui);
         });
 }
 

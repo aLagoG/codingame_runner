@@ -160,18 +160,18 @@ pub struct MatchRecord {
     /// Index into `bots`, or `None` for a draw.
     pub winner: Option<usize>,
     /// Final rank of each bot, 1-indexed, in seat order. Tied players
-    /// share a rank (competition ranking). Driven by `Game::placement`
+    /// share a rank (competition ranking). Driven by `Game::standings`
     /// — for tron that means survivors share rank 1 and dead players
     /// are ordered by death tick. Optional for backward compatibility
-    /// with logs written before placement existed; missing placement
+    /// with logs written before standings existed; missing standings
     /// is reconstructed from `winner` at read time.
     #[serde(default)]
-    pub placement: Vec<u32>,
+    pub standings: Vec<u32>,
     /// Per-bot scores in seat order, from `Game::scores`. `None` for
     /// games where score isn't meaningful (tic-tac-toe). `Some` for
     /// games that track a continuous metric (tron's trail length,
     /// etc.). The report aggregates these as a tiebreaker alongside
-    /// placement.
+    /// standings.
     #[serde(default)]
     pub scores: Option<Vec<f64>>,
     /// Per-bot FFI counter aggregates from the match. `None` when
@@ -227,13 +227,13 @@ impl CounterStats {
 }
 
 impl MatchRecord {
-    /// Returns `placement` if set, or a best-effort reconstruction
+    /// Returns `standings` if set, or a best-effort reconstruction
     /// from `winner` (winner = 1, others = 2; draw = all 1). Older
-    /// JSONL files written before the placement field exists get a
+    /// JSONL files written before the standings field exists get a
     /// reasonable degradation.
-    pub fn placement_or_derive(&self) -> Vec<u32> {
-        if !self.placement.is_empty() {
-            return self.placement.clone();
+    pub fn standings_or_derive(&self) -> Vec<u32> {
+        if !self.standings.is_empty() {
+            return self.standings.clone();
         }
         match self.winner {
             Some(w) => (0..self.bots.len())
@@ -346,7 +346,7 @@ fn run_match_typed<G: FfiGame + 'static>(
             .with_context(|| format!("running match for game {game_name}"))?;
 
     let winner = G::winner(&outcome).map(|p| p as usize);
-    let placement = G::placement(&outcome);
+    let standings = G::standings(&outcome);
     let scores = G::scores(&outcome);
     let per_bot_counters: Vec<HashMap<String, CounterStats>> = stats
         .iter()
@@ -359,7 +359,7 @@ fn run_match_typed<G: FfiGame + 'static>(
         bots: bots.iter().map(|b| b.name.clone()).collect(),
         seed,
         winner,
-        placement,
+        standings,
         scores,
         counters: if has_any_counters {
             Some(per_bot_counters)
@@ -381,14 +381,14 @@ pub struct BotSummary {
     pub wins: u32,
     pub losses: u32,
     pub draws: u32,
-    /// `placement_counts[k]` = number of matches where this bot
+    /// `standing_counts[k]` = number of matches where this bot
     /// finished at rank `k + 1`. Length grows to fit the largest
     /// rank observed across the log; missing tail entries are
     /// implicit zeros.
-    pub placement_counts: Vec<u32>,
-    /// Mean placement across all matches (lower is better). Computed
+    pub standing_counts: Vec<u32>,
+    /// Mean standings across all matches (lower is better). Computed
     /// as `sum_of_ranks / games`. `0.0` if no games played.
-    pub avg_placement: f64,
+    pub avg_standing: f64,
     /// Aggregated score stats — `None` if this bot's game never
     /// emitted scores. The interpretation of "score" is per-game
     /// (trail length for tron, points for a scored game, ...);
@@ -410,15 +410,15 @@ pub struct BotSummary {
 }
 
 impl BotSummary {
-    fn record_placement(&mut self, rank: u32) {
+    fn record_standing(&mut self, rank: u32) {
         let idx = (rank - 1) as usize;
-        if self.placement_counts.len() <= idx {
-            self.placement_counts.resize(idx + 1, 0);
+        if self.standing_counts.len() <= idx {
+            self.standing_counts.resize(idx + 1, 0);
         }
-        self.placement_counts[idx] += 1;
+        self.standing_counts[idx] += 1;
         // Incremental mean: `avg += (x - avg) / n`.
         let n = self.games as f64;
-        self.avg_placement += (rank as f64 - self.avg_placement) / n;
+        self.avg_standing += (rank as f64 - self.avg_standing) / n;
     }
 
     fn record_score(&mut self, score: f64) {
@@ -537,7 +537,7 @@ pub struct Report {
 ///
 /// Elo update model:
 ///   * For every ordered pair of bots (a, b) in a match, compute
-///     their relative rank: a "beats" b if `placement[a] < placement[b]`,
+///     their relative rank: a "beats" b if `standings[a] < standings[b]`,
 ///     loses if greater, draws if equal.
 ///   * Each pair contributes one standard Elo update — every bot's
 ///     rating ends up shaped by where it placed relative to *every*
@@ -556,10 +556,10 @@ pub fn build_report(records: &[MatchRecord]) -> Report {
     let k_factor = 24.0;
 
     for rec in records {
-        let placement = rec.placement_or_derive();
+        let standings = rec.standings_or_derive();
 
         // Track participation. `games` is incremented *before*
-        // `record_placement` because the incremental-mean formula
+        // `record_standing` because the incremental-mean formula
         // expects `n` to already include the new sample.
         for name in &rec.bots {
             let s = per_bot.entry(name.clone()).or_default();
@@ -571,7 +571,7 @@ pub fn build_report(records: &[MatchRecord]) -> Report {
         for (i, name_i) in rec.bots.iter().enumerate() {
             let s = per_bot.get_mut(name_i).unwrap();
             s.time_summary.add(&rec.stats[i]);
-            s.record_placement(placement[i]);
+            s.record_standing(standings[i]);
             if let Some(scores) = &rec.scores
                 && let Some(score) = scores.get(i)
             {
@@ -588,7 +588,7 @@ pub fn build_report(records: &[MatchRecord]) -> Report {
         // (or draws if shared); anyone not at rank 1 loses (or
         // shares the draw if everyone is at rank 1).
         let firsts: Vec<usize> = (0..rec.bots.len())
-            .filter(|&i| placement[i] == 1)
+            .filter(|&i| standings[i] == 1)
             .collect();
         if firsts.len() == rec.bots.len() {
             for name in &rec.bots {
@@ -597,7 +597,7 @@ pub fn build_report(records: &[MatchRecord]) -> Report {
         } else {
             for i in 0..rec.bots.len() {
                 let s = per_bot.get_mut(&rec.bots[i]).unwrap();
-                if placement[i] == 1 {
+                if standings[i] == 1 {
                     s.wins += 1;
                 } else {
                     s.losses += 1;
@@ -623,7 +623,7 @@ pub fn build_report(records: &[MatchRecord]) -> Report {
         for i in 0..rec.bots.len() {
             for j in (i + 1)..rec.bots.len() {
                 let (name_i, name_j) = (&rec.bots[i], &rec.bots[j]);
-                let (rank_i, rank_j) = (placement[i], placement[j]);
+                let (rank_i, rank_j) = (standings[i], standings[j]);
 
                 let (score_i, score_j) = match rank_i.cmp(&rank_j) {
                     std::cmp::Ordering::Less => {
@@ -748,8 +748,8 @@ mod tests {
     }
 
     fn rec(bots: &[&str], winner: Option<usize>) -> MatchRecord {
-        // 2-player rec helper; placement derived from winner.
-        let placement = match winner {
+        // 2-player rec helper; standings derived from winner.
+        let standings = match winner {
             Some(w) => (0..bots.len())
                 .map(|i| if i == w { 1 } else { 2 } as u32)
                 .collect(),
@@ -760,7 +760,7 @@ mod tests {
             bots: bots.iter().map(|s| s.to_string()).collect(),
             seed: 0,
             winner,
-            placement,
+            standings,
             scores: None,
             counters: None,
             ticks: 5,
@@ -777,23 +777,23 @@ mod tests {
         }
     }
 
-    fn rec_placement(bots: &[&str], placement: Vec<u32>) -> MatchRecord {
-        rec_placement_scores(bots, placement, None)
+    fn rec_standings(bots: &[&str], standings: Vec<u32>) -> MatchRecord {
+        rec_standings_scores(bots, standings, None)
     }
 
-    fn rec_placement_scores(
+    fn rec_standings_scores(
         bots: &[&str],
-        placement: Vec<u32>,
+        standings: Vec<u32>,
         scores: Option<Vec<f64>>,
     ) -> MatchRecord {
-        let firsts: Vec<usize> = (0..bots.len()).filter(|&i| placement[i] == 1).collect();
+        let firsts: Vec<usize> = (0..bots.len()).filter(|&i| standings[i] == 1).collect();
         let winner = if firsts.len() == 1 { Some(firsts[0]) } else { None };
         MatchRecord {
             game: "tron".into(),
             bots: bots.iter().map(|s| s.to_string()).collect(),
             seed: 0,
             winner,
-            placement,
+            standings,
             scores,
             counters: None,
             ticks: 5,
@@ -864,31 +864,31 @@ mod tests {
     }
 
     #[test]
-    fn placement_pairwise_elo_separates_2nd_from_4th() {
+    fn standings_pairwise_elo_separates_2nd_from_4th() {
         // The motivating case: a is always 2nd, b is always 4th.
         // Both lose every match (rank > 1), but a should out-rate b.
         let records = vec![
-            rec_placement(&["w", "a", "x", "b"], vec![1, 2, 3, 4]),
-            rec_placement(&["w", "a", "x", "b"], vec![1, 2, 3, 4]),
-            rec_placement(&["w", "a", "x", "b"], vec![1, 2, 3, 4]),
+            rec_standings(&["w", "a", "x", "b"], vec![1, 2, 3, 4]),
+            rec_standings(&["w", "a", "x", "b"], vec![1, 2, 3, 4]),
+            rec_standings(&["w", "a", "x", "b"], vec![1, 2, 3, 4]),
         ];
         let report = build_report(&records);
         let a = &report.per_bot["a"];
         let b = &report.per_bot["b"];
         // Both have 0 wins, 3 losses — binary win-rate is a tie.
         assert_eq!((a.wins, a.losses, b.wins, b.losses), (0, 3, 0, 3));
-        // But avg placement and Elo separate them.
-        assert!(a.avg_placement < b.avg_placement);
+        // But avg standings and Elo separate them.
+        assert!(a.avg_standing < b.avg_standing);
         assert!(a.elo > b.elo);
         // a placed 2nd 3 times.
-        assert_eq!(a.placement_counts[1], 3);
+        assert_eq!(a.standing_counts[1], 3);
         // b placed 4th 3 times.
-        assert_eq!(b.placement_counts[3], 3);
+        assert_eq!(b.standing_counts[3], 3);
     }
 
     #[test]
-    fn placement_pairwise_elo_two_player_equals_winner_loser_form() {
-        // Sanity: with 2 players the placement-pairwise update has
+    fn standings_pairwise_elo_two_player_equals_winner_loser_form() {
+        // Sanity: with 2 players the standings-pairwise update has
         // to coincide with the old winner/loser update — this is
         // the invariant that keeps existing 2-player results stable.
         let records = vec![
@@ -903,18 +903,18 @@ mod tests {
     }
 
     #[test]
-    fn scores_aggregate_separately_from_placement() {
-        // Two matches: a and b tied for 1st in both. Same placement,
+    fn scores_aggregate_separately_from_standings() {
+        // Two matches: a and b tied for 1st in both. Same standings,
         // different score profile. Aggregation should reflect that.
         let records = vec![
-            rec_placement_scores(&["a", "b"], vec![1, 1], Some(vec![100.0, 50.0])),
-            rec_placement_scores(&["a", "b"], vec![1, 1], Some(vec![80.0, 60.0])),
+            rec_standings_scores(&["a", "b"], vec![1, 1], Some(vec![100.0, 50.0])),
+            rec_standings_scores(&["a", "b"], vec![1, 1], Some(vec![80.0, 60.0])),
         ];
         let report = build_report(&records);
         let a = &report.per_bot["a"];
         let b = &report.per_bot["b"];
-        // Same placement.
-        assert_eq!(a.avg_placement, b.avg_placement);
+        // Same standings.
+        assert_eq!(a.avg_standing, b.avg_standing);
         // Different scores.
         let a_s = a.score_summary.as_ref().unwrap();
         let b_s = b.score_summary.as_ref().unwrap();
@@ -962,7 +962,7 @@ mod tests {
             bots: vec!["a".into(), "b".into()],
             seed: 0,
             winner: Some(0),
-            placement: vec![1, 2],
+            standings: vec![1, 2],
             scores: None,
             counters: Some(vec![
                 HashMap::from([(
@@ -1010,10 +1010,10 @@ mod tests {
     }
 
     #[test]
-    fn placement_handles_tied_survivors() {
+    fn standings_handle_tied_survivors() {
         // 4-player mutual death (everyone rank 1). Should count as
         // a draw for everyone (no wins/losses), and no Elo movement.
-        let records = vec![rec_placement(&["a", "b", "c", "d"], vec![1, 1, 1, 1])];
+        let records = vec![rec_standings(&["a", "b", "c", "d"], vec![1, 1, 1, 1])];
         let report = build_report(&records);
         for name in ["a", "b", "c", "d"] {
             let s = &report.per_bot[name];

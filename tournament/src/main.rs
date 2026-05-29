@@ -402,29 +402,16 @@ fn assemble_seeds(explicit: &[u64], target: usize, random: bool) -> Vec<u64> {
     out
 }
 
-/// Generate `n` u64 seeds from process entropy. No external crate:
-/// `std::collections::hash_map::RandomState` is seeded from a
-/// process-wide non-deterministic source (`getrandom` on most
-/// platforms), and `SipHasher::write_u64(nanos) + write_usize(i)`
-/// gives us per-call uniqueness without needing a real RNG.
+/// Generate `n` u64 seeds from OS entropy. `rand::rng()` returns
+/// the thread-local CSPRNG (ChaCha-based, seeded from `getrandom`
+/// on most platforms), so per-call uniqueness and statistical
+/// quality both come for free.
 fn random_seeds(n: usize) -> Vec<u64> {
-    use std::collections::hash_map::RandomState;
-    use std::hash::{BuildHasher, Hasher};
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0);
-    let state = RandomState::new();
-    (0..n)
-        .map(|i| {
-            let mut h = state.build_hasher();
-            h.write_u64(nanos);
-            h.write_usize(i);
-            h.finish()
-        })
-        .collect()
+    // `RngExt::random` (not `Rng::random`) is the one returning a
+    // typed sample — `Rng` only has the lower-level helpers in 0.10.
+    use rand::RngExt;
+    let mut rng = rand::rng();
+    (0..n).map(|_| rng.random()).collect()
 }
 
 fn parse_bot_spec(s: &str) -> Result<BotSpec, String> {
@@ -475,7 +462,7 @@ fn print_summary(report: &tournament::Report) {
     let max_rank = report
         .per_bot
         .values()
-        .map(|s| s.placement_counts.len())
+        .map(|s| s.standing_counts.len())
         .max()
         .unwrap_or(0);
     let any_scores = report
@@ -524,11 +511,11 @@ fn print_summary(report: &tournament::Report) {
             s.draws,
             win_pct,
             s.elo - 1500.0,
-            s.avg_placement,
+            s.avg_standing,
             width = name_w,
         );
         for r in 0..max_rank {
-            let n = s.placement_counts.get(r).copied().unwrap_or(0);
+            let n = s.standing_counts.get(r).copied().unwrap_or(0);
             row.push_str(&format!("  {:>4}", n));
         }
         if any_scores {

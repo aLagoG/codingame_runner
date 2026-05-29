@@ -6,3 +6,4 @@ edition.workspace = true
 [dependencies]
 tron_defs.workspace = true
 common.workspace = true
+rand.workspace = true

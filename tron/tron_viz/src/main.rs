@@ -1,7 +1,7 @@
 use macroquad::prelude::*;
 use tron_defs::{Direction, TurnOutput};
 use tron_game::TronGame;
-use viz::{CellGrid, PALETTE, Replay, Visualize, color_chip, egui};
+use viz::{CellGrid, PALETTE, Replay, VizCtx, Visualize, color_chip, egui};
 
 struct TronViz;
 
@@ -15,13 +15,18 @@ impl Visualize for TronViz {
     fn draw(game: &TronGame, grid: &CellGrid) {
         grid.draw_grid_lines(Color::new(0.15, 0.15, 0.2, 1.0), 1.0);
 
-        // Trails first so heads draw on top.
-        for (pid, trail) in game.trails().iter().enumerate() {
-            let mut color = PALETTE[pid % PALETTE.len()];
-            color.a = if game.alive()[pid] { 0.7 } else { 0.35 };
-            for p in trail {
-                let (x, y, w, h) = grid.cell_rect(p.y, p.x);
-                draw_rectangle(x + 1.0, y + 1.0, w - 2.0, h - 2.0, color);
+        // Trails first so heads draw on top. Walk the board
+        // row-major. Dead players' cells are cleared by the engine
+        // on death (see `tron_game::step`), so we never see them
+        // here — every `Some(pid)` is an alive player.
+        for (y, row) in game.board().iter().enumerate() {
+            for (x, cell) in row.iter().enumerate() {
+                let Some(pid) = *cell else { continue };
+                let pid_us = pid as usize;
+                let mut color = PALETTE[pid_us % PALETTE.len()];
+                color.a = 0.7;
+                let (rx, ry, rw, rh) = grid.cell_rect(y as i32, x as i32);
+                draw_rectangle(rx + 1.0, ry + 1.0, rw - 2.0, rh - 2.0, color);
             }
         }
 
@@ -64,57 +69,108 @@ impl Visualize for TronViz {
                     ui.colored_label(egui::Color32::LIGHT_RED, "dead");
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.weak(format!("trail {}", game.trails()[pid].len()));
+                    // Only alive players have any cells on the
+                    // board — the engine clears a dead player's
+                    // trail at death, so "trail 0" for a dead pid
+                    // would be misleading. Skip the count entirely.
+                    if game.alive()[pid] {
+                        let pid_u32 = pid as u32;
+                        let cells: usize = game
+                            .board()
+                            .iter()
+                            .map(|row| row.iter().filter(|c| **c == Some(pid_u32)).count())
+                            .sum();
+                        ui.weak(format!("trail {cells}"));
+                    }
                 });
             });
         }
     }
 
-    fn bottom_panel(game: &TronGame, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
-            for pid in 0..game.last_moves().len() {
-                color_chip(ui, PALETTE[pid % PALETTE.len()]);
-                ui.label(format!("P{pid}:"));
-                let text = match game.last_moves()[pid] {
-                    Some(d) => format!("{d:?}").to_uppercase(),
-                    None => "—".into(),
-                };
-                ui.strong(text);
-                ui.add_space(16.0);
-            }
+    fn bottom_panel(_game: &TronGame, ctx: &VizCtx<'_, Self>, ui: &mut egui::Ui) {
+        // Tron is sequential — exactly one player moves per tick — so the
+        // most recent move is the unique non-None entry in the previous
+        // tick's output row. No walk-back over ticks, no per-player mirror
+        // on the game struct.
+        let Some(prev_tick) = ctx.current_tick.checked_sub(1) else {
+            return;
+        };
+        let Some((pid, output)) = ctx.replay.outputs[prev_tick]
+            .iter()
+            .enumerate()
+            .find_map(|(i, o)| o.as_ref().map(|o| (i, o)))
+        else {
+            return;
+        };
+        ui.horizontal(|ui| {
+            color_chip(ui, PALETTE[pid % PALETTE.len()]);
+            ui.label(format!("P{pid}:"));
+            ui.strong(format!("{:?}", output.direction).to_uppercase());
         });
     }
 }
 
-/// Hand-rolled demo: 4 players snake inward from their corners.
+/// Built-in demo. We can't hard-code per-player move scripts because
+/// `TronGame::new` picks random spawn positions (deterministic per seed,
+/// but not necessarily at the corners). Instead, we run a real engine
+/// match here with a trivial "first safe direction" policy and record
+/// its outputs. The same `SEED` is stored in the resulting `Replay`, so
+/// `build_game` in viz reconstructs the identical starting board.
 fn demo_replay() -> Replay<TurnOutput> {
     use Direction::*;
+    use viz::{Game, GameRng, GameRngSeed};
 
-    // Starts: 0=(0,0)  1=(29,19)  2=(0,19)  3=(29,0)
-    let patterns: [&[Direction]; 4] = [
-        &[Right, Right, Right, Right, Right, Down, Down, Down, Down, Down, Left, Left, Left, Left],
-        &[Left, Left, Left, Left, Left, Up, Up, Up, Up, Up, Right, Right, Right, Right],
-        &[Right, Right, Right, Right, Right, Up, Up, Up, Up, Up, Left, Left, Left, Left],
-        &[Left, Left, Left, Left, Left, Down, Down, Down, Down, Down, Right, Right, Right, Right],
+    const SEED: u64 = 0;
+    const NUM_PLAYERS: u32 = 4;
+    const WIDTH: i32 = 30;
+    const HEIGHT: i32 = 20;
+    // Per-player direction preference. The active player picks the first
+    // safe entry; differing orderings keep the four trails visually
+    // distinct instead of all hugging the same edge.
+    const PREFS: [[Direction; 4]; 4] = [
+        [Right, Down, Left, Up],
+        [Left, Up, Right, Down],
+        [Right, Up, Left, Down],
+        [Left, Down, Right, Up],
     ];
 
-    let n = patterns[0].len();
-    let outputs: Vec<Vec<Option<TurnOutput>>> = (0..n)
-        .map(|i| {
-            (0..4)
-                .map(|p| {
-                    Some(TurnOutput {
-                        direction: patterns[p][i],
-                    })
-                })
-                .collect()
-        })
-        .collect();
+    let mut rng = GameRng::seed_from_u64(SEED);
+    let mut game = TronGame::new(NUM_PLAYERS, &mut rng);
+    let mut outputs_per_tick: Vec<Vec<Option<TurnOutput>>> = Vec::new();
+
+    while let Some(&p) = game.active_players().first() {
+        let pidx = p as usize;
+        let head = game.heads()[pidx];
+        let board = game.board();
+        let chosen = PREFS[pidx].iter().copied().find(|&d| {
+            let (dx, dy) = match d {
+                Up => (0, -1),
+                Down => (0, 1),
+                Left => (-1, 0),
+                Right => (1, 0),
+            };
+            let nx = head.x + dx;
+            let ny = head.y + dy;
+            nx >= 0
+                && nx < WIDTH
+                && ny >= 0
+                && ny < HEIGHT
+                && board[ny as usize][nx as usize].is_none()
+        });
+        let mut tick_out: Vec<Option<TurnOutput>> =
+            (0..NUM_PLAYERS).map(|_| None).collect();
+        tick_out[pidx] = chosen.map(|d| TurnOutput { direction: d });
+        let outcome = game.step(&tick_out);
+        outputs_per_tick.push(tick_out);
+        if outcome.is_some() {
+            break;
+        }
+    }
 
     Replay {
-        seed: 0,
-        num_players: 4,
-        outputs,
+        seed: SEED,
+        num_players: NUM_PLAYERS,
+        outputs: outputs_per_tick,
     }
 }
 

@@ -17,5 +17,6 @@ common.workspace = true
 codingame_runner = { path = "../runner" }
 tictactoe_game.workspace = true
 tron_game.workspace = true
+rand.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

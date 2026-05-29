@@ -19,7 +19,7 @@ use common::{
 use serde::{Deserialize, Serialize};
 
 #[repr(C)]
-#[derive(Debug, PartialEq, Eq, Copy, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone, Serialize, Deserialize, Hash)]
 pub struct Pos {
     pub x: i32,
     pub y: i32,

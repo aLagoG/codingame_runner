@@ -1,4 +1,4 @@
-use common::engine::{FfiGame, Game, NoInitialInput, PlayerId};
+use common::engine::{FfiGame, Game, GameRng, NoInitialInput, PlayerId};
 use tictactoe_defs::{BOARD_CELLS, BOARD_SIZE, Cell, Pos, TurnInput, TurnOutput};
 
 pub struct TicTacToeGame {
@@ -43,7 +43,7 @@ impl Game for TicTacToeGame {
     type Output = TurnOutput;
     type Outcome = TicTacToeOutcome;
 
-    fn new(num_players: u32, _seed: u64) -> Self {
+    fn new(num_players: u32, _rng: &mut GameRng) -> Self {
         assert!(
             num_players == 2,
             "TicTacToeGame is a 2-player game, got {num_players}"
@@ -104,7 +104,7 @@ impl Game for TicTacToeGame {
         &self.active
     }
 
-    fn placement(outcome: &TicTacToeOutcome) -> Vec<u32> {
+    fn standings(outcome: &TicTacToeOutcome) -> Vec<u32> {
         // 2-player game: winner = rank 1, loser = rank 2; draw =
         // both rank 1.
         match outcome.winner {
@@ -164,7 +164,16 @@ impl FfiGame for TicTacToeGame {
 
 #[cfg(test)]
 mod test {
+    use common::engine::GameRngSeed;
+
     use super::*;
+
+    /// Build a TicTacToeGame with a deterministic RNG (seed 0).
+    /// The game ignores the RNG, but the trait demands one.
+    fn new_game() -> TicTacToeGame {
+        let mut rng = GameRng::seed_from_u64(0);
+        TicTacToeGame::new(2, &mut rng)
+    }
 
     fn play(game: &mut TicTacToeGame, player: PlayerId, row: i32, col: i32) -> Option<TicTacToeOutcome> {
         let mut outputs: Vec<Option<TurnOutput>> = vec![None, None];
@@ -176,7 +185,7 @@ mod test {
 
     #[test]
     fn x_wins_top_row() {
-        let mut game = TicTacToeGame::new(2, 0);
+        let mut game = new_game();
         assert!(play(&mut game, 0, 0, 0).is_none());
         assert!(play(&mut game, 1, 1, 0).is_none());
         assert!(play(&mut game, 0, 0, 1).is_none());
@@ -187,7 +196,7 @@ mod test {
 
     #[test]
     fn draw_when_board_full() {
-        let mut game = TicTacToeGame::new(2, 0);
+        let mut game = new_game();
         // X O X
         // X O O
         // O X X
@@ -201,7 +210,7 @@ mod test {
 
     #[test]
     fn invalid_move_loses() {
-        let mut game = TicTacToeGame::new(2, 0);
+        let mut game = new_game();
         // Player 0 picks an out-of-bounds cell → player 1 wins.
         let outcome = play(&mut game, 0, 5, 5);
         assert!(outcome == Some(TicTacToeOutcome { winner: Some(1) }));
@@ -209,7 +218,7 @@ mod test {
 
     #[test]
     fn occupied_cell_loses() {
-        let mut game = TicTacToeGame::new(2, 0);
+        let mut game = new_game();
         play(&mut game, 0, 1, 1);
         let outcome = play(&mut game, 1, 1, 1);
         assert!(outcome == Some(TicTacToeOutcome { winner: Some(0) }));
