@@ -27,10 +27,14 @@ void set_counter_callback(void (*cb)(const char*, double)) {
     g_emit_counter = cb;
 }
 
-// Called once per player at match start. The default `NoInitialInput` type
-// carries no data — leave this empty. Games that ferry real init data
-// would stash the input in a `static` here for `take_turn` to read.
-void initialize(NoInitialInputFfi /*input*/) {}
+// Called once per player at match start. The engine sends `my_team_id`
+// (0 = goal on left, 1 = goal on right) — stash it for `take_turn` to
+// read. This placeholder bot doesn't use the value yet; smarter
+// strategies will consult `g_my_team_id` when deciding throw direction.
+static int32_t g_my_team_id = 0;
+void initialize(InitialInputFFI input) {
+    g_my_team_id = input.my_team_id;
+}
 
 // Phase-1 placeholder: idle both wizards at (0,0) thrust 0. Real strategy
 // lands in a later phase. The Rust baseline bot in `fantastic_bits_rs` is

@@ -13,15 +13,91 @@ use std::{
 
 use anyhow::{Context, bail};
 use common::{
-    Defs, NoInitialInput, NoInitialInputFfi, ReadFrom, SingleLine, TurnResult, WireInput,
-    WireInputFfi, WireOutput, WriteTo,
+    Defs, ReadFrom, SingleLine, TurnResult, WireInput, WireInputFfi, WireOutput, WriteTo,
 };
 use serde::{Deserialize, Serialize};
 
-/// Bumped on any wire-type change. Plugins built against an older
-/// `fantastic_bits_defs` export an older value; `PluginPlayer::load` reads it
-/// and refuses mismatches before any UB-prone call lands.
-pub const ABI_VERSION: u32 = 1;
+/// Bumped on any wire-type change. v2 added [`InitialInput::my_team_id`].
+pub const ABI_VERSION: u32 = 2;
+
+// ============================================================
+//  Initial input
+// ============================================================
+
+/// Per-player init data, sent once at match start. Matches the
+/// statement: `myTeamId = 0` → goal on the left; `myTeamId = 1` →
+/// goal on the right.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InitialInput {
+    pub my_team_id: i32,
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct InitialInputFFI<'a> {
+    my_team_id: i32,
+    _marker: PhantomData<&'a InitialInput>,
+}
+
+impl InitialInputFFI<'_> {
+    pub fn my_team_id(&self) -> i32 {
+        self.my_team_id
+    }
+}
+
+/// Borrowed view of [`InitialInput`] — what `on_init` actually sees.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct InitialInputRef<'a> {
+    pub my_team_id: i32,
+    _marker: PhantomData<&'a InitialInput>,
+}
+
+impl WireInput for InitialInput {
+    type Ffi<'a> = InitialInputFFI<'a>;
+    type Ref<'a> = InitialInputRef<'a>;
+
+    fn as_ffi(&self) -> InitialInputFFI<'_> {
+        InitialInputFFI {
+            my_team_id: self.my_team_id,
+            _marker: PhantomData,
+        }
+    }
+
+    fn as_ref(&self) -> InitialInputRef<'_> {
+        InitialInputRef {
+            my_team_id: self.my_team_id,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<'a> WireInputFfi<'a> for InitialInputFFI<'a> {
+    type Ref = InitialInputRef<'a>;
+
+    fn as_ref(&self) -> InitialInputRef<'a> {
+        InitialInputRef {
+            my_team_id: self.my_team_id,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl Display for InitialInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.my_team_id)
+    }
+}
+
+impl FromStr for InitialInput {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(InitialInput {
+            my_team_id: s.trim().parse().context("parsing my_team_id")?,
+        })
+    }
+}
+
+impl SingleLine for InitialInput {}
 
 // ============================================================
 //  Wire-level data types
@@ -213,7 +289,7 @@ impl TurnInputFFI<'_> {
 pub struct Ffi;
 
 impl Defs for Ffi {
-    type InitialInput = NoInitialInput;
+    type InitialInput = InitialInput;
     type Input = TurnInput;
     type Output = TurnOutput;
     const ABI_VERSION: u32 = ABI_VERSION;
@@ -226,7 +302,7 @@ impl Defs for Ffi {
 // `TurnResult` is generic over the per-game output; cbindgen monomorphises
 // it into a concrete C++ struct.
 unsafe extern "C" {
-    pub fn initialize(input: NoInitialInputFfi<'_>);
+    pub fn initialize(input: InitialInputFFI<'_>);
     pub fn take_turn(input: TurnInputFFI<'_>) -> TurnResult<TurnOutput>;
     pub fn abi_version() -> u32;
 }
@@ -533,6 +609,16 @@ fn read_two_ints(r: &mut impl BufRead) -> anyhow::Result<(i32, i32)> {
 mod tests {
     use super::*;
     use anyhow::Result;
+
+    #[test]
+    fn initial_input_round_trip() -> Result<()> {
+        for tid in [0, 1] {
+            let init = InitialInput { my_team_id: tid };
+            let parsed: InitialInput = init.to_string().parse()?;
+            assert_eq!(parsed, init);
+        }
+        Ok(())
+    }
 
     #[test]
     fn entity_round_trip() -> Result<()> {

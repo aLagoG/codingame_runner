@@ -8,10 +8,8 @@
 #include <ostream>
 #include <new>
 
-/// Bumped on any wire-type change. Plugins built against an older
-/// `fantastic_bits_defs` export an older value; `PluginPlayer::load` reads it
-/// and refuses mismatches before any UB-prone call lands.
-constexpr static const uint32_t ABI_VERSION = 1;
+/// Bumped on any wire-type change. v2 added [`InitialInput::my_team_id`].
+constexpr static const uint32_t ABI_VERSION = 2;
 
 /// What kind of action a wizard is taking this tick. Together with the
 /// numeric fields on [`WizardAction`] this is the full output schema.
@@ -50,9 +48,8 @@ enum class EntityKind : uint8_t {
   Bludger,
 };
 
-/// FFI mirror of [`NoInitialInput`]. Same one-byte layout.
-struct NoInitialInputFfi {
-  uint8_t _padding;
+struct InitialInputFFI {
+  int32_t my_team_id;
 };
 
 /// One wizard's action for one tick. Fields are kind-dependent — fill in
@@ -122,7 +119,7 @@ struct TurnInputFFI {
 
 extern "C" {
 
-extern void initialize(NoInitialInputFfi input);
+extern void initialize(InitialInputFFI input);
 
 extern TurnResult<TurnOutput> take_turn(TurnInputFFI input);
 
