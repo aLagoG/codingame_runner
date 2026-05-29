@@ -61,9 +61,7 @@ fn compiler_available() -> bool {
 #[test]
 fn tictactoe_main_flattens_compiles_and_runs() {
     if !compiler_available() {
-        eprintln!(
-            "skipping: no C++ compiler found (set CXX to override the default `c++`)",
-        );
+        eprintln!("skipping: no C++ compiler found (set CXX to override the default `c++`)",);
         return;
     }
     ensure_defs_header();

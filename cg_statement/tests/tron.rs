@@ -18,8 +18,7 @@ fn paste() -> String {
         .join("tests")
         .join("fixtures")
         .join("paste.html");
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
 }
 
 #[test]
@@ -53,8 +52,14 @@ fn bundled_css_is_injected() {
     let out = clean(&paste()).unwrap().html;
     assert!(out.contains("<style>"), "missing <style> block");
     // A distinctive bit of our hand-tuned CSS.
-    assert!(out.contains("#252e38"), "missing the page background colour");
-    assert!(out.contains("statement-victory-conditions"), "missing victory rule");
+    assert!(
+        out.contains("#252e38"),
+        "missing the page background colour"
+    );
+    assert!(
+        out.contains("statement-victory-conditions"),
+        "missing victory rule"
+    );
 }
 
 #[test]
@@ -93,9 +98,7 @@ fn tron_paste_produces_no_warnings() {
         }
         match &result.warnings[0] {
             Warning::UnknownInlineStyle { property, value } => {
-                panic!(
-                    "unknown inline style on tron paste: {property}: {value}",
-                );
+                panic!("unknown inline style on tron paste: {property}: {value}",);
             }
             Warning::UnknownStatementClass(c) => {
                 panic!("unknown statement class on tron paste: {c}");
@@ -113,5 +116,8 @@ fn bare_img_gets_alt() {
     let img_count = out.matches("<img").count();
     assert!(img_count > 0, "expected at least one <img>");
     let alt_count = out.matches("<img alt=").count();
-    assert_eq!(alt_count, img_count, "every <img> should have an alt= attribute");
+    assert_eq!(
+        alt_count, img_count,
+        "every <img> should have an alt= attribute"
+    );
 }

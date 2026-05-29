@@ -191,11 +191,21 @@ fn cmd_run(args: RunArgs) -> Result<()> {
         );
     }
 
-    eprintln!("Running {total} matches of {} (--parallel {parallel})…", args.game);
+    eprintln!(
+        "Running {total} matches of {} (--parallel {parallel})…",
+        args.game
+    );
     if parallel == 1 {
         run_sequential(&args.game, &args.bots, &schedule, args.counters, out, total)?;
     } else {
-        run_parallel(&args.game, &args.bots, schedule, args.counters, out, parallel)?;
+        run_parallel(
+            &args.game,
+            &args.bots,
+            schedule,
+            args.counters,
+            out,
+            parallel,
+        )?;
     }
 
     eprintln!("Wrote {} → {}", total, args.output.display());
@@ -250,8 +260,7 @@ fn run_parallel(
     let exe = std::env::current_exe().context("locating tournament binary")?;
 
     // Round-robin partition the schedule across `parallel` workers.
-    let mut partitions: Vec<Vec<ScheduledMatch>> =
-        (0..parallel).map(|_| Vec::new()).collect();
+    let mut partitions: Vec<Vec<ScheduledMatch>> = (0..parallel).map(|_| Vec::new()).collect();
     for (i, m) in schedule.into_iter().enumerate() {
         partitions[i % parallel].push(m);
     }
@@ -304,12 +313,11 @@ fn run_parallel(
     // per writer so a slow stdin pipe doesn't block scheduling of
     // the next partition.
     let mut writers = Vec::with_capacity(parallel);
-    for (worker, partition) in workers.iter_mut().zip(partitions.into_iter()) {
+    for (worker, partition) in workers.iter_mut().zip(partitions) {
         let stdin = worker.stdin.take().expect("piped");
         writers.push(thread::spawn(move || -> std::io::Result<()> {
             let mut stdin = BufWriter::new(stdin);
-            serde_json::to_writer(&mut stdin, &partition)
-                .map_err(std::io::Error::other)?;
+            serde_json::to_writer(&mut stdin, &partition).map_err(std::io::Error::other)?;
             stdin.flush()?;
             // Dropping `stdin` here closes the pipe → worker sees
             // EOF on its end and starts playing.
@@ -352,13 +360,19 @@ fn run_parallel(
 fn cmd_worker(args: WorkerArgs) -> Result<()> {
     // Read the partition handed over by main on stdin.
     let stdin = std::io::stdin();
-    let schedule: Vec<ScheduledMatch> = serde_json::from_reader(stdin.lock())
-        .context("parsing schedule chunk from stdin")?;
+    let schedule: Vec<ScheduledMatch> =
+        serde_json::from_reader(stdin.lock()).context("parsing schedule chunk from stdin")?;
 
     // Play it and stream JSONL on stdout. Each line is one
     // MatchRecord; main's reader thread picks them up by line.
     let stdout = std::io::stdout();
-    play_schedule(&args.game, &args.bots, &schedule, args.counters, stdout.lock())
+    play_schedule(
+        &args.game,
+        &args.bots,
+        &schedule,
+        args.counters,
+        stdout.lock(),
+    )
 }
 
 /// Build the final seed list for the scheduler. `explicit` is the
@@ -432,8 +446,8 @@ fn parse_bot_spec(s: &str) -> Result<BotSpec, String> {
 // ============================================================
 
 fn cmd_report(args: ReportArgs) -> Result<()> {
-    let file = File::open(&args.input)
-        .with_context(|| format!("opening {}", args.input.display()))?;
+    let file =
+        File::open(&args.input).with_context(|| format!("opening {}", args.input.display()))?;
     let mut records: Vec<MatchRecord> = Vec::new();
     for (lineno, line) in BufReader::new(file).lines().enumerate() {
         let line = line?;
@@ -465,10 +479,7 @@ fn print_summary(report: &tournament::Report) {
         .map(|s| s.standing_counts.len())
         .max()
         .unwrap_or(0);
-    let any_scores = report
-        .per_bot
-        .values()
-        .any(|s| s.score_summary.is_some());
+    let any_scores = report.per_bot.values().any(|s| s.score_summary.is_some());
     // Collect the union of counter names across all bots so we
     // print one column per counter, with `-` for bots that didn't
     // emit it.
@@ -480,14 +491,24 @@ fn print_summary(report: &tournament::Report) {
 
     let mut header = format!(
         "{:<width$}  {:>5}  {:>5}  {:>6}  {:>5}  {:>5}  {:>6}  {:>6}",
-        "bot", "games", "wins", "losses", "draws", "win%", "elo", "avgpl",
+        "bot",
+        "games",
+        "wins",
+        "losses",
+        "draws",
+        "win%",
+        "elo",
+        "avgpl",
         width = name_w,
     );
     for r in 1..=max_rank {
         header.push_str(&format!("  {:>4}", format!("{}{}", r, ordinal_suffix(r))));
     }
     if any_scores {
-        header.push_str(&format!("  {:>8}  {:>7}  {:>7}", "avg sc", "min sc", "max sc"));
+        header.push_str(&format!(
+            "  {:>8}  {:>7}  {:>7}",
+            "avg sc", "min sc", "max sc"
+        ));
     }
     for key in &counter_keys {
         // Headline: average across matches of the per-match average.
@@ -495,7 +516,10 @@ fn print_summary(report: &tournament::Report) {
         // line without wrapping.
         header.push_str(&format!("  {:>9}", truncate(key, 9)));
     }
-    header.push_str(&format!("  {:>7}  {:>7}  {:>7}", "avg ms", "p95 ms", "max ms"));
+    header.push_str(&format!(
+        "  {:>7}  {:>7}  {:>7}",
+        "avg ms", "p95 ms", "max ms"
+    ));
     println!("{header}");
     println!("{}", "-".repeat(header.len()));
 
@@ -535,9 +559,7 @@ fn print_summary(report: &tournament::Report) {
         }
         row.push_str(&format!(
             "  {:>7.2}  {:>7.2}  {:>7.2}",
-            s.time_summary.avg_of_avg_ms,
-            s.time_summary.avg_of_p95_ms,
-            s.time_summary.worst_max_ms,
+            s.time_summary.avg_of_avg_ms, s.time_summary.avg_of_p95_ms, s.time_summary.worst_max_ms,
         ));
         println!("{row}");
     }

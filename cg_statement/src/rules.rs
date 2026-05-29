@@ -92,7 +92,7 @@ pub fn is_allowed(property: &str, value: &str) -> bool {
 }
 
 pub fn is_known_section(token: &str) -> bool {
-    KNOWN_SECTIONS.iter().any(|s| *s == token)
+    KNOWN_SECTIONS.contains(&token)
 }
 
 #[cfg(test)]

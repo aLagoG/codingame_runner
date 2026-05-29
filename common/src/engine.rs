@@ -51,7 +51,10 @@ impl PlayerError {
     /// True for failures that mean the player isn't going to recover — the
     /// engine should stop trying to call them.
     fn is_fatal(&self) -> bool {
-        matches!(self, PlayerError::Eof | PlayerError::Io(_) | PlayerError::Panic)
+        matches!(
+            self,
+            PlayerError::Eof | PlayerError::Io(_) | PlayerError::Panic
+        )
     }
 }
 
@@ -319,7 +322,11 @@ pub trait Game: Sized {
             .filter(|&(_, &r)| r == 1)
             .map(|(i, _)| i as PlayerId);
         let first = firsts.next()?;
-        if firsts.next().is_some() { None } else { Some(first) }
+        if firsts.next().is_some() {
+            None
+        } else {
+            Some(first)
+        }
     }
 
     /// Per-player numeric scores from a finished match, in player-id
@@ -355,20 +362,12 @@ pub trait Player<G: Game> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RunConfig {
     /// If true, the first player error fails the whole match. If false, the
     /// failing player just submits `None` for that tick — the game decides
     /// what that means (elimination, no-op, etc.).
     pub abort_on_player_error: bool,
-}
-
-impl Default for RunConfig {
-    fn default() -> Self {
-        Self {
-            abort_on_player_error: false,
-        }
-    }
 }
 
 /// Compact recording of a finished match: the seed, the player count, and the
@@ -435,7 +434,8 @@ pub fn read_replay<G: Game>(r: &mut impl io::Read) -> anyhow::Result<Replay<G::O
     );
 
     let mut name_len = [0u8; 1];
-    r.read_exact(&mut name_len).context("reading game name length")?;
+    r.read_exact(&mut name_len)
+        .context("reading game name length")?;
     let mut name_buf = vec![0u8; name_len[0] as usize];
     r.read_exact(&mut name_buf).context("reading game name")?;
     let name = std::str::from_utf8(&name_buf).context("game name not utf-8")?;
@@ -496,10 +496,11 @@ thread_local! {
 }
 
 /// FFI callback the runner hands plugins via `set_counter_callback`.
-/// SAFETY: `key` must be a valid pointer to a NUL-terminated UTF-8
-/// string that lives for the duration of the call. Bots that pass
-/// bad pointers get their counter silently dropped — we never
-/// dereference past the NUL.
+///
+/// # Safety
+/// `key` must be a valid pointer to a NUL-terminated UTF-8 string that
+/// lives for the duration of the call. Bots that pass bad pointers get
+/// their counter silently dropped — we never dereference past the NUL.
 pub unsafe extern "C" fn cgr_emit_counter(key: *const c_char, value: f64) {
     if key.is_null() {
         return;
@@ -541,8 +542,7 @@ pub fn run_match<G: Game>(
     // deterministic.
     let mut rng = StdRng::seed_from_u64(seed);
     let mut game = G::new(num_players, &mut rng);
-    let mut stats: Vec<PlayerStats> =
-        (0..players.len()).map(|_| PlayerStats::default()).collect();
+    let mut stats: Vec<PlayerStats> = (0..players.len()).map(|_| PlayerStats::default()).collect();
     let mut outputs_per_tick: Vec<Vec<Option<G::Output>>> = Vec::new();
     // Players that hit a fatal error (panic, EOF, IO). We stop calling them
     // entirely — otherwise we keep banging on a closed pipe / crashed plugin
@@ -692,19 +692,16 @@ pub trait FfiGame: Game {
     /// `InitialInput = Self::InitialInput, Input = Self::Input,
     /// Output = Self::Output` bound ties this game's I/O types to the FFI
     /// surface that backs them.
-    type Defs: Defs<
-            InitialInput = Self::InitialInput,
-            Input = Self::Input,
-            Output = Self::Output,
-        >;
+    type Defs: Defs<InitialInput = Self::InitialInput, Input = Self::Input, Output = Self::Output>;
 }
 
 /// The `extern "C"` `take_turn` function pointer type for a given
 /// `FfiGame` — derived from the game's `Defs` so per-game `_game` crates
 /// never have to spell it out themselves.
-pub type FfiTakeTurn<G> = for<'a> unsafe extern "C" fn(
-    <<<G as FfiGame>::Defs as Defs>::Input as WireInput>::Ffi<'a>,
-) -> TurnResult<<<G as FfiGame>::Defs as Defs>::Output>;
+pub type FfiTakeTurn<G> =
+    for<'a> unsafe extern "C" fn(
+        <<<G as FfiGame>::Defs as Defs>::Input as WireInput>::Ffi<'a>,
+    ) -> TurnResult<<<G as FfiGame>::Defs as Defs>::Output>;
 
 /// The `extern "C"` `initialize` function pointer type for a given
 /// `FfiGame`. Called once per player at match start with the FFI mirror of
@@ -745,7 +742,8 @@ pub struct PluginPlayer<G: FfiGame> {
 }
 
 impl<G: FfiGame> PluginPlayer<G> {
-    /// SAFETY: `path` must point to a dynamic library produced by
+    /// # Safety
+    /// `path` must point to a dynamic library produced by
     /// `common::ffi_bot!(<defs>::Ffi, decide)` for a `_defs` crate whose
     /// `Defs::ABI_VERSION` matches this binary's. The ABI handshake below
     /// refuses mismatches before any UB-prone call lands.

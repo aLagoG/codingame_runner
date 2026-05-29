@@ -84,8 +84,16 @@ fn run_match(p0: Bot, p1: Bot) {
 
     let p0_path = p0.path();
     let p1_path = p1.path();
-    assert!(p0_path.exists(), "missing bot artifact: {}", p0_path.display());
-    assert!(p1_path.exists(), "missing bot artifact: {}", p1_path.display());
+    assert!(
+        p0_path.exists(),
+        "missing bot artifact: {}",
+        p0_path.display()
+    );
+    assert!(
+        p1_path.exists(),
+        "missing bot artifact: {}",
+        p1_path.display()
+    );
 
     let runner = env!("CARGO_BIN_EXE_codingame_runner");
     let out = Command::new(runner)
@@ -100,12 +108,17 @@ fn run_match(p0: Bot, p1: Bot) {
     assert!(
         out.status.success(),
         "runner failed ({:?} vs {:?})\nstdout:\n{}\nstderr:\n{}",
-        p0, p1, stdout, stderr,
+        p0,
+        p1,
+        stdout,
+        stderr,
     );
     assert!(
         stdout.contains("outcome:"),
         "no outcome line in runner output ({:?} vs {:?})\nstdout:\n{}",
-        p0, p1, stdout,
+        p0,
+        p1,
+        stdout,
     );
 }
 

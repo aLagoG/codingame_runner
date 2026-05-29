@@ -1,7 +1,7 @@
 use macroquad::prelude::*;
 use tron_defs::{Direction, TurnOutput};
 use tron_game::TronGame;
-use viz::{CellGrid, PALETTE, Replay, VizCtx, Visualize, color_chip, egui};
+use viz::{CellGrid, PALETTE, Replay, Visualize, VizCtx, color_chip, egui};
 
 struct TronViz;
 
@@ -151,14 +151,11 @@ fn demo_replay() -> Replay<TurnOutput> {
             };
             let nx = head.x + dx;
             let ny = head.y + dy;
-            nx >= 0
-                && nx < WIDTH
-                && ny >= 0
-                && ny < HEIGHT
+            (0..WIDTH).contains(&nx)
+                && (0..HEIGHT).contains(&ny)
                 && board[ny as usize][nx as usize].is_none()
         });
-        let mut tick_out: Vec<Option<TurnOutput>> =
-            (0..NUM_PLAYERS).map(|_| None).collect();
+        let mut tick_out: Vec<Option<TurnOutput>> = (0..NUM_PLAYERS).map(|_| None).collect();
         tick_out[pidx] = chosen.map(|d| TurnOutput { direction: d });
         let outcome = game.step(&tick_out);
         outputs_per_tick.push(tick_out);

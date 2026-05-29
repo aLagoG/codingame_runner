@@ -175,7 +175,12 @@ mod test {
         TicTacToeGame::new(2, &mut rng)
     }
 
-    fn play(game: &mut TicTacToeGame, player: PlayerId, row: i32, col: i32) -> Option<TicTacToeOutcome> {
+    fn play(
+        game: &mut TicTacToeGame,
+        player: PlayerId,
+        row: i32,
+        col: i32,
+    ) -> Option<TicTacToeOutcome> {
         let mut outputs: Vec<Option<TurnOutput>> = vec![None, None];
         outputs[player as usize] = Some(TurnOutput {
             pos: Pos { row, col },
@@ -200,7 +205,17 @@ mod test {
         // X O X
         // X O O
         // O X X
-        let moves = [(0, 0), (0, 1), (0, 2), (1, 1), (1, 0), (1, 2), (2, 1), (2, 0), (2, 2)];
+        let moves = [
+            (0, 0),
+            (0, 1),
+            (0, 2),
+            (1, 1),
+            (1, 0),
+            (1, 2),
+            (2, 1),
+            (2, 0),
+            (2, 2),
+        ];
         let mut outcome = None;
         for (i, &(r, c)) in moves.iter().enumerate() {
             outcome = play(&mut game, (i % 2) as PlayerId, r, c);

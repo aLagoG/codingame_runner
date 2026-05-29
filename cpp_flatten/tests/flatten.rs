@@ -3,7 +3,6 @@
 //! compiler involved — see `e2e_compile.rs` for the "does the result
 //! actually compile and run" test.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use tempfile::TempDir;
@@ -121,8 +120,15 @@ fn relative_path_traversal_works() {
 fn missing_local_include_errors_with_context() {
     let (_dir, entry) = fixture(&[("main.cpp", "#include \"nope.h\"\n")], "main.cpp");
     let err = cpp_flatten::flatten(&entry).expect_err("should fail");
-    let chain: String = err.chain().map(|e| e.to_string()).collect::<Vec<_>>().join(" | ");
-    assert!(chain.contains("nope.h"), "error chain didn't mention nope.h: {chain}");
+    let chain: String = err
+        .chain()
+        .map(|e| e.to_string())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    assert!(
+        chain.contains("nope.h"),
+        "error chain didn't mention nope.h: {chain}"
+    );
 }
 
 #[test]

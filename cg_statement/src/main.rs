@@ -7,8 +7,8 @@ use std::io::{self, Read, Write};
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
-use clap::Parser;
 use cg_statement::{Warning, clean};
+use clap::Parser;
 
 #[derive(Parser)]
 #[command(
@@ -34,7 +34,9 @@ fn main() -> Result<()> {
         Some(p) => fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))?,
         None => {
             let mut s = String::new();
-            io::stdin().read_to_string(&mut s).context("reading stdin")?;
+            io::stdin()
+                .read_to_string(&mut s)
+                .context("reading stdin")?;
             s
         }
     };
@@ -52,7 +54,9 @@ fn main() -> Result<()> {
             fs::write(p, &result.html).with_context(|| format!("writing {}", p.display()))?;
         }
         None => {
-            io::stdout().write_all(result.html.as_bytes()).context("writing stdout")?;
+            io::stdout()
+                .write_all(result.html.as_bytes())
+                .context("writing stdout")?;
         }
     }
 
@@ -72,7 +76,9 @@ fn main() -> Result<()> {
 fn print_warning(w: &Warning) {
     match w {
         Warning::UnknownInlineStyle { property, value } => {
-            eprintln!("  unknown inline style: {property}: {value} (kept; add to rules.rs to silence)");
+            eprintln!(
+                "  unknown inline style: {property}: {value} (kept; add to rules.rs to silence)"
+            );
         }
         Warning::UnknownStatementClass(c) => {
             eprintln!("  unknown statement class: .{c} (kept; bundled CSS may not style it)");

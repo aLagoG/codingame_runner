@@ -56,10 +56,7 @@ pub enum Warning {
     /// An inline `style` property we don't have an opinion on. Kept
     /// in the output verbatim. Format mirrors what was in the
     /// source (no normalisation).
-    UnknownInlineStyle {
-        property: String,
-        value: String,
-    },
+    UnknownInlineStyle { property: String, value: String },
     /// A class token beginning with `statement-` that isn't in the
     /// known set. The element is kept but the bundled CSS probably
     /// doesn't style it.
@@ -105,10 +102,7 @@ fn slice_body(input: &str, warnings: &mut Vec<Warning>) -> String {
         r#"<div style='color: #7cc576"#,
     ];
 
-    let first = candidates
-        .iter()
-        .filter_map(|m| input.find(m))
-        .min();
+    let first = candidates.iter().filter_map(|m| input.find(m)).min();
 
     match first {
         Some(off) => input[off..].to_string(),
@@ -351,7 +345,10 @@ mod tests {
             <div style="color: #7cc576">callout</div>
         "#;
         let body = slice_body(input, &mut vec![]);
-        assert!(body.trim_start().starts_with(r#"<div class="statement-goal""#));
+        assert!(
+            body.trim_start()
+                .starts_with(r#"<div class="statement-goal""#)
+        );
     }
 
     #[test]
@@ -361,7 +358,10 @@ mod tests {
             <div class="statement-goal">goal</div>
         "#;
         let body = slice_body(input, &mut vec![]);
-        assert!(body.trim_start().starts_with(r#"<div style="color: #7cc576""#));
+        assert!(
+            body.trim_start()
+                .starts_with(r#"<div style="color: #7cc576""#)
+        );
     }
 
     #[test]
@@ -382,7 +382,9 @@ mod tests {
         assert!(out.contains("color: #7cc576"));
         // padding isn't in either list → kept + warning.
         assert!(out.contains("padding: 5px"));
-        assert!(w.iter().any(|w| matches!(w, Warning::UnknownInlineStyle { property, .. } if property == "padding")));
+        assert!(w.iter().any(
+            |w| matches!(w, Warning::UnknownInlineStyle { property, .. } if property == "padding")
+        ));
     }
 
     #[test]

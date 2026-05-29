@@ -289,7 +289,10 @@ impl ReadFrom for TurnInput {
     fn read_from(r: &mut impl BufRead) -> anyhow::Result<Self> {
         let mut header = String::new();
         r.read_line(&mut header)?;
-        let player_number: i32 = header.trim().parse().context("Failed reading player_number")?;
+        let player_number: i32 = header
+            .trim()
+            .parse()
+            .context("Failed reading player_number")?;
 
         let mut board = [Cell::Empty; BOARD_CELLS];
         for row in 0..BOARD_SIZE {
@@ -420,7 +423,7 @@ mod test {
     {
         let mut buf = Vec::new();
         value.write_to(&mut buf)?;
-        Ok(T::read_from(&mut buf.as_slice())?)
+        T::read_from(&mut buf.as_slice())
     }
 
     #[test]

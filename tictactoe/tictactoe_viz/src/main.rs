@@ -1,7 +1,7 @@
 use macroquad::prelude::*;
 use tictactoe_defs::{Cell, Pos, TurnOutput};
 use tictactoe_game::TicTacToeGame;
-use viz::{CellGrid, Replay, VizCtx, Visualize, color_chip, egui, to_egui};
+use viz::{CellGrid, Replay, Visualize, VizCtx, color_chip, egui, to_egui};
 
 const X_COLOR: Color = Color::new(0.30, 0.70, 1.00, 1.0);
 const O_COLOR: Color = Color::new(1.00, 0.40, 0.40, 1.0);

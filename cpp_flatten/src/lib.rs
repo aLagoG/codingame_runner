@@ -53,10 +53,7 @@ fn flatten_into(path: &Path, seen: &mut HashSet<PathBuf>, out: &mut String) -> R
         if let Some(rel) = parse_local_include(line) {
             let nested = parent.join(rel);
             flatten_into(&nested, seen, out).with_context(|| {
-                format!(
-                    "inlining `#include \"{rel}\"` from {}",
-                    canonical.display(),
-                )
+                format!("inlining `#include \"{rel}\"` from {}", canonical.display(),)
             })?;
         } else if is_pragma_once(line) {
             // Path-based dedup above gives the same guarantee; leaving

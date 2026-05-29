@@ -21,8 +21,9 @@ fn main() -> Result<()> {
     let args = Args::parse();
     let flat = cpp_flatten::flatten(&args.entry)?;
     match args.output {
-        Some(path) => std::fs::write(&path, &flat)
-            .with_context(|| format!("writing {}", path.display()))?,
+        Some(path) => {
+            std::fs::write(&path, &flat).with_context(|| format!("writing {}", path.display()))?
+        }
         None => print!("{flat}"),
     }
     Ok(())

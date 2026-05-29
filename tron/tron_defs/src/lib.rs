@@ -497,7 +497,7 @@ mod test {
     {
         let mut buf = Vec::new();
         value.write_to(&mut buf)?;
-        Ok(T::read_from(&mut buf.as_slice())?)
+        T::read_from(&mut buf.as_slice())
     }
 
     #[test]

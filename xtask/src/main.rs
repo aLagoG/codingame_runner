@@ -81,10 +81,10 @@ enum Command {
     /// Input comes from one of:
     ///   * `--input <file>` — read the paste from disk
     ///   * `--clipboard`     — pull from the system clipboard
-    ///                         (pbpaste / xclip / Get-Clipboard)
+    ///     (pbpaste / xclip / Get-Clipboard)
     ///   * otherwise         — stdin. When stdin is a TTY, the
-    ///                         command prints a prompt and waits
-    ///                         for Ctrl-D to terminate the input.
+    ///     command prints a prompt and waits
+    ///     for Ctrl-D to terminate the input.
     Statement {
         /// Game name (e.g. `tron`, `tictactoe`). The output goes to
         /// `<game>/<game>_game/instructions.html` unless `--output`
@@ -192,8 +192,7 @@ fn statement(
     if let Some(parent) = output.parent()
         && !parent.as_os_str().is_empty()
     {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("creating {}", parent.display()))?;
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
 
     // Read the paste from the chosen source.
@@ -208,7 +207,11 @@ fn statement(
             eprintln!(
                 "{} Paste your HTML, then press {} when done:",
                 s.heading("→"),
-                s.code(if cfg!(windows) { "Ctrl-Z, Enter" } else { "Ctrl-D" }),
+                s.code(if cfg!(windows) {
+                    "Ctrl-Z, Enter"
+                } else {
+                    "Ctrl-D"
+                }),
             );
         }
         let mut buf = String::new();
@@ -296,7 +299,11 @@ fn read_clipboard() -> Result<String> {
 /// Build a release tournament binary, then drive it with `samply
 /// record`. samply's local server opens the Firefox-profiler view
 /// for the recorded trace unless `--no-open` was passed.
-fn profile(no_open: bool, output_override: Option<&Path>, tournament_args: &[String]) -> Result<()> {
+fn profile(
+    no_open: bool,
+    output_override: Option<&Path>,
+    tournament_args: &[String],
+) -> Result<()> {
     let s = Style::new();
 
     // 1. Verify samply is on PATH; point the user at the install
@@ -333,9 +340,8 @@ fn profile(no_open: bool, output_override: Option<&Path>, tournament_args: &[Str
     // 3. Resolve paths. The release tournament binary is the
     //    target we'll profile; the user supplied the rest of the
     //    args (game, bots, etc.).
-    let target_dir = PathBuf::from(
-        std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string()),
-    );
+    let target_dir =
+        PathBuf::from(std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string()));
     let tournament_bin = target_dir.join("release").join("tournament");
     anyhow::ensure!(
         tournament_bin.exists(),
@@ -343,12 +349,11 @@ fn profile(no_open: bool, output_override: Option<&Path>, tournament_args: &[Str
         tournament_bin.display(),
     );
 
-    let output: PathBuf = output_override.map(Path::to_path_buf).unwrap_or_else(|| {
-        target_dir.join("samply").join("profile.json.gz")
-    });
+    let output: PathBuf = output_override
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| target_dir.join("samply").join("profile.json.gz"));
     if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("creating {}", parent.display()))?;
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
 
     // 4. Spawn samply. With `--save-only` set we just record and
@@ -405,8 +410,7 @@ fn bundle(game: &str, output_override: Option<&Path>) -> Result<()> {
             .join(format!("{game}_bot.cpp"))
     });
     if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("creating {}", parent.display()))?;
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
 
     // `CARGO` is set whenever xtask is invoked through `cargo xtask`.
@@ -562,7 +566,7 @@ fn walk_and_render(
 
         if path.is_dir() {
             walk_and_render(hbs, base, &path, dest_base, vars)?;
-        } else if path.extension().map_or(false, |e| e == "hbs") {
+        } else if path.extension().is_some_and(|e| e == "hbs") {
             // Strip .hbs extension for output filename
             let out_name = relative.with_extension("");
             // Also template-expand the filename itself (for {{timestamp}}_foo.rs etc.)

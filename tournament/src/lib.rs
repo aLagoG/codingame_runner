@@ -27,9 +27,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use codingame_runner::make_player;
-use common::engine::{
-    FfiGame, MatchResult, Player, PlayerStats, RunConfig, run_match,
-};
+use common::engine::{FfiGame, MatchResult, Player, PlayerStats, RunConfig, run_match};
 use serde::{Deserialize, Serialize};
 
 // ============================================================
@@ -87,7 +85,10 @@ impl Default for ScheduleConfig {
 /// Generate every match the tournament should run.
 pub fn build_schedule(num_bots: usize, cfg: &ScheduleConfig) -> Result<Vec<ScheduledMatch>> {
     if cfg.bots_per_match < 2 {
-        bail!("--bots-per-match must be at least 2 (got {})", cfg.bots_per_match);
+        bail!(
+            "--bots-per-match must be at least 2 (got {})",
+            cfg.bots_per_match
+        );
     }
     if cfg.bots_per_match > num_bots {
         bail!(
@@ -341,9 +342,12 @@ fn run_match_typed<G: FfiGame + 'static>(
         );
     }
 
-    let MatchResult { outcome, stats, replay } =
-        run_match::<G>(num_players, seed, players, RunConfig::default())
-            .with_context(|| format!("running match for game {game_name}"))?;
+    let MatchResult {
+        outcome,
+        stats,
+        replay,
+    } = run_match::<G>(num_players, seed, players, RunConfig::default())
+        .with_context(|| format!("running match for game {game_name}"))?;
 
     let winner = G::winner(&outcome).map(|p| p as usize);
     let standings = G::standings(&outcome);
@@ -482,8 +486,12 @@ impl ScoreSummary {
             self.min = x;
             self.max = x;
         } else {
-            if x < self.min { self.min = x; }
-            if x > self.max { self.max = x; }
+            if x < self.min {
+                self.min = x;
+            }
+            if x > self.max {
+                self.max = x;
+            }
         }
     }
 }
@@ -512,10 +520,10 @@ impl TimeSummary {
         };
         self.avg_of_avg_ms = mix(self.avg_of_avg_ms, m.avg_ms);
         self.avg_of_p95_ms = mix(self.avg_of_p95_ms, m.p95_ms);
-        if let Some(x) = m.max_ms {
-            if x > self.worst_max_ms {
-                self.worst_max_ms = x;
-            }
+        if let Some(x) = m.max_ms
+            && x > self.worst_max_ms
+        {
+            self.worst_max_ms = x;
         }
     }
 }
@@ -587,16 +595,14 @@ pub fn build_report(records: &[MatchRecord]) -> Report {
         // Wins / losses / draws are projected from rank: rank 1 wins
         // (or draws if shared); anyone not at rank 1 loses (or
         // shares the draw if everyone is at rank 1).
-        let firsts: Vec<usize> = (0..rec.bots.len())
-            .filter(|&i| standings[i] == 1)
-            .collect();
+        let firsts: Vec<usize> = (0..rec.bots.len()).filter(|&i| standings[i] == 1).collect();
         if firsts.len() == rec.bots.len() {
             for name in &rec.bots {
                 per_bot.get_mut(name).unwrap().draws += 1;
             }
         } else {
-            for i in 0..rec.bots.len() {
-                let s = per_bot.get_mut(&rec.bots[i]).unwrap();
+            for (i, name) in rec.bots.iter().enumerate() {
+                let s = per_bot.get_mut(name).unwrap();
                 if standings[i] == 1 {
                     s.wins += 1;
                 } else {
@@ -710,8 +716,14 @@ mod tests {
         // 3 combos × 2 rotations × 2 seeds = 12
         assert_eq!(sched.len(), 12);
         // First combo (0, 1): both seat orders, both seeds.
-        assert!(sched.contains(&ScheduledMatch { bot_idx: vec![0, 1], seed: 10 }));
-        assert!(sched.contains(&ScheduledMatch { bot_idx: vec![1, 0], seed: 10 }));
+        assert!(sched.contains(&ScheduledMatch {
+            bot_idx: vec![0, 1],
+            seed: 10
+        }));
+        assert!(sched.contains(&ScheduledMatch {
+            bot_idx: vec![1, 0],
+            seed: 10
+        }));
     }
 
     #[test]
@@ -787,7 +799,11 @@ mod tests {
         scores: Option<Vec<f64>>,
     ) -> MatchRecord {
         let firsts: Vec<usize> = (0..bots.len()).filter(|&i| standings[i] == 1).collect();
-        let winner = if firsts.len() == 1 { Some(firsts[0]) } else { None };
+        let winner = if firsts.len() == 1 {
+            Some(firsts[0])
+        } else {
+            None
+        };
         MatchRecord {
             game: "tron".into(),
             bots: bots.iter().map(|s| s.to_string()).collect(),
@@ -845,9 +861,17 @@ mod tests {
         let records = vec![rec(&["a", "b", "c"], Some(0))];
         let report = build_report(&records);
         // Every ordered pair appears exactly once.
-        for (a, b) in [("a", "b"), ("a", "c"), ("b", "a"), ("b", "c"), ("c", "a"), ("c", "b")] {
+        for (a, b) in [
+            ("a", "b"),
+            ("a", "c"),
+            ("b", "a"),
+            ("b", "c"),
+            ("c", "a"),
+            ("c", "b"),
+        ] {
             assert_eq!(
-                report.pair_games[&(a.into(), b.into())], 1,
+                report.pair_games[&(a.into(), b.into())],
+                1,
                 "pair_games[({a}, {b})] should be 1",
             );
         }
@@ -930,14 +954,8 @@ mod tests {
         // avg 20; tt_hits only on two ticks → samples=2 there.
         let turns = vec![
             HashMap::from([("nodes".to_string(), 10.0)]),
-            HashMap::from([
-                ("nodes".to_string(), 20.0),
-                ("tt_hits".to_string(), 5.0),
-            ]),
-            HashMap::from([
-                ("nodes".to_string(), 30.0),
-                ("tt_hits".to_string(), 9.0),
-            ]),
+            HashMap::from([("nodes".to_string(), 20.0), ("tt_hits".to_string(), 5.0)]),
+            HashMap::from([("nodes".to_string(), 30.0), ("tt_hits".to_string(), 9.0)]),
         ];
         let agg = CounterStats::aggregate(&turns);
         let nodes = &agg["nodes"];

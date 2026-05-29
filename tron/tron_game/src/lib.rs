@@ -75,7 +75,6 @@ impl TronGame {
     }
 }
 
-
 // TODO: review all this code
 impl Game for TronGame {
     const NAME: &'static str = "tron";
@@ -87,7 +86,7 @@ impl Game for TronGame {
 
     fn new(num_players: u32, rng: &mut GameRng) -> Self {
         assert!(
-            num_players >= MIN_PLAYERS && num_players <= MAX_PLAYERS,
+            (MIN_PLAYERS..=MAX_PLAYERS).contains(&num_players),
             "TronGame supports {}..={} players",
             MIN_PLAYERS,
             MAX_PLAYERS
@@ -178,8 +177,8 @@ impl Game for TronGame {
             }
             Some(dir) => {
                 let next = apply_direction(self.heads[pidx], dir);
-                let dies = !in_bounds(next)
-                    || self.board[next.y as usize][next.x as usize].is_some();
+                let dies =
+                    !in_bounds(next) || self.board[next.y as usize][next.x as usize].is_some();
                 if dies {
                     self.alive[pidx] = false;
                 } else {
@@ -281,7 +280,11 @@ fn lone_survivor(alive: &[bool]) -> Option<PlayerId> {
         .filter(|&(_, &a)| a)
         .map(|(i, _)| i as PlayerId);
     let first = iter.next()?;
-    if iter.next().is_some() { None } else { Some(first) }
+    if iter.next().is_some() {
+        None
+    } else {
+        Some(first)
+    }
 }
 
 fn compute_standings(alive: &[bool], death_tick: &[Option<u32>]) -> Vec<u32> {

@@ -122,9 +122,7 @@ struct State {
 }
 
 /// Run the playback loop. Call from inside a `#[macroquad::main]` entry point.
-pub async fn run<V: Visualize>(
-    replay: Replay<<V::Game as Game>::Output>,
-) -> anyhow::Result<()> {
+pub async fn run<V: Visualize>(replay: Replay<<V::Game as Game>::Output>) -> anyhow::Result<()> {
     // One displayable state per tick + the pre-game initial state at tick 0.
     let n_states = replay.outputs.len() + 1;
 
@@ -290,7 +288,11 @@ fn build_controls(ctx: &egui::Context, s: &mut State, n: usize, status: &str) {
                     s.tick -= 1;
                     s.playing = false;
                 }
-                if ui.button("⏯").on_hover_text("play / pause (space)").clicked() {
+                if ui
+                    .button("⏯")
+                    .on_hover_text("play / pause (space)")
+                    .clicked()
+                {
                     s.playing = !s.playing;
                 }
                 if ui.button("▶|").on_hover_text("step forward").clicked() && s.tick + 1 < n {
@@ -393,8 +395,7 @@ pub fn load_replay_from_argv<G: Game>() -> anyhow::Result<Option<Replay<G::Outpu
     let Some(path) = std::env::args().nth(1) else {
         return Ok(None);
     };
-    let mut file =
-        std::fs::File::open(&path).with_context(|| format!("opening replay {path}"))?;
+    let mut file = std::fs::File::open(&path).with_context(|| format!("opening replay {path}"))?;
     read_replay::<G>(&mut file).map(Some)
 }
 
