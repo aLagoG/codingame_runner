@@ -1,0 +1,18 @@
+[package]
+name = "fantastic_bits_cpp"
+version.workspace = true
+edition.workspace = true
+
+# The bot is a C++ source file; this crate exists only to drive its
+# compilation + linking through cargo. `crate-type = ["cdylib"]` is what
+# produces the `.so`/`.dylib`/`.dll` the runner loads.
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# Pure ordering dep — ensures `fantastic_bits_defs/build.rs` regenerates the C++
+# header before `build.rs` here tries to include it.
+fantastic_bits_defs.workspace = true
+
+[build-dependencies]
+cc.workspace = true

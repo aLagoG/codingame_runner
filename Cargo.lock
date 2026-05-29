@@ -333,6 +333,7 @@ dependencies = [
  "clap",
  "codingame_macros",
  "common",
+ "fantastic_bits_game",
  "serde",
  "tictactoe_game",
  "tron_game",
@@ -653,6 +654,54 @@ name = "error-code"
 version = "3.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dea2df4cf52843e0452895c455a1a2cfbb842a1e7329671acf418fdc53ed4c59"
+
+[[package]]
+name = "fantastic_bits_cpp"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "fantastic_bits_defs",
+]
+
+[[package]]
+name = "fantastic_bits_defs"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cbindgen",
+ "common",
+ "serde",
+]
+
+[[package]]
+name = "fantastic_bits_game"
+version = "0.1.0"
+dependencies = [
+ "common",
+ "fantastic_bits_defs",
+ "rand",
+]
+
+[[package]]
+name = "fantastic_bits_rs"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "common",
+ "fantastic_bits_defs",
+]
+
+[[package]]
+name = "fantastic_bits_viz"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "common",
+ "fantastic_bits_defs",
+ "fantastic_bits_game",
+ "macroquad",
+ "viz",
+]
 
 [[package]]
 name = "fastrand"

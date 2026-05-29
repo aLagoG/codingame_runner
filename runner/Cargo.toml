@@ -20,3 +20,4 @@ common.workspace = true
 tron_game.workspace = true
 tictactoe_game.workspace = true
 serde.workspace = true
+fantastic_bits_game.workspace = true

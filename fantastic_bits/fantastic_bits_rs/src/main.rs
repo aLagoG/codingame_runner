@@ -1,0 +1,15 @@
+use std::io::{self, Write};
+
+use common::{ReadFrom, WireInput, WriteTo};
+use fantastic_bits_defs::TurnInput;
+use fantastic_bits_rs::decide;
+
+fn main() -> anyhow::Result<()> {
+    let mut input = io::stdin().lock();
+    let mut output = io::BufWriter::new(io::stdout().lock());
+    loop {
+        let turn = TurnInput::read_from(&mut input)?;
+        decide(turn.as_ref()).write_to(&mut output)?;
+        output.flush()?;
+    }
+}

@@ -1,0 +1,9 @@
+[package]
+name = "fantastic_bits_game"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+fantastic_bits_defs.workspace = true
+common.workspace = true
+rand.workspace = true

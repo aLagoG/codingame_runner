@@ -1,0 +1,12 @@
+[package]
+name = "fantastic_bits_viz"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+common.workspace = true
+fantastic_bits_defs.workspace = true
+fantastic_bits_game.workspace = true
+viz.workspace = true
+macroquad.workspace = true
+anyhow.workspace = true

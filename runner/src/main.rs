@@ -4,6 +4,7 @@ use anyhow::{Context, Result, bail};
 use clap::Parser;
 use codingame_runner::make_player;
 use common::engine::{FfiGame, MatchResult, Player, RunConfig, run_match, write_replay};
+use fantastic_bits_game::FantasticBitsGame;
 use tictactoe_game::TicTacToeGame;
 use tron_game::TronGame;
 
@@ -33,7 +34,10 @@ fn main() -> Result<()> {
     match args.game.as_str() {
         "tron" => run_for_game::<TronGame>(args.bots, args.save_replay),
         "tictactoe" => run_for_game::<TicTacToeGame>(args.bots, args.save_replay),
-        other => bail!("unknown game: {other} (expected `tron` or `tictactoe`)"),
+        "fantastic_bits" => run_for_game::<FantasticBitsGame>(args.bots, args.save_replay),
+        other => {
+            bail!("unknown game: {other} (expected `tron`, `tictactoe`, or `fantastic_bits`)")
+        }
     }
 }
 
