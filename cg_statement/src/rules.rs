@@ -61,6 +61,23 @@ pub const ALLOWED_STYLES: &[(&str, &str)] = &[
     ("border-radius", "3px"),
 ];
 
+/// Class tokens that mark a `<div>` whose entire subtree should be
+/// dropped from the output. Matching is exact on a single class
+/// token within the element's `class="…"` attribute. Nested
+/// occurrences are handled by depth counting — the outer match
+/// always wins, so listing both an outer wrapper (e.g.
+/// `statement-story-background`) and its child (`statement-story`)
+/// is fine; the child entry is just a fallback for pastes that omit
+/// the wrapper.
+pub const DROPPED_SECTIONS: &[&str] = &[
+    "statement-story-background",
+    "statement-story",
+];
+
+pub fn is_dropped_section(token: &str) -> bool {
+    DROPPED_SECTIONS.contains(&token)
+}
+
 /// All `statement-X` class tokens the bundled CSS knows how to
 /// style. Tron's statement covers all of these; future games may
 /// introduce new ones and trigger a warning.
@@ -73,6 +90,9 @@ pub const KNOWN_SECTIONS: &[&str] = &[
     "statement-rules-content",
     "statement-protocol",
     "statement-victory-conditions",
+    "statement-lose-conditions",
+    "statement-expertrules",
+    "statement-expert-rules-content",
     "statement-inout",
     "statement-inout-in",
     "statement-inout-out",

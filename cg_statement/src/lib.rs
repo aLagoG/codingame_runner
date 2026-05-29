@@ -51,6 +51,19 @@ pub struct Cleanup {
     pub warnings: Vec<Warning>,
 }
 
+/// Tunables for [`clean_with_options`]. Defaults match the no-args
+/// [`clean`] entry point.
+#[derive(Debug, Clone, Default)]
+pub struct CleanOptions {
+    /// HTML `<title>` for the generated document. `None` falls back
+    /// to the generic `"CodinGame Statement"` so direct callers of
+    /// `cg_statement` (no game name to hand) still get something
+    /// sensible in the tab.
+    pub title: Option<String>,
+}
+
+const DEFAULT_TITLE: &str = "CodinGame Statement";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Warning {
     /// An inline `style` property we don't have an opinion on. Kept
@@ -68,16 +81,23 @@ pub enum Warning {
 }
 
 /// Main entry point. Takes a raw paste, returns the cleaned
-/// document + any warnings.
+/// document + any warnings. Uses the default tab title.
 pub fn clean(input: &str) -> Result<Cleanup> {
+    clean_with_options(input, &CleanOptions::default())
+}
+
+/// Like [`clean`] but lets the caller override the generated `<title>`.
+pub fn clean_with_options(input: &str, opts: &CleanOptions) -> Result<Cleanup> {
     let mut warnings = Vec::new();
 
     let body = slice_body(input, &mut warnings);
+    let body = drop_sections(&body);
     let body = scrub_styles(&body, &mut warnings);
     let body = audit_statement_classes(&body, &mut warnings);
     let body = polish(&body);
 
-    let html = wrap_in_scaffold(&body);
+    let title = opts.title.as_deref().unwrap_or(DEFAULT_TITLE);
+    let html = wrap_in_scaffold(&body, title);
     Ok(Cleanup { html, warnings })
 }
 
@@ -111,6 +131,117 @@ fn slice_body(input: &str, warnings: &mut Vec<Warning>) -> String {
             input.to_string()
         }
     }
+}
+
+// ============================================================
+//  1b. Drop entire subtrees by class token
+// ============================================================
+
+/// Excise any `<div class="… one-of-DROPPED_SECTIONS …">…</div>` from
+/// the body, including its full nested subtree. Run before
+/// `scrub_styles` / `audit_statement_classes` so we don't waste work
+/// (or emit warnings) on content we're discarding.
+fn drop_sections(body: &str) -> String {
+    let mut out = String::with_capacity(body.len());
+    let mut i = 0;
+    while i < body.len() {
+        let Some(rel) = body[i..].find("<div") else {
+            out.push_str(&body[i..]);
+            break;
+        };
+        let div_start = i + rel;
+        let Some(open_end_rel) = body[div_start..].find('>') else {
+            // Malformed: open `<div` with no closing `>`. Emit verbatim
+            // and bail; nothing useful left to do.
+            out.push_str(&body[i..]);
+            break;
+        };
+        let open_end = div_start + open_end_rel + 1;
+        let open_tag = &body[div_start..open_end];
+
+        if div_has_dropped_class(open_tag) {
+            // Excise from div_start through the matching </div>. The
+            // emit cursor copies content up to (but not including)
+            // div_start, then jumps to just after the matching close.
+            out.push_str(&body[i..div_start]);
+            i = find_matching_div_close(body, open_end);
+        } else {
+            // Keep this `<div …>` and continue scanning after its
+            // opening tag — nested drop candidates inside still get
+            // their chance.
+            out.push_str(&body[i..open_end]);
+            i = open_end;
+        }
+    }
+    out
+}
+
+/// True if `open_tag` (the bytes from `<div` through the matching `>`)
+/// carries a `class="…"` attribute containing any token in
+/// `rules::DROPPED_SECTIONS`.
+fn div_has_dropped_class(open_tag: &str) -> bool {
+    let Some(start) = open_tag.find("class=") else {
+        return false;
+    };
+    let after = &open_tag[start + "class=".len()..];
+    let Some(quote) = after.chars().next() else {
+        return false;
+    };
+    if quote != '"' && quote != '\'' {
+        return false;
+    }
+    let inner = &after[1..];
+    let Some(end) = inner.find(quote) else {
+        return false;
+    };
+    inner[..end]
+        .split_whitespace()
+        .any(rules::is_dropped_section)
+}
+
+/// Given the byte offset just past the `>` of an opening `<div …>`,
+/// return the offset just past the matching `</div>`. Depth-counts so
+/// nested divs don't cause a premature close. If the input is
+/// malformed (more opens than closes), returns `body.len()` — the
+/// caller treats that as "drop everything to EOF", which is the
+/// least-surprising failure mode.
+fn find_matching_div_close(body: &str, mut i: usize) -> usize {
+    let mut depth: usize = 1;
+    while i < body.len() {
+        let rest = &body[i..];
+        let next_open = rest.find("<div");
+        let next_close = rest.find("</div>");
+        match (next_open, next_close) {
+            (None, None) | (Some(_), None) => return body.len(),
+            (None, Some(c)) => {
+                depth -= 1;
+                let after_close = i + c + "</div>".len();
+                if depth == 0 {
+                    return after_close;
+                }
+                i = after_close;
+            }
+            (Some(o), Some(c)) => {
+                if o < c {
+                    // Found a nested <div first — skip past its `>`
+                    // and bump depth.
+                    depth += 1;
+                    let Some(open_end_rel) = body[i + o..].find('>') else {
+                        return body.len();
+                    };
+                    i += o + open_end_rel + 1;
+                } else {
+                    depth -= 1;
+                    let after_close = i + c + "</div>".len();
+                    if depth == 0 {
+                        return after_close;
+                    }
+                    i = after_close;
+                }
+            }
+        }
+    }
+    body.len()
 }
 
 // ============================================================
@@ -309,13 +440,14 @@ fn detab_pre_blocks(body: &str) -> String {
 //  5. Scaffold
 // ============================================================
 
-fn wrap_in_scaffold(body: &str) -> String {
+fn wrap_in_scaffold(body: &str, title: &str) -> String {
+    let title = escape_title(title);
     format!(
         "<!DOCTYPE html>
 <html lang=\"en\">
 <head>
 <meta charset=\"UTF-8\">
-<title>CodinGame Statement</title>
+<title>{title}</title>
 <style>
 {STYLE}</style>
 </head>
@@ -327,6 +459,22 @@ fn wrap_in_scaffold(body: &str) -> String {
 </html>
 ",
     )
+}
+
+/// Minimal HTML escape for the `<title>` element. We only inject in
+/// one place; restricted to the characters that actually matter inside
+/// `<title>...</title>` (no attribute escaping needed).
+fn escape_title(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '&' => out.push_str("&amp;"),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 // ============================================================
@@ -370,6 +518,36 @@ mod tests {
         let body = slice_body("<p>nothing relevant</p>", &mut w);
         assert_eq!(body, "<p>nothing relevant</p>");
         assert_eq!(w, vec![Warning::NoContentBoundary]);
+    }
+
+    #[test]
+    fn drop_sections_excises_story_background() {
+        let body = r#"<p>before</p><div class="statement-story-background"><div class="statement-story"><h1>x</h1></div></div><p>after</p>"#;
+        let out = drop_sections(body);
+        assert_eq!(out, "<p>before</p><p>after</p>");
+    }
+
+    #[test]
+    fn drop_sections_handles_nested_unrelated_divs_inside_target() {
+        // Depth counter has to skip the inner unrelated <div> when
+        // closing the dropped section.
+        let body = r#"a<div class="statement-story-background"><div>noise<div>deep</div></div></div>b"#;
+        let out = drop_sections(body);
+        assert_eq!(out, "ab");
+    }
+
+    #[test]
+    fn drop_sections_leaves_other_divs_alone() {
+        let body = r#"<div class="statement-goal">keep</div><div class="statement-story">drop</div>"#;
+        let out = drop_sections(body);
+        assert_eq!(out, r#"<div class="statement-goal">keep</div>"#);
+    }
+
+    #[test]
+    fn drop_sections_handles_multiclass_attribute() {
+        let body = r#"<div class="statement-section statement-story">drop</div><p>keep</p>"#;
+        let out = drop_sections(body);
+        assert_eq!(out, "<p>keep</p>");
     }
 
     #[test]
@@ -429,11 +607,27 @@ mod tests {
 
     #[test]
     fn scaffold_includes_style_block_and_body() {
-        let html = wrap_in_scaffold("<p>hi</p>");
+        let html = wrap_in_scaffold("<p>hi</p>", "Test Title");
         assert!(html.contains("<!DOCTYPE html>"));
         assert!(html.contains("<style>"));
+        assert!(html.contains("<title>Test Title</title>"));
         // The body content lives inside the statement-body wrapper.
         assert!(html.contains(r#"<div class="statement-body">"#));
         assert!(html.contains("<p>hi</p>"));
+    }
+
+    #[test]
+    fn scaffold_escapes_title() {
+        let html = wrap_in_scaffold("<p>x</p>", "A <bad> & ugly title");
+        assert!(html.contains("<title>A &lt;bad&gt; &amp; ugly title</title>"));
+    }
+
+    #[test]
+    fn clean_with_options_threads_title_through() {
+        let opts = CleanOptions {
+            title: Some("Fantastic Bits - Game Statement".into()),
+        };
+        let out = clean_with_options("<p>x</p>", &opts).unwrap();
+        assert!(out.html.contains("<title>Fantastic Bits - Game Statement</title>"));
     }
 }

@@ -7,7 +7,7 @@ use std::io::{self, Read, Write};
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
-use cg_statement::{Warning, clean};
+use cg_statement::{CleanOptions, Warning, clean_with_options};
 use clap::Parser;
 
 #[derive(Parser)]
@@ -25,6 +25,11 @@ struct Args {
     /// Treat warnings as errors (exit non-zero if any are emitted).
     #[arg(long)]
     werror: bool,
+    /// HTML tab title. Defaults to "CodinGame Statement" when omitted —
+    /// xtask passes e.g. "Fantastic Bits - Game Statement" so the
+    /// browser tab carries the game name.
+    #[arg(long)]
+    title: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -41,7 +46,10 @@ fn main() -> Result<()> {
         }
     };
 
-    let result = clean(&input)?;
+    let opts = CleanOptions {
+        title: args.title.clone(),
+    };
+    let result = clean_with_options(&input, &opts)?;
 
     match &args.output {
         Some(p) => {

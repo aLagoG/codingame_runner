@@ -172,6 +172,22 @@ fn main() -> Result<()> {
 /// Pipe a CodinGame statement paste through `cg_statement` and
 /// write the result next to the named game crate. Input source
 /// priority: explicit `--input` file > `--clipboard` > stdin.
+/// Convert a snake/kebab-case game name into a human-readable title
+/// for the HTML `<title>` element: `"fantastic_bits"` → `"Fantastic Bits"`.
+fn title_case_game(game: &str) -> String {
+    game.split(['_', '-'])
+        .filter(|s| !s.is_empty())
+        .map(|w| {
+            let mut chars = w.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn statement(
     game: &str,
     input_path: Option<&Path>,
@@ -230,8 +246,11 @@ fn statement(
     // file directly via --output so we don't have to round-trip the
     // (potentially large) cleaned HTML through this process.
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let title = format!("{} - Game Statement", title_case_game(game));
     let mut child = std::process::Command::new(cargo)
-        .args(["run", "--quiet", "-p", "cg_statement", "--", "--output"])
+        .args(["run", "--quiet", "-p", "cg_statement", "--"])
+        .args(["--title", &title])
+        .args(["--output"])
         .arg(&output)
         .stdin(std::process::Stdio::piped())
         // Inherit stderr so cg_statement's warnings reach the user
