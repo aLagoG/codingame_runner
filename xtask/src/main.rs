@@ -57,20 +57,44 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Scaffold a new feature module
+    /// Scaffold a new game (engine + viz + a baseline_rs + baseline_cpp bot).
     NewGame {
-        /// Name of the feature (snake_case)
+        /// Name of the game (snake_case).
         name: String,
+    },
+    /// Scaffold a new bot for an existing game. Creates
+    /// `<game>/bots/<name>_<lang>/` with crate name `<game>_<name>_<lang>`.
+    /// Supports `--from-existing <other_bot>` to clone an existing bot
+    /// crate (with crate-name substitutions) instead of using the empty
+    /// template.
+    NewBot {
+        /// Game name the bot plays. Must already exist.
+        #[arg(long)]
+        game: String,
+        /// Bot name (snake_case). Becomes the directory + crate suffix.
+        #[arg(long)]
+        name: String,
+        /// Language(s) to scaffold. `both` produces a Rust *and* a C++
+        /// crate sharing the bot name.
+        #[arg(long, value_enum)]
+        lang: BotLang,
+        /// Clone the named bot's source instead of using the empty
+        /// template. Substitutes the crate name throughout. Useful for
+        /// "v2 = tweak of v1" workflows.
+        #[arg(long)]
+        from_existing: Option<String>,
     },
     /// Bundle a game's C++ bot into a single self-contained `.cpp`
     /// file ready to paste into CodinGame's web editor. Runs the
-    /// `cpp_flatten` binary on the game's `_cpp/main.cpp` entry.
+    /// `cpp_flatten` binary on the bot's `main.cpp` entry.
     Bundle {
-        /// Game name (e.g. `tron`, `tictactoe`). Resolved to the
-        /// `<game>/<game>_cpp/main.cpp` entry point.
+        /// Game name (e.g. `tron`).
         game: String,
+        /// Bot name (e.g. `baseline`, `v1`). Resolved to
+        /// `<game>/bots/<bot>_cpp/main.cpp`.
+        bot: String,
         /// Override the output path. Defaults to
-        /// `target/codingame/<game>_bot.cpp`.
+        /// `target/codingame/<game>_<bot>_bot.cpp`.
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
@@ -87,7 +111,7 @@ enum Command {
     ///     for Ctrl-D to terminate the input.
     Statement {
         /// Game name (e.g. `tron`, `tictactoe`). The output goes to
-        /// `<game>/<game>_game/instructions.html` unless `--output`
+        /// `<game>/game/instructions.html` unless `--output`
         /// is set.
         game: String,
         /// Read paste from this file instead of stdin.
@@ -109,8 +133,8 @@ enum Command {
     /// `tournament run`, so a typical invocation looks like:
     ///
     ///   cargo xtask profile -- --game tron \
-    ///       --bot a=target/release/libtron_rs.dylib \
-    ///       --bot b=target/release/libtron_cpp.dylib \
+    ///       --bot a=target/release/libtron_baseline_rs.dylib \
+    ///       --bot b=target/release/libtron_baseline_cpp.dylib \
     ///       --rounds 2000 --parallel 1 \
     ///       --output /tmp/profile_run.jsonl
     Profile {
@@ -129,7 +153,7 @@ enum Command {
     },
 }
 
-/// Variables available in all templates
+/// Variables available in game-scaffolding templates (`templates/game/`).
 #[derive(Serialize)]
 struct TemplateVars {
     name: String,
@@ -147,12 +171,57 @@ impl TemplateVars {
     }
 }
 
+/// Variables available in bot-scaffolding templates (`templates/bot/`).
+#[derive(Serialize)]
+struct BotTemplateVars {
+    game: String,
+    game_pascal: String,
+    bot: String,
+    crate_name: String,
+}
+
+impl BotTemplateVars {
+    fn new(game: &str, bot: &str, lang_suffix: &str) -> Self {
+        Self {
+            game: game.to_string(),
+            game_pascal: to_pascal_case(game),
+            bot: bot.to_string(),
+            crate_name: format!("{game}_{bot}_{lang_suffix}"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum BotLang {
+    Rust,
+    Cpp,
+    Both,
+}
+
+impl BotLang {
+    /// `_rs` / `_cpp` suffixes; for `Both`, the caller iterates.
+    fn variants(self) -> &'static [(&'static str, &'static str)] {
+        // (suffix, template subdir)
+        match self {
+            BotLang::Rust => &[("rs", "bot/rust")],
+            BotLang::Cpp => &[("cpp", "bot/cpp")],
+            BotLang::Both => &[("rs", "bot/rust"), ("cpp", "bot/cpp")],
+        }
+    }
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
         Command::NewGame { name } => new_game(&name)?,
-        Command::Bundle { game, output } => bundle(&game, output.as_deref())?,
+        Command::NewBot {
+            game,
+            name,
+            lang,
+            from_existing,
+        } => new_bot(&game, &name, lang, from_existing.as_deref())?,
+        Command::Bundle { game, bot, output } => bundle(&game, &bot, output.as_deref())?,
         Command::Statement {
             game,
             input,
@@ -201,9 +270,7 @@ fn statement(
     // Resolve the output path. Default lives next to the game
     // crate so it's easy to find from the source tree.
     let output: PathBuf = output_override.map(Path::to_path_buf).unwrap_or_else(|| {
-        PathBuf::from(game)
-            .join(format!("{game}_game"))
-            .join("instructions.html")
+        PathBuf::from(game).join("game").join("instructions.html")
     });
     if let Some(parent) = output.parent()
         && !parent.as_os_str().is_empty()
@@ -408,25 +475,25 @@ fn profile(
     Ok(())
 }
 
-/// Run `cpp_flatten` over `<game>/<game>_cpp/main.cpp` and write the
-/// result somewhere paste-ready. We shell out to the binary instead of
-/// linking the library so xtask stays a thin orchestrator — the flatten
-/// logic, its tests, and its CLI all live in one crate.
-fn bundle(game: &str, output_override: Option<&Path>) -> Result<()> {
+/// Run `cpp_flatten` over `<game>/bots/<bot>_cpp/main.cpp` and write
+/// the result somewhere paste-ready. We shell out to the binary
+/// instead of linking the library so xtask stays a thin orchestrator
+/// — the flatten logic, its tests, and its CLI all live in one crate.
+fn bundle(game: &str, bot: &str, output_override: Option<&Path>) -> Result<()> {
     let entry = PathBuf::from(game)
-        .join(format!("{game}_cpp"))
+        .join("bots")
+        .join(format!("{bot}_cpp"))
         .join("main.cpp");
     anyhow::ensure!(
         entry.exists(),
-        "no C++ bot at {} — is `{}` a real game?",
+        "no C++ bot stdio entry at {} — does the bot have a main.cpp?",
         entry.display(),
-        game,
     );
 
     let output: PathBuf = output_override.map(Path::to_path_buf).unwrap_or_else(|| {
         PathBuf::from("target")
             .join("codingame")
-            .join(format!("{game}_bot.cpp"))
+            .join(format!("{game}_{bot}_bot.cpp"))
     });
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
@@ -446,9 +513,10 @@ fn bundle(game: &str, output_override: Option<&Path>) -> Result<()> {
 
     let s = Style::new();
     println!(
-        "{} Bundled {} → {}",
+        "{} Bundled {} ({}) → {}",
         s.ok("✓"),
         s.name(game),
+        s.name(bot),
         s.path(&output.display().to_string()),
     );
     println!(
@@ -460,18 +528,33 @@ fn bundle(game: &str, output_override: Option<&Path>) -> Result<()> {
 
 fn new_game(name: &str) -> Result<()> {
     let vars = TemplateVars::new(name);
+    // Engine bits: defs / game / viz under `<game>/`.
     render_template("game", name, &vars)?;
+    // Baseline bots: <game>/bots/baseline_{rs,cpp}/. Uses the same
+    // templates as `new-bot`, so the two paths stay in lockstep.
+    let baseline_bot = "baseline";
+    for (suffix, tmpl) in BotLang::Both.variants() {
+        let bot_vars = BotTemplateVars::new(name, baseline_bot, suffix);
+        let dest = format!("{name}/bots/{baseline_bot}_{suffix}");
+        render_template(tmpl, &dest, &bot_vars)?;
+    }
 
-    // All five crates are members; only `_defs` and `_game` are surfaced as
-    // workspace dependencies (the `_rs` / `_cpp` cdylibs and the `_viz`
-    // binary are leaves).
-    for suffix in ["_defs", "_game", "_rs", "_viz", "_cpp"] {
-        let crate_path = format!("{name}/{name}{suffix}");
+    // Engine crates + bot crates are members; only `defs` and `game`
+    // are surfaced as workspace dependencies (everything else is a leaf).
+    // Directory names drop the `<game>_` prefix (the parent dir
+    // already namespaces); crate names keep it (they must be globally
+    // unique across the workspace).
+    for dir in ["defs", "game", "viz"] {
+        let crate_path = format!("{name}/{dir}");
         add_workspace_member("Cargo.toml", &crate_path)?;
     }
-    for suffix in ["_defs", "_game"] {
-        let crate_name = format!("{name}{suffix}");
-        let crate_path = format!("{name}/{crate_name}");
+    for (suffix, _) in BotLang::Both.variants() {
+        let crate_path = format!("{name}/bots/{baseline_bot}_{suffix}");
+        add_workspace_member("Cargo.toml", &crate_path)?;
+    }
+    for dir in ["defs", "game"] {
+        let crate_name = format!("{name}_{dir}");
+        let crate_path = format!("{name}/{dir}");
         add_workspace_dependency("Cargo.toml", &crate_name, &crate_path)?;
     }
 
@@ -481,6 +564,135 @@ fn new_game(name: &str) -> Result<()> {
 
     print_next_steps(name, &vars.name_pascal);
     Ok(())
+}
+
+fn new_bot(
+    game: &str,
+    bot: &str,
+    lang: BotLang,
+    from_existing: Option<&str>,
+) -> Result<()> {
+    // Game must already exist (defs crate is the canonical marker).
+    let game_defs_path = PathBuf::from(game).join(format!("{game}_defs"));
+    anyhow::ensure!(
+        game_defs_path.exists(),
+        "game `{game}` not found (no {})",
+        game_defs_path.display(),
+    );
+
+    let s = Style::new();
+    let mut created: Vec<String> = Vec::new();
+    for (suffix, tmpl) in lang.variants() {
+        let dest_path = PathBuf::from(game)
+            .join("bots")
+            .join(format!("{bot}_{suffix}"));
+        anyhow::ensure!(
+            !dest_path.exists(),
+            "bot already exists at {} — pick a different `--name` or delete it first",
+            dest_path.display(),
+        );
+        let dest_str = dest_path.to_string_lossy().to_string();
+
+        if let Some(src_bot) = from_existing {
+            // Clone an existing bot crate of the same language. Crate
+            // name substitutions throughout.
+            let src_path = PathBuf::from(game)
+                .join("bots")
+                .join(format!("{src_bot}_{suffix}"));
+            anyhow::ensure!(
+                src_path.exists(),
+                "--from-existing source not found at {}",
+                src_path.display(),
+            );
+            clone_bot(&src_path, &dest_path, game, src_bot, bot, suffix)?;
+        } else {
+            let vars = BotTemplateVars::new(game, bot, suffix);
+            render_template(tmpl, &dest_str, &vars)?;
+        }
+        let crate_name = format!("{game}_{bot}_{suffix}");
+        add_workspace_member("Cargo.toml", &dest_str)?;
+        created.push(crate_name);
+    }
+
+    println!(
+        "{} Created bot {} for {} ({}) and updated workspace {}",
+        s.ok("✓"),
+        s.name(bot),
+        s.name(game),
+        created.join(", "),
+        s.path("Cargo.toml"),
+    );
+    println!();
+    println!("{}", s.heading("Next steps:"));
+    println!(
+        "  1. Implement {} (and `on_init`, if relevant) in the new crate(s).",
+        s.code("decide"),
+    );
+    println!(
+        "  2. Verify with {}.",
+        s.code(&format!("cargo build -p {}", created[0])),
+    );
+    println!(
+        "  3. Play a match: {}.",
+        s.code(&format!(
+            "cargo run -p codingame_runner -- --game {game} \\\n     target/release/lib{}.dylib ...",
+            created[0]
+        )),
+    );
+    Ok(())
+}
+
+/// Copy `src` → `dst` recursively, rewriting `<game>_<src_bot>_<suffix>`
+/// → `<game>_<dst_bot>_<suffix>` in every text file's *content*. Filenames
+/// are preserved as-is (none reference the bot name in this layout).
+fn clone_bot(
+    src: &Path,
+    dst: &Path,
+    game: &str,
+    src_bot: &str,
+    dst_bot: &str,
+    suffix: &str,
+) -> Result<()> {
+    let src_crate = format!("{game}_{src_bot}_{suffix}");
+    let dst_crate = format!("{game}_{dst_bot}_{suffix}");
+    fs::create_dir_all(dst).with_context(|| format!("creating {}", dst.display()))?;
+    copy_dir_substituting(src, dst, &src_crate, &dst_crate)?;
+    Ok(())
+}
+
+fn copy_dir_substituting(
+    src: &Path,
+    dst: &Path,
+    from: &str,
+    to: &str,
+) -> Result<()> {
+    for entry in fs::read_dir(src).with_context(|| format!("reading {}", src.display()))? {
+        let entry = entry?;
+        let s_path = entry.path();
+        let d_path = dst.join(entry.file_name());
+        if s_path.is_dir() {
+            fs::create_dir_all(&d_path)
+                .with_context(|| format!("creating {}", d_path.display()))?;
+            copy_dir_substituting(&s_path, &d_path, from, to)?;
+        } else if is_text_file(&s_path) {
+            let content = fs::read_to_string(&s_path)
+                .with_context(|| format!("reading {}", s_path.display()))?;
+            let rewritten = content.replace(from, to);
+            fs::write(&d_path, rewritten)
+                .with_context(|| format!("writing {}", d_path.display()))?;
+        } else {
+            fs::copy(&s_path, &d_path)
+                .with_context(|| format!("copying {}", s_path.display()))?;
+        }
+    }
+    Ok(())
+}
+
+fn is_text_file(p: &Path) -> bool {
+    matches!(
+        p.extension().and_then(|e| e.to_str()),
+        Some("rs") | Some("cpp") | Some("h") | Some("hpp") | Some("toml") | Some("md") | Some("txt")
+    )
 }
 
 fn print_next_steps(name: &str, name_pascal: &str) {
@@ -497,7 +709,7 @@ fn print_next_steps(name: &str, name_pascal: &str) {
     println!(
         "  1. Fill in {} in {}",
         s.code("TurnInput/TurnOutput"),
-        s.path(&format!("{name}/{name}_defs/src/lib.rs")),
+        s.path(&format!("{name}/defs/src/lib.rs")),
     );
     println!(
         "     and the matching {} impls.",
@@ -507,12 +719,12 @@ fn print_next_steps(name: &str, name_pascal: &str) {
         "  2. Implement {} and {} in {}.",
         s.code("Game::input_for"),
         s.code("Game::step"),
-        s.path(&format!("{name}/{name}_game/src/lib.rs")),
+        s.path(&format!("{name}/game/src/lib.rs")),
     );
     println!(
         "  3. Implement {} in {}.",
         s.code("decide"),
-        s.path(&format!("{name}/{name}_rs/src/lib.rs")),
+        s.path(&format!("{name}/bots/baseline_rs/src/lib.rs")),
     );
     println!(
         "  4. Wire the game into {} ({} dep already added):",
@@ -536,16 +748,23 @@ fn print_next_steps(name: &str, name_pascal: &str) {
     );
     println!(
         "  5. Customise the visualiser in {}.",
-        s.path(&format!("{name}/{name}_viz/src/main.rs")),
+        s.path(&format!("{name}/viz/src/main.rs")),
     );
     println!(
         "  6. (optional) C++ bot starter at {} — build with {} and pass",
-        s.path(&format!("{name}/{name}_cpp/bot.cpp")),
-        s.code(&format!("cargo build -p {name}_cpp")),
+        s.path(&format!("{name}/bots/baseline_cpp/bot.cpp")),
+        s.code(&format!("cargo build -p {name}_baseline_cpp")),
     );
     println!(
         "     {} to the runner.",
-        s.path(&format!("target/debug/lib{name}_cpp.dylib")),
+        s.path(&format!("target/debug/lib{name}_baseline_cpp.dylib")),
+    );
+    println!(
+        "  7. Add more bots with {} (or {} to clone an existing one).",
+        s.code(&format!(
+            "cargo xtask new-bot --game {name} --name <bot_name> --lang both"
+        )),
+        s.code("--from-existing <other_bot>"),
     );
     println!();
     println!(
@@ -556,7 +775,9 @@ fn print_next_steps(name: &str, name_pascal: &str) {
 
 /// Renders all `.hbs` files from a template directory into the destination,
 /// preserving subdirectory structure and stripping the `.hbs` extension.
-fn render_template(template_name: &str, dest: &str, vars: &TemplateVars) -> Result<()> {
+/// Generic over the variable struct so callers can use either
+/// `TemplateVars` (game scaffolding) or `BotTemplateVars` (bot scaffolding).
+fn render_template<V: Serialize>(template_name: &str, dest: &str, vars: &V) -> Result<()> {
     let mut hbs = Handlebars::new();
     hbs.set_strict_mode(true);
 
@@ -571,12 +792,12 @@ fn render_template(template_name: &str, dest: &str, vars: &TemplateVars) -> Resu
     walk_and_render(&hbs, &template_dir, &template_dir, &dest, vars)
 }
 
-fn walk_and_render(
+fn walk_and_render<V: Serialize>(
     hbs: &Handlebars,
     base: &Path,
     current: &Path,
     dest_base: &Path,
-    vars: &TemplateVars,
+    vars: &V,
 ) -> Result<()> {
     for entry in fs::read_dir(current).context("reading template dir")? {
         let entry = entry?;

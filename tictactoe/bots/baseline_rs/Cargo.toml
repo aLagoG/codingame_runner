@@ -1,0 +1,12 @@
+[package]
+name = "tictactoe_baseline_rs"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tictactoe_defs.workspace = true
+common.workspace = true
+anyhow.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]

@@ -1,0 +1,66 @@
+use common::engine::{FfiGame, Game, GameRng, NoInitialInput, PlayerId};
+use {{name}}_defs::{TurnInput, TurnOutput};
+
+pub struct {{name_pascal}}Game {
+    active: Vec<PlayerId>,
+    // TODO: add per-match state (board, scores, RNG, …).
+}
+
+#[derive(Debug, Clone)]
+pub struct {{name_pascal}}Outcome {
+    /// `Some(p)` if `p` won, `None` for a draw.
+    pub winner: Option<PlayerId>,
+    /// Final ranking, 1-indexed, in player-id order. Survivors share
+    /// the same rank under competition ranking (`1, 1, 3` not `1, 1, 2`).
+    pub standings: Vec<u32>,
+}
+
+impl Game for {{name_pascal}}Game {
+    const NAME: &'static str = "{{name}}";
+
+    type InitialInput = NoInitialInput;
+    type Input = TurnInput;
+    type Output = TurnOutput;
+    type Outcome = {{name_pascal}}Outcome;
+
+    fn new(num_players: u32, _rng: &mut GameRng) -> Self {
+        {{name_pascal}}Game {
+            active: (0..num_players).collect(),
+        }
+    }
+
+    fn initial_input(&self, _player: PlayerId) -> NoInitialInput {
+        NoInitialInput::default()
+    }
+
+    fn input_for(&self, _player: PlayerId) -> TurnInput {
+        TurnInput::default()
+    }
+
+    fn step(&mut self, _outputs: &[Option<TurnOutput>]) -> Option<{{name_pascal}}Outcome> {
+        // TODO: apply outputs, advance state, return `Some(outcome)` when done.
+        // Skeleton ends the match immediately as a draw so things compile and
+        // a runner invocation terminates.
+        let n = self.active.len();
+        self.active.clear();
+        Some({{name_pascal}}Outcome {
+            winner: None,
+            standings: vec![1; n],
+        })
+    }
+
+    fn active_players(&self) -> &[PlayerId] {
+        &self.active
+    }
+
+    fn standings(outcome: &{{name_pascal}}Outcome) -> Vec<u32> {
+        outcome.standings.clone()
+    }
+}
+
+// Plugin glue: marks this game as FFI-playable and points at the `_defs`
+// crate's `Ffi` marker. Everything else (FFI fn-pointer shape, ABI version,
+// symbol names) flows from `{{name}}_defs::Ffi`'s `Defs` impl.
+impl FfiGame for {{name_pascal}}Game {
+    type Defs = {{name}}_defs::Ffi;
+}

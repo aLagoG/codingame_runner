@@ -11,7 +11,7 @@ static BUILD: Once = Once::new();
 fn ensure_bots_built() {
     BUILD.call_once(|| {
         let mut cmd = Command::new(env!("CARGO"));
-        cmd.args(["build", "-p", "tron_rs", "-p", "tron_cpp"]);
+        cmd.args(["build", "-p", "tron_baseline_rs", "-p", "tron_baseline_cpp"]);
         if !cfg!(debug_assertions) {
             cmd.arg("--release");
         }
@@ -58,10 +58,10 @@ impl Bot {
     fn path(self) -> PathBuf {
         let d = artifact_dir();
         match self {
-            Bot::RustStdio => d.join("tron_rs"),
-            Bot::CppStdio => d.join("tron_cpp_stdio"),
-            Bot::RustFfi => d.join(plugin_filename("tron_rs")),
-            Bot::CppFfi => d.join(plugin_filename("tron_cpp")),
+            Bot::RustStdio => d.join("tron_baseline_rs"),
+            Bot::CppStdio => d.join("tron_baseline_cpp_stdio"),
+            Bot::RustFfi => d.join(plugin_filename("tron_baseline_rs")),
+            Bot::CppFfi => d.join(plugin_filename("tron_baseline_cpp")),
         }
     }
 }

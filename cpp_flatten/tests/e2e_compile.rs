@@ -1,5 +1,5 @@
 //! True end-to-end test: flatten the real tic-tac-toe C++ stdio bot
-//! (the same `main.cpp` cargo builds via `tictactoe_cpp`), compile the
+//! (the same `main.cpp` cargo builds via `tictactoe_baseline_cpp`), compile the
 //! result with the system C++ compiler, run the produced binary, and
 //! verify it speaks the wire format correctly.
 //!
@@ -68,7 +68,8 @@ fn tictactoe_main_flattens_compiles_and_runs() {
 
     let entry = workspace_root()
         .join("tictactoe")
-        .join("tictactoe_cpp")
+        .join("bots")
+        .join("baseline_cpp")
         .join("main.cpp");
 
     let flat = cpp_flatten::flatten(&entry).expect("flatten tictactoe main");

@@ -262,6 +262,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "cgio_build"
+version = "0.1.0"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "chacha20"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -656,10 +663,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dea2df4cf52843e0452895c455a1a2cfbb842a1e7329671acf418fdc53ed4c59"
 
 [[package]]
-name = "fantastic_bits_cpp"
+name = "fantastic_bits_baseline_rs"
 version = "0.1.0"
 dependencies = [
- "cc",
+ "anyhow",
+ "common",
  "fantastic_bits_defs",
 ]
 
@@ -683,11 +691,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "fantastic_bits_rs"
+name = "fantastic_bits_v1_cpp"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "common",
+ "cgio_build",
  "fantastic_bits_defs",
 ]
 
@@ -1700,10 +1707,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "tictactoe_cpp"
+name = "tictactoe_baseline_cpp"
 version = "0.1.0"
 dependencies = [
- "cc",
+ "cgio_build",
+ "tictactoe_defs",
+]
+
+[[package]]
+name = "tictactoe_baseline_rs"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "common",
  "tictactoe_defs",
 ]
 
@@ -1721,15 +1737,6 @@ dependencies = [
 name = "tictactoe_game"
 version = "0.1.0"
 dependencies = [
- "common",
- "tictactoe_defs",
-]
-
-[[package]]
-name = "tictactoe_rs"
-version = "0.1.0"
-dependencies = [
- "anyhow",
  "common",
  "tictactoe_defs",
 ]
@@ -1857,10 +1864,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "tron_cpp"
+name = "tron_baseline_cpp"
 version = "0.1.0"
 dependencies = [
- "cc",
+ "cgio_build",
+ "tron_defs",
+]
+
+[[package]]
+name = "tron_baseline_rs"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "common",
  "tron_defs",
 ]
 
@@ -1880,15 +1896,6 @@ version = "0.1.0"
 dependencies = [
  "common",
  "rand",
- "tron_defs",
-]
-
-[[package]]
-name = "tron_rs"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "common",
  "tron_defs",
 ]
 

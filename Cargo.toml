@@ -4,26 +4,27 @@ members = [
     "runner",
     "macros",
     "common",
-    "tron/tron_defs",
-    "tron/tron_rs",
+    "cgio_build",
     "xtask",
-    "tron/tron_game",
-    "tron/tron_viz",
     "viz",
-    "tictactoe/tictactoe_defs",
-    "tictactoe/tictactoe_rs",
-    "tictactoe/tictactoe_game",
-    "tictactoe/tictactoe_viz",
-    "tictactoe/tictactoe_cpp",
-    "tron/tron_cpp",
     "cpp_flatten",
     "tournament",
     "cg_statement",
-    "fantastic_bits/fantastic_bits_defs",
-    "fantastic_bits/fantastic_bits_game",
-    "fantastic_bits/fantastic_bits_rs",
-    "fantastic_bits/fantastic_bits_viz",
-    "fantastic_bits/fantastic_bits_cpp",
+    "tron/defs",
+    "tron/game",
+    "tron/viz",
+    "tron/bots/baseline_rs",
+    "tron/bots/baseline_cpp",
+    "tictactoe/defs",
+    "tictactoe/game",
+    "tictactoe/viz",
+    "tictactoe/bots/baseline_rs",
+    "tictactoe/bots/baseline_cpp",
+    "fantastic_bits/defs",
+    "fantastic_bits/game",
+    "fantastic_bits/viz",
+    "fantastic_bits/bots/baseline_rs",
+    "fantastic_bits/bots/v1_cpp",
 ]
 
 [workspace.package]
@@ -45,10 +46,10 @@ libloading = "0.9.0"
 thiserror = "2.0.18"
 codingame_macros = { path = "macros" }
 common = { path = "common" }
-tron_defs = { path = "tron/tron_defs" }
-tron_game = { path = "tron/tron_game" }
-tictactoe_defs = { path = "tictactoe/tictactoe_defs" }
-tictactoe_game = { path = "tictactoe/tictactoe_game" }
+tron_defs = { path = "tron/defs" }
+tron_game = { path = "tron/game" }
+tictactoe_defs = { path = "tictactoe/defs" }
+tictactoe_game = { path = "tictactoe/game" }
 viz = { path = "viz" }
 macroquad = "0.4"
 egui-macroquad = "0.17"
@@ -57,5 +58,6 @@ serde_json = "1"
 bincode = "1.3"
 cc = "1"
 rand = "0.10.1"
-fantastic_bits_defs = { path = "fantastic_bits/fantastic_bits_defs" }
-fantastic_bits_game = { path = "fantastic_bits/fantastic_bits_game" }
+fantastic_bits_defs = { path = "fantastic_bits/defs" }
+fantastic_bits_game = { path = "fantastic_bits/game" }
+cgio_build = { path = "cgio_build" }

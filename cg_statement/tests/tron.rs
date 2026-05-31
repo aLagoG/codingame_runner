@@ -1,7 +1,7 @@
 //! End-to-end: feed a representative paste fixture (devtools-style
 //! CSS noise + the tron statement structure) through `clean()` and
 //! check the output passes the structural invariants the hand-tuned
-//! `tron/tron_game/instructions.html` satisfies.
+//! `tron/game/instructions.html` satisfies.
 //!
 //! The fixture lives in `tests/fixtures/paste.html`; it mirrors the
 //! shape of the real paste (white panel backgrounds, hard 50%

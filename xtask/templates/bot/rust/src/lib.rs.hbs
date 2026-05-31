@@ -1,0 +1,14 @@
+//! `{{crate_name}}` — Rust bot for {{game}} ({{bot}} variant).
+//!
+//! Replace `decide` with your strategy. The two-arg `ffi_bot!` form
+//! below ignores the per-player init data; switch to the three-arg
+//! form (with an `on_init` callback) if your game's `InitialInput`
+//! carries data the bot needs.
+
+use {{game}}_defs::{TurnOutput, TurnRef};
+
+pub fn decide(_turn: TurnRef<'_>) -> TurnOutput {
+    TurnOutput::default()
+}
+
+common::ffi_bot!({{game}}_defs::Ffi, decide);

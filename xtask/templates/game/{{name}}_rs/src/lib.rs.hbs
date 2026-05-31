@@ -1,8 +1,0 @@
-use {{name}}_defs::{TurnOutput, TurnRef};
-
-/// Replace with your bot's strategy.
-pub fn decide(_turn: TurnRef<'_>) -> TurnOutput {
-    TurnOutput::default()
-}
-
-common::ffi_bot!({{name}}_defs::Ffi, decide);

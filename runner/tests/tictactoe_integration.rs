@@ -22,7 +22,7 @@ static BUILD: Once = Once::new();
 fn ensure_bots_built() {
     BUILD.call_once(|| {
         let mut cmd = Command::new(env!("CARGO"));
-        cmd.args(["build", "-p", "tictactoe_rs", "-p", "tictactoe_cpp"]);
+        cmd.args(["build", "-p", "tictactoe_baseline_rs", "-p", "tictactoe_baseline_cpp"]);
         // Match the profile this test binary was built with so the
         // artifacts land in the directory `artifact_dir()` looks in.
         if !cfg!(debug_assertions) {
@@ -71,10 +71,10 @@ impl Bot {
     fn path(self) -> PathBuf {
         let d = artifact_dir();
         match self {
-            Bot::RustStdio => d.join("tictactoe_rs"),
-            Bot::CppStdio => d.join("tictactoe_cpp_stdio"),
-            Bot::RustFfi => d.join(plugin_filename("tictactoe_rs")),
-            Bot::CppFfi => d.join(plugin_filename("tictactoe_cpp")),
+            Bot::RustStdio => d.join("tictactoe_baseline_rs"),
+            Bot::CppStdio => d.join("tictactoe_baseline_cpp_stdio"),
+            Bot::RustFfi => d.join(plugin_filename("tictactoe_baseline_rs")),
+            Bot::CppFfi => d.join(plugin_filename("tictactoe_baseline_cpp")),
         }
     }
 }

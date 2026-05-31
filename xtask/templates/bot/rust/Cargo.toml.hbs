@@ -1,0 +1,12 @@
+[package]
+name = "{{crate_name}}"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+{{game}}_defs.workspace = true
+common.workspace = true
+anyhow.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]

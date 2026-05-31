@@ -1,0 +1,52 @@
+// Hand-written stdio wire-format helpers for {{name}} — paired with
+// the cbindgen-generated `{{name}}_defs.h`. Stays in sync with the
+// Rust `Display` / `FromStr` impls in `{{name}}_defs/src/lib.rs` by
+// hand; if you change the format in one place, change the other.
+//
+// SKELETON: the C++ `TurnInput` / `TurnRef` and the operator>>/<<
+// definitions below are placeholders that let the bot compile. Fill
+// them in with your real wire format before the bot does anything
+// useful — see `tron/defs/include/tron_defs_io.h` for a worked example.
+
+#pragma once
+
+#include "{{name}}_defs.h"
+
+#include <iostream>
+
+namespace cgio {
+
+// Per-turn input view handed to `decide(const TurnRef&)`. Add fields
+// as you flesh out the Rust `TurnRef` in `{{name}}_defs/src/lib.rs`.
+struct TurnRef {
+    // TODO: borrowed views of TurnInput's fields.
+};
+
+// C++ owner type for the wire format. cbindgen only emits the flat
+// `TurnInputFFI` repr; this wrapper mirrors the Rust `TurnInput` so
+// the stdio loop can `cin >> input` and call `input.as_ref()`.
+struct TurnInput {
+    // TODO: owned copies of TurnInput's fields.
+
+    TurnRef as_ref() const {
+        return TurnRef{};
+    }
+};
+
+inline std::istream& operator>>(std::istream& in, TurnInput& /*input*/) {
+    // TODO: read TurnInput's fields from `in`. The skeleton sets
+    // failbit so the bot's `while (cin >> input)` loop exits cleanly
+    // on first use, instead of looping forever consuming nothing.
+    in.setstate(std::ios::failbit);
+    std::cerr
+        << "{{name}}_defs_io.h: operator>>(TurnInput) not implemented yet"
+        << std::endl;
+    return in;
+}
+
+inline std::ostream& operator<<(std::ostream& out, const TurnOutput& /*output*/) {
+    // TODO: write TurnOutput's fields to `out`.
+    return out;
+}
+
+}  // namespace cgio
