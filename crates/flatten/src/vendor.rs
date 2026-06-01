@@ -2753,6 +2753,7 @@ fn vendor_one_dep(
             &macro_scan.item_list_macros,
             &macro_scan.paired_skip_bake,
             &macro_scan.ident_pair_matcher_macros,
+            &macro_scan.macro_export_names,
             inlined_proc_macros,
         )?;
         Ok(inject_imports(
@@ -2926,6 +2927,7 @@ use crate::cfg::{
 /// Returns Err only on bare `$crate` references that aren't followed
 /// by `::` — those resolve to the source crate's root, which the
 /// rewrite to `crate::<crate_name>` would semantically change.
+#[allow(clippy::too_many_arguments)]
 fn rewrite_for_vendoring(
     src: &str,
     crate_name: &str,
@@ -2936,6 +2938,7 @@ fn rewrite_for_vendoring(
     extra_item_list_macros: &HashSet<String>,
     paired_skip_bake: &HashSet<String>,
     ident_pair_matcher_macros: &HashSet<String>,
+    macro_export_names: &HashSet<String>,
     inlined_proc_macros: &HashSet<String>,
 ) -> Result<String> {
     // Expand `cfg_if! { ... }` invocations to plain `#[cfg(...)]` items
@@ -2990,6 +2993,23 @@ fn rewrite_for_vendoring(
     collect_dollar_crate_rewrites(&file, crate_name, siblings, &deleted, &mut edits)?;
     collect_macro_export_rewrites(&file, src, features, &deleted, &mut edits);
     collect_wrapper_macro_export_rewrites(&file, &deleted, &mut edits);
+    // Cross-file companion to `walk_macro_export_rewrites`'s in-file
+    // `pub use NAME;` demoter: catches `pub use NAME;` and
+    // `pub use NAME as ALIAS;` re-exports of macros defined in OTHER
+    // files in the same dep. anyhow's `lib.rs` has
+    // `pub use anyhow as format_err;` re-exporting the macro defined
+    // in `macros.rs`; without this pass, the re-export becomes E0364
+    // (pub use of a pub(crate) item) once we strip `#[macro_export]`
+    // and lift the macro as `pub(crate) use macros::anyhow`.
+    collect_cross_file_macro_export_demotions(&file, macro_export_names, &deleted, &mut edits);
+    // Edition-2024 default-binding-mode rule: when the scrutinee of a
+    // match is a `&` or `&mut` reference, a non-reference arm pattern
+    // implicitly borrows; combining that with a `mut FIELD` binding is
+    // rejected. Pre-2024 source like anyhow's `Chain::next_back` does
+    // `match &mut self.state { Linked { mut next } => … }` and now
+    // needs `&mut Linked { mut next }`. Add the explicit reference
+    // prefix here so vendored deps stay compatible across editions.
+    collect_implicit_borrow_match_rewrites(&file, &deleted, &mut edits);
     // Add the builtin-attr macro call rewrites collected in phase 1.
     // They were collected early so their spans could be added to
     // `deleted`; the actual edits go in here.
@@ -3547,12 +3567,26 @@ struct DepMacroScan {
     /// cases. Cross-file scan because the macro definition and call
     /// site usually live in different files.
     ident_pair_matcher_macros: HashSet<String>,
+    /// Names of `#[macro_export] macro_rules! NAME` declarations
+    /// (anywhere in the dep). After flatten strips `#[macro_export]`
+    /// and lifts the macro via `pub(crate) use NAME;`, any sibling
+    /// `pub use NAME;` / `pub use NAME as ALIAS;` re-export becomes
+    /// E0364 (cannot re-export a `pub(crate)` item as `pub`). Used
+    /// by `collect_macro_export_reexport_demotions` to demote those
+    /// re-exports to `pub(crate)`. Cross-file because the macro
+    /// definition and re-export commonly live in different files
+    /// (anyhow's `macros.rs` defines the macro; `lib.rs` re-exports
+    /// it under aliases). Names with built-in-attr collisions
+    /// (`warn`, `deny`, …) are excluded — they keep `#[macro_export]`
+    /// per `walk_macro_export_rewrites`.
+    macro_export_names: HashSet<String>,
 }
 
 fn scan_dep_for_item_list_macros(manifest_dir: &Path) -> DepMacroScan {
     let mut item_list = HashSet::new();
     let mut all_macros = HashSet::new();
     let mut ident_pair = HashSet::new();
+    let mut macro_export_names = HashSet::new();
     let src = manifest_dir.join("src");
     if src.is_dir() {
         let mut stack = vec![src];
@@ -3587,6 +3621,9 @@ fn scan_dep_for_item_list_macros(manifest_dir: &Path) -> DepMacroScan {
                 for name in collect_ident_pair_matcher_macro_names(&file) {
                     ident_pair.insert(name);
                 }
+                for name in collect_macro_export_names(&file) {
+                    macro_export_names.insert(name);
+                }
             }
         }
     }
@@ -3609,7 +3646,38 @@ fn scan_dep_for_item_list_macros(manifest_dir: &Path) -> DepMacroScan {
         item_list_macros: item_list,
         paired_skip_bake,
         ident_pair_matcher_macros: ident_pair,
+        macro_export_names,
     }
+}
+
+/// Names of `#[macro_export] macro_rules! NAME` items anywhere in this
+/// file, excluding names that collide with built-in attributes (those
+/// keep `#[macro_export]` per `walk_macro_export_rewrites`).
+fn collect_macro_export_names(file: &syn::File) -> HashSet<String> {
+    use syn::visit::Visit;
+    struct V {
+        names: HashSet<String>,
+    }
+    impl<'ast> Visit<'ast> for V {
+        fn visit_item_macro(&mut self, im: &'ast syn::ItemMacro) {
+            if !im.mac.path.is_ident("macro_rules") {
+                return;
+            }
+            let Some(name) = &im.ident else { return };
+            let name_str = name.to_string();
+            if is_builtin_attr_macro_name(&name_str) {
+                return;
+            }
+            if im.attrs.iter().any(|a| a.path().is_ident("macro_export")) {
+                self.names.insert(name_str);
+            }
+        }
+    }
+    let mut v = V {
+        names: HashSet::new(),
+    };
+    v.visit_file(file);
+    v.names
 }
 
 /// Names of every `macro_rules!` definition in the file, regardless
@@ -4316,6 +4384,126 @@ fn dep_reexport_visibility(items: &[syn::Item], name: &syn::Ident) -> Option<Ree
         }
     }
     None
+}
+
+/// For every `pub use NAME;` or `pub use NAME as ALIAS;` in this file
+/// whose `NAME` is a `#[macro_export]` macro defined elsewhere in the
+/// same dep, downgrade `pub` to `pub(crate)`. The in-file demoter in
+/// `walk_macro_export_rewrites` only sees re-exports at the SAME
+/// scope as the macro definition; this pass handles the cross-file
+/// case (anyhow's `lib.rs` re-exports `macros.rs`'s `anyhow!` as
+/// `format_err`).
+fn collect_cross_file_macro_export_demotions(
+    file: &syn::File,
+    macro_export_names: &HashSet<String>,
+    deleted: &[Range<usize>],
+    edits: &mut Vec<(Range<usize>, String)>,
+) {
+    fn walk(
+        items: &[syn::Item],
+        names: &HashSet<String>,
+        deleted: &[Range<usize>],
+        edits: &mut Vec<(Range<usize>, String)>,
+    ) {
+        use syn::spanned::Spanned;
+        for item in items {
+            if let syn::Item::Mod(m) = item
+                && let Some((_, inner)) = &m.content
+            {
+                walk(inner, names, deleted, edits);
+            }
+            let syn::Item::Use(u) = item else { continue };
+            let target = match &u.tree {
+                syn::UseTree::Name(n) => &n.ident,
+                syn::UseTree::Rename(r) => &r.ident,
+                _ => continue,
+            };
+            if !names.contains(&target.to_string()) {
+                continue;
+            }
+            let syn::Visibility::Public(pub_token) = &u.vis else {
+                continue;
+            };
+            let span = pub_token.span().byte_range();
+            if is_in_deleted(&span, deleted) {
+                continue;
+            }
+            edits.push((span, "pub(crate)".to_string()));
+        }
+    }
+    walk(&file.items, macro_export_names, deleted, edits);
+}
+
+/// Edition-2024 match-ergonomics fix. When the scrutinee of a `match`
+/// is `&EXPR` or `&mut EXPR`, edition-2024 default-binding-mode
+/// rejects a non-reference arm pattern that also binds `mut FIELD`
+/// — the implicit borrow conflicts with the explicit `mut`. Wrap the
+/// pattern with the matching `&` / `&mut` reference pattern so the
+/// borrow is explicit and the `mut` binding survives. anyhow's
+/// `Chain::next_back` and `Chain::len` (which `match &mut self.state`
+/// / `match &self.state` against `Linked { mut next }`) are the
+/// canonical cases.
+fn collect_implicit_borrow_match_rewrites(
+    file: &syn::File,
+    deleted: &[Range<usize>],
+    edits: &mut Vec<(Range<usize>, String)>,
+) {
+    use syn::visit::Visit;
+    struct V<'a> {
+        edits: &'a mut Vec<(Range<usize>, String)>,
+        deleted: &'a [Range<usize>],
+    }
+    impl<'ast> Visit<'ast> for V<'_> {
+        fn visit_expr_match(&mut self, m: &'ast syn::ExprMatch) {
+            syn::visit::visit_expr_match(self, m);
+            let syn::Expr::Reference(r) = &*m.expr else {
+                return;
+            };
+            let prefix = if r.mutability.is_some() {
+                "&mut "
+            } else {
+                "&"
+            };
+            for arm in &m.arms {
+                if !pat_needs_ref_wrap(&arm.pat) {
+                    continue;
+                }
+                use syn::spanned::Spanned;
+                let span = arm.pat.span().byte_range();
+                if is_in_deleted(&span, self.deleted) {
+                    continue;
+                }
+                // Zero-width insert at the start of the pat span.
+                self.edits
+                    .push((span.start..span.start, prefix.to_string()));
+            }
+        }
+    }
+    V { edits, deleted }.visit_file(file);
+}
+
+/// True if `pat` is a non-reference pattern that binds at least one
+/// field/local by `mut` (not `ref mut`). Reference patterns and
+/// patterns without any `mut` binding are fine — only the
+/// borrow+mut combination triggers the 2024 rule.
+fn pat_needs_ref_wrap(pat: &syn::Pat) -> bool {
+    if matches!(pat, syn::Pat::Reference(_)) {
+        return false;
+    }
+    use syn::visit::Visit;
+    struct V {
+        found: bool,
+    }
+    impl<'ast> Visit<'ast> for V {
+        fn visit_pat_ident(&mut self, p: &'ast syn::PatIdent) {
+            if p.by_ref.is_none() && p.mutability.is_some() {
+                self.found = true;
+            }
+        }
+    }
+    let mut v = V { found: false };
+    v.visit_pat(pat);
+    v.found
 }
 
 /// Detects macro invocations of the form `SIBLING::CONFLICT_NAME!(...)`
