@@ -1,0 +1,12 @@
+[package]
+name = "flatten_expand"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Internal expander helper for `flatten` — selectively expands proc-macros via rustc-dev. Lives outside the workspace because it requires nightly + rustc-dev; see rust-toolchain.toml."
+
+[[bin]]
+name = "flatten_expand"
+path = "src/main.rs"
+
+[dependencies]

@@ -1,0 +1,26 @@
+[package]
+name = "flatten"
+version.workspace = true
+edition.workspace = true
+description = "Flatten a Rust crate's source tree into a single .rs file."
+
+[[bin]]
+name = "flatten"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+thiserror.workspace = true
+miette = { version = "7", features = ["fancy"] }
+syn = { version = "2", default-features = false, features = ["parsing", "full", "visit", "printing"] }
+# `span-locations` makes `Span::byte_range()` available — load-bearing for
+# the syn-based scanner since we splice over the original source by byte offset.
+proc-macro2 = { version = "1", features = ["span-locations"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+cargo_toml = "0.22"
+cargo_metadata = "0.23"
+
+[dev-dependencies]
+tempfile = "3.27"
+insta = "1.47"

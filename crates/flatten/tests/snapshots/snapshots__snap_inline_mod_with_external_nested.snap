@@ -1,0 +1,11 @@
+---
+source: tests/snapshots.rs
+expression: flatten(dir.path())
+---
+pub mod outer {
+    pub mod inner { // === src/outer/inner.rs ===
+pub fn deep() {}
+
+} // === end src/outer/inner.rs ===
+
+}

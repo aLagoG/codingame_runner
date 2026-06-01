@@ -1,0 +1,47 @@
+# Curated `--external-preset infra` list.
+#
+# Crates here always need `--external` because they emit native-link
+# directives, generate bindings via build-script DSL macros our
+# scanner can't expand, or have multi-version coexistence conflicts.
+#
+# The holistic build-script vendoring policy (commit `a070a6b`)
+# made several formerly-listed crates vendorable on their own
+# (parking_lot_core, signal-hook, signal-hook-registry, zmij);
+# they were removed from this preset.
+#
+# Use via `--external-preset infra` (loads this file). The contents
+# are baked into the binary at compile time via `include_str!`.
+
+# Windows FFI bindings: huge generated mods, build.rs, link directives.
+# Always external — vendoring produces 100k+ unused lines.
+winapi
+winapi-i686-pc-windows-gnu
+winapi-x86_64-pc-windows-gnu
+
+# windows-sys: source uses `link!{...}` DSL macros that generate items
+# the source then references via `mod Win32` — but the underlying file
+# doesn't exist (macro-generated). Vendoring requires expanding the
+# DSL and inlining build-script bindings (multi-day).
+windows-sys
+
+# windows-targets: pure dispatch crate that conditionally re-exports
+# the per-target sub-crates (windows_aarch64_gnullvm etc.); each of
+# those emits cargo:rustc-link-lib + rustc-link-search for actual
+# native linking on the target.
+windows-targets
+windows_aarch64_gnullvm
+windows_aarch64_msvc
+windows_i686_gnu
+windows_i686_gnullvm
+windows_i686_msvc
+windows_x86_64_gnu
+windows_x86_64_gnullvm
+windows_x86_64_msvc
+
+# crossterm's Windows-side console API — Windows-only via #![cfg(windows)].
+crossterm_winapi
+
+# serde_core split: shared with serde via shared internal types.
+# Auto-vendoring produces multi-version conflicts at the API
+# boundary between vendored serde and the user's serde_core.
+serde_core

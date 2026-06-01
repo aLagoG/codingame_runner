@@ -1,0 +1,9 @@
+---
+source: tests/snapshots.rs
+expression: flatten(dir.path())
+---
+#[path = "renamed.rs"]
+mod foo { // === src/renamed.rs ===
+pub fn x() {}
+
+} // === end src/renamed.rs ===

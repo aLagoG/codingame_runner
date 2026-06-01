@@ -1,0 +1,13 @@
+---
+source: tests/snapshots.rs
+expression: flatten(dir.path())
+---
+mod foo { // === src/foo.rs ===
+pub fn greet(name: &str) {
+    println!("hi, {name}");
+}
+
+} // === end src/foo.rs ===
+
+
+pub use foo::greet;

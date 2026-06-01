@@ -1,0 +1,10 @@
+---
+source: tests/snapshots.rs
+assertion_line: 67
+expression: flatten(dir.path())
+---
+#[cfg(any())]
+mod absent { /* cfg-skipped: source for `mod absent` not present on this build target */ }
+
+
+pub fn a() {}

@@ -9,6 +9,7 @@ members = [
     "crates/xtask",
     "crates/viz",
     "crates/cpp_flatten",
+    "crates/flatten",
     "crates/tournament",
     "crates/cg_statement",
     # Per-game engine + bots.
@@ -28,6 +29,14 @@ members = [
     "games/fantastic_bits/bots/baseline_rs",
     "games/fantastic_bits/bots/v1_cpp",
 ]
+
+# Built on its own toolchain (nightly + rustc-dev) — see
+# crates/flatten_expand/rust-toolchain.toml. Excluding keeps the
+# stable-toolchain workspace build clean; users invoke
+# `cargo build` from inside that directory when they need it.
+# (Test-crate fixtures under crates/flatten/test-crates/* each carry
+# their own empty `[workspace]` so they don't escalate to ours.)
+exclude = ["crates/flatten_expand"]
 
 [workspace.package]
 version = "0.1.0"

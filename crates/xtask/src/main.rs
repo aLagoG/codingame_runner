@@ -84,19 +84,38 @@ enum Command {
         #[arg(long)]
         from_existing: Option<String>,
     },
-    /// Bundle a game's C++ bot into a single self-contained `.cpp`
-    /// file ready to paste into CodinGame's web editor. Runs the
-    /// `cpp_flatten` binary on the bot's `main.cpp` entry.
+    /// Bundle a bot into a single self-contained source file ready to
+    /// paste into CodinGame's web editor.
+    ///
+    /// * C++ bots → `cpp_flatten` on `<game>/bots/<bot>_cpp/main.cpp`.
+    /// * Rust bots → `flatten` on `<game>/bots/<bot>_rs/` with the
+    ///   `--bin <crate_name>` selector, optionally with `--vendor`
+    ///   to inline transitive deps.
+    ///
+    /// Language is auto-detected from which bot directory exists. If
+    /// both `<bot>_rs/` and `<bot>_cpp/` exist, `--lang` is required.
     Bundle {
         /// Game name (e.g. `tron`).
         game: String,
         /// Bot name (e.g. `baseline`, `v1`). Resolved to
-        /// `<game>/bots/<bot>_cpp/main.cpp`.
+        /// `<game>/bots/<bot>_<lang>/`.
         bot: String,
+        /// Force a specific language when both variants exist.
+        #[arg(long, value_enum)]
+        lang: Option<BotLang>,
         /// Override the output path. Defaults to
-        /// `target/codingame/<game>_<bot>_bot.cpp`.
+        /// `target/codingame/<game>_<bot>_bot.{rs,cpp}` based on lang.
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// Rust only: inline transitive deps into the flat output via
+        /// `flatten --vendor`. Required for a CodinGame-ready single
+        /// file; will error loudly listing any unvendorable deps.
+        #[arg(long)]
+        vendor: bool,
+        /// Rust only: keep this dep as a `use foo::…` reference rather
+        /// than inlining it. Repeatable. Forwarded to `flatten --external`.
+        #[arg(long = "external", value_name = "NAME", action = clap::ArgAction::Append)]
+        external: Vec<String>,
     },
     /// Convert a copy-pasted CodinGame statement (devtools HTML
     /// blob) into the dark-themed `instructions.html` next to the
@@ -221,7 +240,14 @@ fn main() -> Result<()> {
             lang,
             from_existing,
         } => new_bot(&game, &name, lang, from_existing.as_deref())?,
-        Command::Bundle { game, bot, output } => bundle(&game, &bot, output.as_deref())?,
+        Command::Bundle {
+            game,
+            bot,
+            lang,
+            output,
+            vendor,
+            external,
+        } => bundle(&game, &bot, lang, output.as_deref(), vendor, &external)?,
         Command::Statement {
             game,
             input,
@@ -478,49 +504,101 @@ fn profile(
     Ok(())
 }
 
-/// Run `cpp_flatten` over `<game>/bots/<bot>_cpp/main.cpp` and write
-/// the result somewhere paste-ready. We shell out to the binary
-/// instead of linking the library so xtask stays a thin orchestrator
-/// — the flatten logic, its tests, and its CLI all live in one crate.
-fn bundle(game: &str, bot: &str, output_override: Option<&Path>) -> Result<()> {
-    let entry = PathBuf::from("games")
-        .join(game)
-        .join("bots")
-        .join(format!("{bot}_cpp"))
-        .join("main.cpp");
-    anyhow::ensure!(
-        entry.exists(),
-        "no C++ bot stdio entry at {} — does the bot have a main.cpp?",
-        entry.display(),
-    );
+/// Bundle a bot into a single paste-ready file. Dispatches on
+/// language: `cpp_flatten` for C++ bots, `flatten` for Rust bots. The
+/// xtask is a thin orchestrator — the actual flattening lives in the
+/// respective crates so they're independently testable and usable.
+fn bundle(
+    game: &str,
+    bot: &str,
+    lang_override: Option<BotLang>,
+    output_override: Option<&Path>,
+    vendor: bool,
+    external: &[String],
+) -> Result<()> {
+    let bots_dir = PathBuf::from("games").join(game).join("bots");
+    let rs_dir = bots_dir.join(format!("{bot}_rs"));
+    let cpp_dir = bots_dir.join(format!("{bot}_cpp"));
+    let lang = resolve_bundle_lang(lang_override, &rs_dir, &cpp_dir, game, bot)?;
 
+    let default_ext = match lang {
+        BotLang::Rust => "rs",
+        BotLang::Cpp => "cpp",
+        BotLang::Both => unreachable!("resolve_bundle_lang collapses Both"),
+    };
     let output: PathBuf = output_override.map(Path::to_path_buf).unwrap_or_else(|| {
         PathBuf::from("target")
             .join("codingame")
-            .join(format!("{game}_{bot}_bot.cpp"))
+            .join(format!("{game}_{bot}_bot.{default_ext}"))
     });
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
 
-    // `CARGO` is set whenever xtask is invoked through `cargo xtask`.
-    // Fall back to `cargo` on PATH for direct-binary invocations.
-    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
-    let status = std::process::Command::new(cargo)
-        .args(["run", "--quiet", "-p", "cpp_flatten", "--"])
-        .arg(&entry)
-        .arg("-o")
-        .arg(&output)
-        .status()
-        .context("invoking cpp_flatten binary")?;
-    anyhow::ensure!(status.success(), "cpp_flatten exited with {status}");
-
     let s = Style::new();
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    match lang {
+        BotLang::Cpp => {
+            if vendor || !external.is_empty() {
+                eprintln!(
+                    "{} `--vendor` / `--external` are Rust-only; ignored for C++ bundle.",
+                    s.code("warn:"),
+                );
+            }
+            let entry = cpp_dir.join("main.cpp");
+            anyhow::ensure!(
+                entry.exists(),
+                "no C++ bot stdio entry at {} — does the bot have a main.cpp?",
+                entry.display(),
+            );
+            let status = std::process::Command::new(&cargo)
+                .args(["run", "--quiet", "-p", "cpp_flatten", "--"])
+                .arg(&entry)
+                .arg("-o")
+                .arg(&output)
+                .status()
+                .context("invoking cpp_flatten binary")?;
+            anyhow::ensure!(status.success(), "cpp_flatten exited with {status}");
+        }
+        BotLang::Rust => {
+            // Rust bots own both a `[lib]` (decide + ffi_bot!) and a
+            // `[[bin]]` (the stdio shim). CodinGame submissions are
+            // stdio bots, so we flatten the bin target; its package +
+            // bin both inherit the crate name.
+            let crate_name = format!("{game}_{bot}_rs");
+            let mut cmd = std::process::Command::new(&cargo);
+            cmd.args(["run", "--quiet", "-p", "flatten", "--"])
+                .arg(&rs_dir)
+                .args(["--bin", &crate_name])
+                .arg("-o")
+                .arg(&output);
+            if vendor {
+                cmd.arg("--vendor");
+                for ext in external {
+                    cmd.args(["--external", ext]);
+                }
+            } else if !external.is_empty() {
+                eprintln!(
+                    "{} `--external` requires `--vendor`; ignored.",
+                    s.code("warn:"),
+                );
+            }
+            let status = cmd.status().context("invoking flatten binary")?;
+            anyhow::ensure!(status.success(), "flatten exited with {status}");
+        }
+        BotLang::Both => unreachable!(),
+    }
+
     println!(
-        "{} Bundled {} ({}) → {}",
+        "{} Bundled {} ({}, {}) → {}",
         s.ok("✓"),
         s.name(game),
         s.name(bot),
+        s.code(match lang {
+            BotLang::Rust => "rust",
+            BotLang::Cpp => "cpp",
+            BotLang::Both => "",
+        }),
         s.path(&output.display().to_string()),
     );
     println!(
@@ -528,6 +606,43 @@ fn bundle(game: &str, bot: &str, output_override: Option<&Path>) -> Result<()> {
         s.path(&output.display().to_string()),
     );
     Ok(())
+}
+
+/// Pick which language to bundle. `--lang` wins if passed; otherwise
+/// auto-detect from directory existence. Errors when neither (or both,
+/// without `--lang`) exists.
+fn resolve_bundle_lang(
+    override_: Option<BotLang>,
+    rs_dir: &Path,
+    cpp_dir: &Path,
+    game: &str,
+    bot: &str,
+) -> Result<BotLang> {
+    if let Some(l) = override_ {
+        let dir = match l {
+            BotLang::Rust => rs_dir,
+            BotLang::Cpp => cpp_dir,
+            BotLang::Both => anyhow::bail!("`--lang both` makes no sense for bundle"),
+        };
+        anyhow::ensure!(
+            dir.exists(),
+            "no bot at {} — `--lang` selected a variant that doesn't exist",
+            dir.display(),
+        );
+        return Ok(l);
+    }
+    match (rs_dir.exists(), cpp_dir.exists()) {
+        (true, false) => Ok(BotLang::Rust),
+        (false, true) => Ok(BotLang::Cpp),
+        (true, true) => anyhow::bail!(
+            "{game}/{bot} has both rs and cpp variants — pass `--lang rust|cpp` to pick one",
+        ),
+        (false, false) => anyhow::bail!(
+            "no bot found at {} or {}",
+            rs_dir.display(),
+            cpp_dir.display(),
+        ),
+    }
 }
 
 fn new_game(name: &str) -> Result<()> {
