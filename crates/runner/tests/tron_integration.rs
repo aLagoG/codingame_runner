@@ -1,17 +1,6 @@
-//! End-to-end smoke tests: spawn the runner against every combination
-//! of {Rust, C++} × {stdio, FFI} bot transports and verify the match
-//! completes with a winner. Catches wire-format drift, ABI mismatches,
-//! and force-load/export regressions in the C++ plugin link.
-//!
-//! Bot artifacts come from sibling workspace crates that aren't direct
-//! dependencies of this test (`tictactoe_cpp` is cdylib-only and can't
-//! be a dev-dep), so the first test to run calls `cargo build` on them
-//! via `Once`. The runner binary itself is supplied through the
-//! `CARGO_BIN_EXE_codingame_runner` env var that cargo sets for tests.
-//!
-//! Outcome assertions are intentionally loose — `outcome: ...` on
-//! stdout is enough to prove the loop ran end-to-end. Bot strategies
-//! aren't part of the contract under test.
+//! End-to-end smoke tests for tron — mirror of the tic-tac-toe
+//! integration suite. See `tictactoe_integration.rs` for the rationale
+//! behind the build/spawn structure.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -22,9 +11,7 @@ static BUILD: Once = Once::new();
 fn ensure_bots_built() {
     BUILD.call_once(|| {
         let mut cmd = Command::new(env!("CARGO"));
-        cmd.args(["build", "-p", "tictactoe_baseline_rs", "-p", "tictactoe_baseline_cpp"]);
-        // Match the profile this test binary was built with so the
-        // artifacts land in the directory `artifact_dir()` looks in.
+        cmd.args(["build", "-p", "tron_baseline_rs", "-p", "tron_baseline_cpp"]);
         if !cfg!(debug_assertions) {
             cmd.arg("--release");
         }
@@ -35,8 +22,9 @@ fn ensure_bots_built() {
 
 fn artifact_dir() -> PathBuf {
     let workspace_target = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("runner crate has a parent")
+        .parent() // <ws>/crates
+        .and_then(std::path::Path::parent) // <ws>
+        .expect("runner crate is at <ws>/crates/runner")
         .join("target");
     let profile = if cfg!(debug_assertions) {
         "debug"
@@ -71,10 +59,10 @@ impl Bot {
     fn path(self) -> PathBuf {
         let d = artifact_dir();
         match self {
-            Bot::RustStdio => d.join("tictactoe_baseline_rs"),
-            Bot::CppStdio => d.join("tictactoe_baseline_cpp_stdio"),
-            Bot::RustFfi => d.join(plugin_filename("tictactoe_baseline_rs")),
-            Bot::CppFfi => d.join(plugin_filename("tictactoe_baseline_cpp")),
+            Bot::RustStdio => d.join("tron_baseline_rs"),
+            Bot::CppStdio => d.join("tron_baseline_cpp_stdio"),
+            Bot::RustFfi => d.join(plugin_filename("tron_baseline_rs")),
+            Bot::CppFfi => d.join(plugin_filename("tron_baseline_cpp")),
         }
     }
 }
@@ -97,7 +85,7 @@ fn run_match(p0: Bot, p1: Bot) {
 
     let runner = env!("CARGO_BIN_EXE_codingame_runner");
     let out = Command::new(runner)
-        .args(["--game", "tictactoe"])
+        .args(["--game", "tron"])
         .arg(&p0_path)
         .arg(&p1_path)
         .output()

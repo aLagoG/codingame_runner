@@ -21,8 +21,8 @@
 //! ```
 //!
 //! Layout convention (matches the workspace): the bot crate lives at
-//! `<workspace>/<game>/bots/<bot_name>_<lang>/`, and the game's
-//! generated C++ header lives at `<workspace>/<game>/defs/include/`.
+//! `<workspace>/games/<game>/bots/<bot_name>_<lang>/`, and the game's
+//! generated C++ header lives at `<workspace>/games/<game>/defs/include/`.
 //! `cgio_build::build` derives both from `CARGO_MANIFEST_DIR`.
 
 use std::env;
@@ -43,7 +43,7 @@ const EXPORTED_SYMBOLS: &[&str] = &[
 ///
 /// * `game` — the game directory name (e.g. `"tron"`). Used in error
 ///   messages; the defs crate's include directory is always at
-///   `<workspace>/<game>/defs/include/` by layout convention.
+///   `<workspace>/games/<game>/defs/include/` by layout convention.
 /// * `crate_name` — the bot crate's name (e.g. `"tron_baseline_cpp"`).
 ///   Used for naming the inner static libs and the stdio bin's lib.
 ///
@@ -65,10 +65,10 @@ pub fn build(game: &str, crate_name: &str) {
 }
 
 /// Locate the generated header directory. The expected layout is
-/// `<workspace>/<game>/bots/<bot_crate>/`, so the defs crate is two
-/// directories up from `CARGO_MANIFEST_DIR`. We panic with a clear
-/// message if the path doesn't exist so misconfiguration fails fast
-/// instead of producing a cryptic `#include` error downstream.
+/// `<workspace>/games/<game>/bots/<bot_crate>/`, so the defs crate is
+/// two directories up from `CARGO_MANIFEST_DIR`. We panic with a
+/// clear message if the path doesn't exist so misconfiguration fails
+/// fast instead of producing a cryptic `#include` error downstream.
 fn locate_header_dir(manifest_dir: &Path, game: &str) -> PathBuf {
     let workspace_game_dir = manifest_dir
         .parent() // .../<game>/bots

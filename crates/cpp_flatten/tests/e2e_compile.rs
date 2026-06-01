@@ -37,10 +37,11 @@ fn ensure_defs_header() {
 }
 
 fn workspace_root() -> PathBuf {
-    // cpp_flatten/ lives at the workspace root.
+    // cpp_flatten/ lives at <ws>/crates/cpp_flatten/.
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("cpp_flatten crate has a parent")
+        .parent() // <ws>/crates
+        .and_then(std::path::Path::parent) // <ws>
+        .expect("cpp_flatten crate is at <ws>/crates/cpp_flatten")
         .to_path_buf()
 }
 
@@ -67,6 +68,7 @@ fn tictactoe_main_flattens_compiles_and_runs() {
     ensure_defs_header();
 
     let entry = workspace_root()
+        .join("games")
         .join("tictactoe")
         .join("bots")
         .join("baseline_cpp")
