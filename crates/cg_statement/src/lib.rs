@@ -531,14 +531,16 @@ mod tests {
     fn drop_sections_handles_nested_unrelated_divs_inside_target() {
         // Depth counter has to skip the inner unrelated <div> when
         // closing the dropped section.
-        let body = r#"a<div class="statement-story-background"><div>noise<div>deep</div></div></div>b"#;
+        let body =
+            r#"a<div class="statement-story-background"><div>noise<div>deep</div></div></div>b"#;
         let out = drop_sections(body);
         assert_eq!(out, "ab");
     }
 
     #[test]
     fn drop_sections_leaves_other_divs_alone() {
-        let body = r#"<div class="statement-goal">keep</div><div class="statement-story">drop</div>"#;
+        let body =
+            r#"<div class="statement-goal">keep</div><div class="statement-story">drop</div>"#;
         let out = drop_sections(body);
         assert_eq!(out, r#"<div class="statement-goal">keep</div>"#);
     }
@@ -628,6 +630,9 @@ mod tests {
             title: Some("Fantastic Bits - Game Statement".into()),
         };
         let out = clean_with_options("<p>x</p>", &opts).unwrap();
-        assert!(out.html.contains("<title>Fantastic Bits - Game Statement</title>"));
+        assert!(
+            out.html
+                .contains("<title>Fantastic Bits - Game Statement</title>")
+        );
     }
 }

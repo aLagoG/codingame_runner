@@ -17,6 +17,14 @@ use rand::rngs::StdRng;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
+// Bot-facing surface — moved to `bot_common`. Re-import the names we
+// need locally so the rest of this file reads the same as before.
+use bot_common::{
+    BotStatus, CounterFn, Defs, ReadFrom, TurnResult, WireInput, WireOutput, WriteTo,
+};
+// The top of `crates/common`'s `lib.rs` re-exports these so engine-
+// side callers can keep writing `common::WireInput` etc.
+
 /// The RNG type every game receives in [`Game::new`]. Concrete (not
 /// `<R: Rng>` generic) so the `Game` trait stays object-safe — we
 /// don't use `Box<dyn Game>` today, but a generic method would
@@ -28,8 +36,6 @@ pub type GameRng = StdRng;
 /// tests) don't have to pull `rand` into their `Cargo.toml` just
 /// for the `seed_from_u64` constructor.
 pub use rand::SeedableRng as GameRngSeed;
-
-use crate::{ReadFrom, WriteTo};
 
 pub type PlayerId = u32;
 
@@ -64,194 +70,8 @@ pub enum MatchError {
     PlayerInit(PlayerId, #[source] PlayerError),
     #[error("player {0} failed during turn")]
     PlayerPlay(PlayerId, #[source] PlayerError),
-}
-
-/// Status byte returned by every bot's `take_turn` FFI call. Same shape for
-/// every game — `Ok` means `TurnResult::output` is valid; `Panic` means the
-/// bot's `catch_unwind` shim intercepted a panic and `output` is placeholder
-/// data that the runner must ignore.
-#[repr(u8)]
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
-pub enum BotStatus {
-    Ok = 0,
-    Panic = 1,
-}
-
-/// FFI return type of every bot's `take_turn`. Generic over the per-game
-/// `O` (the game's `TurnOutput`), monomorphised by cbindgen into a concrete
-/// C++ struct per game.
-#[repr(C)]
-#[derive(Debug)]
-pub struct TurnResult<O> {
-    pub status: BotStatus,
-    pub output: O,
-}
-
-/// Contract on each game's owned per-tick input struct (the `TurnInput` in
-/// each `_defs` crate).
-///
-/// Pairs the owned type with two views:
-///   * `Ffi<'a>` — `#[repr(C)]` mirror sent across the plugin boundary.
-///   * `Ref<'a>` — borrowed view bots read inside `decide(...)`.
-///
-/// Supertraits `ReadFrom + WriteTo` are what the engine uses to ferry the
-/// input through subprocess pipes; the trait method pair is what the FFI
-/// path uses. Implementing this trait is what makes a game's `TurnInput`
-/// usable end-to-end. The cross-trait `Ffi<'a>::Ref = Self::Ref<'a>` bound
-/// guarantees the same borrowed type comes out of both `as_ref` paths.
-pub trait WireInput: ReadFrom + WriteTo {
-    /// `#[repr(C)]` FFI mirror.
-    type Ffi<'a>: WireInputFfi<'a, Ref = Self::Ref<'a>>
-    where
-        Self: 'a;
-
-    /// Borrowed view passed to bot `decide` functions.
-    type Ref<'a>
-    where
-        Self: 'a;
-
-    /// Build the FFI mirror borrowing from `self`.
-    fn as_ffi(&self) -> Self::Ffi<'_>;
-
-    /// Build the borrowed view from `self`.
-    fn as_ref(&self) -> Self::Ref<'_>;
-}
-
-/// FFI-side companion to [`WireInput`]. Bots receive `Self` from the runner
-/// and call `as_ref` to get the borrowed view they actually read.
-pub trait WireInputFfi<'a> {
-    /// Borrowed view type — typically the same `Ref<'a>` as the owning
-    /// [`WireInput`]'s associated `Ref<'a>`.
-    type Ref;
-
-    /// SAFETY: the impl relies on the invariants the FFI struct documents
-    /// (pointers properly aligned, lengths in range, lifetime live). The
-    /// trait wraps that in a safe method because every FFI struct's only
-    /// constructor (`WireInput::as_ffi`) establishes them.
-    fn as_ref(&self) -> Self::Ref;
-}
-
-/// Sentinel `InitialInput` for games that don't ferry per-player data at
-/// match start. Real games either use this (typical) or define their own
-/// `WireInput`-implementing struct. One padding byte makes the type
-/// non-zero-sized — without it, the `improper_ctypes` lint would fire on
-/// the per-game extern block because zero-sized types aren't FFI-safe.
-#[repr(C)]
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NoInitialInput {
-    _padding: u8,
-}
-
-/// FFI mirror of [`NoInitialInput`]. Same one-byte layout.
-#[repr(C)]
-#[derive(Debug, Default, Clone, Copy)]
-pub struct NoInitialInputFfi<'a> {
-    _padding: u8,
-    _marker: PhantomData<&'a NoInitialInput>,
-}
-
-/// Borrowed view of [`NoInitialInput`] — handed to bot init handlers.
-/// Carries no semantic data; bots typically ignore the argument.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct NoInitialInputRef<'a> {
-    _marker: PhantomData<&'a NoInitialInput>,
-}
-
-impl WireInput for NoInitialInput {
-    type Ffi<'a> = NoInitialInputFfi<'a>;
-    type Ref<'a> = NoInitialInputRef<'a>;
-
-    fn as_ffi(&self) -> NoInitialInputFfi<'_> {
-        NoInitialInputFfi {
-            _padding: 0,
-            _marker: PhantomData,
-        }
-    }
-
-    fn as_ref(&self) -> NoInitialInputRef<'_> {
-        NoInitialInputRef {
-            _marker: PhantomData,
-        }
-    }
-}
-
-impl<'a> WireInputFfi<'a> for NoInitialInputFfi<'a> {
-    type Ref = NoInitialInputRef<'a>;
-
-    fn as_ref(&self) -> NoInitialInputRef<'a> {
-        NoInitialInputRef {
-            _marker: PhantomData,
-        }
-    }
-}
-
-impl ReadFrom for NoInitialInput {
-    fn read_from(_r: &mut impl BufRead) -> anyhow::Result<Self> {
-        Ok(NoInitialInput::default())
-    }
-}
-
-impl WriteTo for NoInitialInput {
-    fn write_to(&self, _w: &mut impl Write) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-/// Bundled contract on each game's `TurnOutput`. Implementing this on your
-/// `TurnOutput` is the single line that asserts — at the `_defs` crate site
-/// — that the type satisfies every requirement the rest of the system will
-/// eventually need:
-///
-///   * `ReadFrom + WriteTo` — stdio between runner and subprocess bots.
-///   * `Default` — placeholder the `ffi_bot!` macro stores on the panic path.
-///   * `Serialize + DeserializeOwned` — `Replay<TurnOutput>` round-trips.
-///   * `'static` — implied by `DeserializeOwned`, made explicit for clarity.
-///
-/// No blanket impl: write `impl WireOutput for TurnOutput {}` explicitly so
-/// missing pieces fail at *this* line instead of three crates downstream.
-pub trait WireOutput:
-    ReadFrom + WriteTo + Default + Serialize + serde::de::DeserializeOwned + 'static
-{
-}
-
-/// Crate-level contract for a `_defs` crate: implement this on a unit
-/// marker type (conventionally `Ffi`) to ratify that the crate exposes a
-/// complete and consistent FFI surface.
-///
-/// ```ignore
-/// // tron_defs/src/lib.rs
-/// pub struct Ffi;
-/// impl common::Defs for Ffi {
-///     type Input = TurnInput;
-///     type Output = TurnOutput;
-///     const ABI_VERSION: u32 = ABI_VERSION;
-/// }
-/// ```
-///
-/// The single `impl Defs` line forces the compiler to check every required
-/// trait (`WireInput`, `WireOutput`, transitively `WireInputFfi` via the
-/// GAT) at this exact site — not three crates downstream. The bot-side
-/// `ffi_bot!` macro and the runner-side `FfiGame` reach all the other types
-/// they need by projecting through these associated types.
-pub trait Defs {
-    /// One-time per-player input sent before the match starts. Use `()`
-    /// (which has a blanket `WireInput` impl) for games that don't need
-    /// init data.
-    type InitialInput: WireInput;
-
-    /// Owned per-tick input type. Pulls in `WireInput` (which itself
-    /// requires `ReadFrom + WriteTo`), and through that the FFI mirror
-    /// and the borrowed view via GATs.
-    type Input: WireInput;
-
-    /// Per-tick output type. `WireOutput` bundles `ReadFrom + WriteTo +
-    /// Default + Serialize + DeserializeOwned + 'static`.
-    type Output: WireOutput;
-
-    /// Plugin ABI version. Bumped on any wire-type change. The runner
-    /// reads this at load time through the plugin's `abi_version()`
-    /// symbol and refuses mismatches before any UB-prone call.
-    const ABI_VERSION: u32;
+    #[error("failed to serialize per-tick outputs into replay buffer")]
+    ReplayBuild(#[source] anyhow::Error),
 }
 
 /// A `Game` is the rules + state for a match. Generic over its I/O types so the
@@ -381,13 +201,70 @@ pub struct RunConfig {
 /// `Game::step` consumes, with `None` for players that didn't move that tick
 /// (inactive / failed).
 ///
-/// Parameterised over the output type (not the whole `Game`) so the serde
-/// bounds stay simple and the type lines up with file IO.
+/// Outputs are stored as the wire-format text each bot emitted (the
+/// same string that ran across the subprocess pipe or that `WriteTo`
+/// produces on the FFI path). That keeps per-game `TurnOutput` types
+/// free of `Serialize`/`Deserialize` derives — important because
+/// those would pull `serde_derive` (a proc-macro) into the bot's
+/// dependency closure and make flattened CodinGame submissions
+/// unvendorable.
+///
+/// Reconstruct typed outputs via [`Replay::parse_outputs`] /
+/// build the runner side via [`Replay::from_typed_outputs`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Replay<O> {
+pub struct Replay {
     pub seed: u64,
     pub num_players: u32,
-    pub outputs: Vec<Vec<Option<O>>>,
+    pub outputs: Vec<Vec<Option<String>>>,
+}
+
+impl Replay {
+    /// Build a `Replay` from the runner's `Vec<Vec<Option<O>>>` by
+    /// serialising each typed output via its `WriteTo` impl.
+    pub fn from_typed_outputs<O: WriteTo>(
+        seed: u64,
+        num_players: u32,
+        outputs: &[Vec<Option<O>>],
+    ) -> anyhow::Result<Self> {
+        let mut out = Vec::with_capacity(outputs.len());
+        for tick in outputs {
+            let mut row = Vec::with_capacity(tick.len());
+            for slot in tick {
+                row.push(match slot {
+                    Some(o) => {
+                        let mut buf = Vec::new();
+                        o.write_to(&mut buf)?;
+                        Some(String::from_utf8(buf)?)
+                    }
+                    None => None,
+                });
+            }
+            out.push(row);
+        }
+        Ok(Replay {
+            seed,
+            num_players,
+            outputs: out,
+        })
+    }
+
+    /// Parse the stored wire-format outputs back to typed `O`. Used
+    /// by the viz and any tooling that wants to replay forward
+    /// through `Game::step`.
+    pub fn parse_outputs<O: ReadFrom>(&self) -> anyhow::Result<Vec<Vec<Option<O>>>> {
+        let mut out = Vec::with_capacity(self.outputs.len());
+        for tick in &self.outputs {
+            let mut row = Vec::with_capacity(tick.len());
+            for slot in tick {
+                row.push(match slot {
+                    Some(s) => Some(O::read_from(&mut s.as_bytes())?),
+                    None => None,
+                });
+            }
+            out.push(row);
+        }
+        Ok(out)
+    }
 }
 
 /// Versioned framing for [`Replay`] files. Layout:
@@ -403,7 +280,7 @@ const REPLAY_MAGIC: &[u8; 8] = b"CGRREPLY";
 const REPLAY_VERSION: u32 = 1;
 
 /// Write a framed replay (magic + version + game name + bincoded body).
-pub fn write_replay<G: Game>(replay: &Replay<G::Output>, w: &mut impl Write) -> anyhow::Result<()> {
+pub fn write_replay<G: Game>(replay: &Replay, w: &mut impl Write) -> anyhow::Result<()> {
     use anyhow::Context;
     let name = G::NAME.as_bytes();
     anyhow::ensure!(name.len() <= u8::MAX as usize, "game name too long");
@@ -418,7 +295,7 @@ pub fn write_replay<G: Game>(replay: &Replay<G::Output>, w: &mut impl Write) -> 
 
 /// Read a framed replay. Errors on bad magic, unknown version, or a header
 /// game name that doesn't match `G::NAME`.
-pub fn read_replay<G: Game>(r: &mut impl io::Read) -> anyhow::Result<Replay<G::Output>> {
+pub fn read_replay<G: Game>(r: &mut impl io::Read) -> anyhow::Result<Replay> {
     use anyhow::{Context, bail, ensure};
 
     let mut magic = [0u8; 8];
@@ -514,11 +391,6 @@ pub unsafe extern "C" fn cgr_emit_counter(key: *const c_char, value: f64) {
     });
 }
 
-/// Public type alias for the FFI callback bots are expected to store
-/// and call. Plugins receive a `CounterFn` via their
-/// `set_counter_callback(cb: CounterFn)` symbol.
-pub type CounterFn = unsafe extern "C" fn(*const c_char, f64);
-
 /// Empty the accumulator (used right before each instrumented
 /// `take_turn`).
 pub(crate) fn counter_take() -> HashMap<String, f64> {
@@ -528,7 +400,8 @@ pub(crate) fn counter_take() -> HashMap<String, f64> {
 pub struct MatchResult<G: Game> {
     pub outcome: G::Outcome,
     pub stats: Vec<PlayerStats>,
-    pub replay: Replay<G::Output>,
+    pub replay: Replay,
+    _game: PhantomData<G>,
 }
 
 pub fn run_match<G: Game>(
@@ -600,14 +473,14 @@ pub fn run_match<G: Game>(
         outputs_per_tick.push(outputs);
 
         if let Some(outcome) = outcome {
+            let replay =
+                Replay::from_typed_outputs::<G::Output>(seed, num_players, &outputs_per_tick)
+                    .map_err(MatchError::ReplayBuild)?;
             return Ok(MatchResult {
                 outcome,
                 stats,
-                replay: Replay {
-                    seed,
-                    num_players,
-                    outputs: outputs_per_tick,
-                },
+                replay,
+                _game: PhantomData,
             });
         }
     }

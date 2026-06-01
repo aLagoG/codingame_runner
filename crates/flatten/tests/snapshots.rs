@@ -30,7 +30,10 @@ fn flatten(dir: &Path) -> String {
 fn snap_basic_inlining() {
     let dir = make_crate(&[
         ("src/lib.rs", "mod foo;\n\npub use foo::greet;\n"),
-        ("src/foo.rs", "pub fn greet(name: &str) {\n    println!(\"hi, {name}\");\n}\n"),
+        (
+            "src/foo.rs",
+            "pub fn greet(name: &str) {\n    println!(\"hi, {name}\");\n}\n",
+        ),
     ]);
     insta::assert_snapshot!(flatten(dir.path()));
 }
@@ -70,10 +73,7 @@ fn snap_cfg_skipped_mod_is_preserved() {
 #[test]
 fn snap_inline_mod_with_external_nested() {
     let dir = make_crate(&[
-        (
-            "src/lib.rs",
-            "pub mod outer {\n    pub mod inner;\n}\n",
-        ),
+        ("src/lib.rs", "pub mod outer {\n    pub mod inner;\n}\n"),
         ("src/outer/inner.rs", "pub fn deep() {}\n"),
     ]);
     insta::assert_snapshot!(flatten(dir.path()));
@@ -82,10 +82,7 @@ fn snap_inline_mod_with_external_nested() {
 #[test]
 fn snap_path_attr_resolves() {
     let dir = make_crate(&[
-        (
-            "src/lib.rs",
-            "#[path = \"renamed.rs\"]\nmod foo;\n",
-        ),
+        ("src/lib.rs", "#[path = \"renamed.rs\"]\nmod foo;\n"),
         ("src/renamed.rs", "pub fn x() {}\n"),
     ]);
     insta::assert_snapshot!(flatten(dir.path()));

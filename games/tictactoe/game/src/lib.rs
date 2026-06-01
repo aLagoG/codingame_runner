@@ -1,4 +1,5 @@
-use common::engine::{FfiGame, Game, GameRng, NoInitialInput, PlayerId};
+use common::NoInitialInput;
+use common::engine::{FfiGame, Game, GameRng, PlayerId};
 use tictactoe_defs::{BOARD_CELLS, BOARD_SIZE, Cell, Pos, TurnInput, TurnOutput};
 
 pub struct TicTacToeGame {

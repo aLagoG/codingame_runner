@@ -15,9 +15,23 @@ use macroquad::prelude::*;
 // Re-exported so per-game viz crates can reference them through `viz::*`
 // without adding their own deps, and stay in lockstep with whatever
 // `egui-macroquad` / `common` pull in.
-pub use common::engine::{Game, GameRng, GameRngSeed, Replay, read_replay};
+pub use common::engine::{Game, GameRng, GameRngSeed};
 pub use egui_macroquad::egui;
 pub use macroquad;
+
+/// Viz-side replay with **typed** per-tick outputs. The engine's own
+/// `common::engine::Replay` stores outputs as wire-format strings
+/// (so per-game `TurnOutput` types stay free of `serde_derive` and
+/// flattened bots stay vendor-clean for CodinGame); viz wants the
+/// typed view because the per-game `draw` / `step` paths operate on
+/// `G::Output`, not strings. `load_replay_from_argv` parses the
+/// engine-side replay into this typed form at load time.
+#[derive(Debug, Clone)]
+pub struct Replay<O> {
+    pub seed: u64,
+    pub num_players: u32,
+    pub outputs: Vec<Vec<Option<O>>>,
+}
 
 /// One game's bridge into the playback engine.
 ///
@@ -396,7 +410,15 @@ pub fn load_replay_from_argv<G: Game>() -> anyhow::Result<Option<Replay<G::Outpu
         return Ok(None);
     };
     let mut file = std::fs::File::open(&path).with_context(|| format!("opening replay {path}"))?;
-    read_replay::<G>(&mut file).map(Some)
+    let raw = common::engine::read_replay::<G>(&mut file)?;
+    let outputs = raw
+        .parse_outputs::<G::Output>()
+        .with_context(|| format!("parsing typed outputs out of replay {path}"))?;
+    Ok(Some(Replay {
+        seed: raw.seed,
+        num_players: raw.num_players,
+        outputs,
+    }))
 }
 
 /// Per-game viz binaries collapse to:

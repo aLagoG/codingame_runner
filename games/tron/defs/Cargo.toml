@@ -11,8 +11,10 @@ links = "tron_defs"
 
 [dependencies]
 anyhow.workspace = true
-common.workspace = true
-serde.workspace = true
+# Bot-facing surface only — deliberately NOT `common`, which would drag
+# serde/thiserror/libloading into the flattened bot bundle and break
+# CodinGame submission.
+bot_common.workspace = true
 
 [build-dependencies]
 cbindgen = "0.29.2"

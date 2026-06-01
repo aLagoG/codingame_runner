@@ -1,8 +1,8 @@
 use std::io::{self, Write};
 
-use common::{ReadFrom, WireInput, WriteTo};
-use tictactoe_defs::TurnInput;
+use bot_common::{ReadFrom, WireInput, WriteTo};
 use tictactoe_baseline_rs::decide;
+use tictactoe_defs::TurnInput;
 
 fn main() -> anyhow::Result<()> {
     let mut input = io::stdin().lock();

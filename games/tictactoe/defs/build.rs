@@ -5,10 +5,11 @@ fn main() {
 
     cbindgen::Builder::new()
         .with_crate(&crate_dir)
-        // Walk into `common` so the shared `BotStatus` + `TurnResult<O>` types
-        // (reached via the `extern "C"` block in lib.rs) land in the header.
+        // Walk into `bot_common` so the shared `BotStatus`, `TurnResult<O>`,
+        // and `NoInitialInputFfi` types (reached via the `extern "C"` block
+        // in lib.rs) land in the header.
         .with_parse_deps(true)
-        .with_parse_include(&["common".to_string()])
+        .with_parse_include(&["bot_common".to_string()])
         // Suppress Clang/GCC's noisy `-Wreturn-type-c-linkage` on the
         // `extern TurnResult<TurnOutput> take_turn(...)` declaration. The
         // template-instantiation-in-extern-C warning is spurious here:

@@ -574,6 +574,10 @@ fn bundle(
                 .arg(&output);
             if vendor {
                 cmd.arg("--vendor");
+                // CG ships these out of the box — no need to inline.
+                // Keep them as `use foo::…` references in the flat output.
+                // See crates/flatten/presets/codingame.txt.
+                cmd.args(["--external-preset", "codingame"]);
                 for ext in external {
                     cmd.args(["--external", ext]);
                 }
@@ -686,12 +690,7 @@ fn new_game(name: &str) -> Result<()> {
     Ok(())
 }
 
-fn new_bot(
-    game: &str,
-    bot: &str,
-    lang: BotLang,
-    from_existing: Option<&str>,
-) -> Result<()> {
+fn new_bot(game: &str, bot: &str, lang: BotLang, from_existing: Option<&str>) -> Result<()> {
     // Game must already exist (defs crate is the canonical marker).
     let game_root = PathBuf::from("games").join(game);
     let game_defs_path = game_root.join("defs");
@@ -777,12 +776,7 @@ fn clone_bot(
     Ok(())
 }
 
-fn copy_dir_substituting(
-    src: &Path,
-    dst: &Path,
-    from: &str,
-    to: &str,
-) -> Result<()> {
+fn copy_dir_substituting(src: &Path, dst: &Path, from: &str, to: &str) -> Result<()> {
     for entry in fs::read_dir(src).with_context(|| format!("reading {}", src.display()))? {
         let entry = entry?;
         let s_path = entry.path();
@@ -798,8 +792,7 @@ fn copy_dir_substituting(
             fs::write(&d_path, rewritten)
                 .with_context(|| format!("writing {}", d_path.display()))?;
         } else {
-            fs::copy(&s_path, &d_path)
-                .with_context(|| format!("copying {}", s_path.display()))?;
+            fs::copy(&s_path, &d_path).with_context(|| format!("copying {}", s_path.display()))?;
         }
     }
     Ok(())
@@ -808,7 +801,13 @@ fn copy_dir_substituting(
 fn is_text_file(p: &Path) -> bool {
     matches!(
         p.extension().and_then(|e| e.to_str()),
-        Some("rs") | Some("cpp") | Some("h") | Some("hpp") | Some("toml") | Some("md") | Some("txt")
+        Some("rs")
+            | Some("cpp")
+            | Some("h")
+            | Some("hpp")
+            | Some("toml")
+            | Some("md")
+            | Some("txt")
     )
 }
 

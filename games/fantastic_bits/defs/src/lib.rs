@@ -12,10 +12,9 @@ use std::{
 };
 
 use anyhow::{Context, bail};
-use common::{
+use bot_common::{
     Defs, ReadFrom, SingleLine, TurnResult, WireInput, WireInputFfi, WireOutput, WriteTo,
 };
-use serde::{Deserialize, Serialize};
 
 /// Bumped on any wire-type change. v2 added [`InitialInput::my_team_id`].
 pub const ABI_VERSION: u32 = 2;
@@ -27,7 +26,7 @@ pub const ABI_VERSION: u32 = 2;
 /// Per-player init data, sent once at match start. Matches the
 /// statement: `myTeamId = 0` → goal on the left; `myTeamId = 1` →
 /// goal on the right.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct InitialInput {
     pub my_team_id: i32,
 }
@@ -105,7 +104,7 @@ impl SingleLine for InitialInput {}
 
 /// Tags for entities the engine emits per tick.
 #[repr(u8)]
-#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Hash)]
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum EntityKind {
     /// One of the receiving player's own wizards (perspective-relative —
     /// the engine relabels per `input_for(player)`).
@@ -121,7 +120,7 @@ pub enum EntityKind {
 ///   * Snaffle: `1` if grabbed by a Wizard, else `0`.
 ///   * Bludger: `entityId` of last victim (-1 if none).
 #[repr(C)]
-#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
 pub struct Entity {
     pub id: i32,
     pub kind: EntityKind,
@@ -135,7 +134,7 @@ pub struct Entity {
 /// What kind of action a wizard is taking this tick. Together with the
 /// numeric fields on [`WizardAction`] this is the full output schema.
 #[repr(u8)]
-#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
 pub enum ActionKind {
     /// `MOVE x y thrust` — apply thrust toward (x, y); thrust in [0, 150].
     #[default]
@@ -160,7 +159,7 @@ pub enum ActionKind {
 /// build the right shape so callers don't need to remember which fields
 /// each kind uses.
 #[repr(C)]
-#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
 pub struct WizardAction {
     pub kind: ActionKind,
     /// MOVE/THROW: target x. Spells: ignored.
@@ -213,7 +212,7 @@ impl WizardAction {
 /// wizard-id order (lower id first). Written/read as two lines on the
 /// wire — *not* `SingleLine`.
 #[repr(C)]
-#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
 pub struct TurnOutput {
     pub primary: WizardAction,
     pub secondary: WizardAction,

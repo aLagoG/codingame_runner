@@ -70,9 +70,7 @@ pub(crate) fn cfg_expr_references_feature(expr: &CfgExpr) -> bool {
         CfgExpr::Feature(_) => true,
         CfgExpr::Bare(_) | CfgExpr::Other(_) | CfgExpr::Literal(_) => false,
         CfgExpr::Not(inner) => cfg_expr_references_feature(inner),
-        CfgExpr::Any(exprs) | CfgExpr::All(exprs) => {
-            exprs.iter().any(cfg_expr_references_feature)
-        }
+        CfgExpr::Any(exprs) | CfgExpr::All(exprs) => exprs.iter().any(cfg_expr_references_feature),
     }
 }
 
@@ -140,9 +138,7 @@ pub(crate) fn parse_one_cfg_expr(tokens: &[TokenTree]) -> CfgExpr {
     CfgExpr::Other(render_tokens(tokens))
 }
 
-pub(crate) fn split_top_level_commas(
-    ts: &proc_macro2::TokenStream,
-) -> Vec<Vec<TokenTree>> {
+pub(crate) fn split_top_level_commas(ts: &proc_macro2::TokenStream) -> Vec<Vec<TokenTree>> {
     let mut segments: Vec<Vec<TokenTree>> = vec![Vec::new()];
     for t in ts.clone() {
         if let TokenTree::Punct(p) = &t
@@ -169,11 +165,19 @@ pub(crate) fn format_cfg_expr(expr: &CfgExpr) -> String {
         CfgExpr::Not(inner) => format!("not({})", format_cfg_expr(inner)),
         CfgExpr::Any(items) => format!(
             "any({})",
-            items.iter().map(format_cfg_expr).collect::<Vec<_>>().join(", ")
+            items
+                .iter()
+                .map(format_cfg_expr)
+                .collect::<Vec<_>>()
+                .join(", ")
         ),
         CfgExpr::All(items) => format!(
             "all({})",
-            items.iter().map(format_cfg_expr).collect::<Vec<_>>().join(", ")
+            items
+                .iter()
+                .map(format_cfg_expr)
+                .collect::<Vec<_>>()
+                .join(", ")
         ),
     }
 }
@@ -233,9 +237,7 @@ pub(crate) fn simplify_cfg_expr(expr: &CfgExpr, features: &HashSet<String>) -> O
             // even when the surrounding expr can't simplify
             // further, causing edits that just change feature
             // syntax → literal syntax without functional value.
-            CfgExpr::Feature(name) => {
-                CfgExpr::Literal(features.contains(name))
-            }
+            CfgExpr::Feature(name) => CfgExpr::Literal(features.contains(name)),
             CfgExpr::Not(inner) => match reduce(inner, features) {
                 CfgExpr::Not(double) => *double, // double-negation collapse
                 CfgExpr::Literal(v) => CfgExpr::Literal(!v),
@@ -455,11 +457,7 @@ pub fn expand_cfg_if(src: &str) -> String {
     crate::edits::apply_simple_edits(src, edits)
 }
 
-fn walk_items_for_cfg_if(
-    items: &[syn::Item],
-    src: &str,
-    edits: &mut Vec<(Range<usize>, String)>,
-) {
+fn walk_items_for_cfg_if(items: &[syn::Item], src: &str, edits: &mut Vec<(Range<usize>, String)>) {
     use syn::spanned::Spanned;
     for item in items {
         match item {
@@ -544,9 +542,7 @@ fn parse_cfg_if_body(
                 i += 1;
                 match toks.get(i) {
                     Some(TokenTree::Ident(maybe_if)) if maybe_if == "if" => continue,
-                    Some(TokenTree::Group(g))
-                        if g.delimiter() == proc_macro2::Delimiter::Brace =>
-                    {
+                    Some(TokenTree::Group(g)) if g.delimiter() == proc_macro2::Delimiter::Brace => {
                         branches.push((proc_macro2::TokenStream::new(), g.stream()));
                         i += 1;
                         if i != toks.len() {
@@ -578,8 +574,7 @@ fn expand_one_cfg_if(src: &str, tokens: &proc_macro2::TokenStream) -> Option<Str
             if prior_preds.len() == 1 {
                 format!("#[cfg(not({}))]", prior_preds[0])
             } else {
-                let nots: Vec<String> =
-                    prior_preds.iter().map(|p| format!("not({p})")).collect();
+                let nots: Vec<String> = prior_preds.iter().map(|p| format!("not({p})")).collect();
                 format!("#[cfg(all({}))]", nots.join(", "))
             }
         } else if prior_preds.is_empty() {
@@ -887,10 +882,7 @@ mod tests {
         let f = features([]);
         // all(False, Unknown) → False. The render comes back as `all(False-form)`
         // which is the original predicate that evaluated False.
-        let s = simplify_cfg_expr(
-            &parse("all(feature = \"missing\", unknown_target)"),
-            &f,
-        );
+        let s = simplify_cfg_expr(&parse("all(feature = \"missing\", unknown_target)"), &f);
         // Just assert it returned Some — exact text depends on render shape.
         assert!(s.is_some());
     }

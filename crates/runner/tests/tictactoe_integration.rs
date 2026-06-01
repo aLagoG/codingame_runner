@@ -22,7 +22,13 @@ static BUILD: Once = Once::new();
 fn ensure_bots_built() {
     BUILD.call_once(|| {
         let mut cmd = Command::new(env!("CARGO"));
-        cmd.args(["build", "-p", "tictactoe_baseline_rs", "-p", "tictactoe_baseline_cpp"]);
+        cmd.args([
+            "build",
+            "-p",
+            "tictactoe_baseline_rs",
+            "-p",
+            "tictactoe_baseline_cpp",
+        ]);
         // Match the profile this test binary was built with so the
         // artifacts land in the directory `artifact_dir()` looks in.
         if !cfg!(debug_assertions) {

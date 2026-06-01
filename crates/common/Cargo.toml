@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+# Bot-facing trait + macro surface is now in `bot_common`; we re-export
+# it so engine-side callers can keep writing `common::WireInput` etc.
+bot_common.workspace = true
+
 anyhow.workspace = true
 thiserror.workspace = true
 libloading.workspace = true

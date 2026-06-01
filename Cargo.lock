@@ -204,6 +204,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "bot_common"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -449,6 +456,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bincode",
+ "bot_common",
  "libloading 0.9.0",
  "rand",
  "serde",
@@ -769,7 +777,7 @@ name = "fantastic_bits_baseline_rs"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "common",
+ "bot_common",
  "fantastic_bits_defs",
 ]
 
@@ -778,9 +786,8 @@ name = "fantastic_bits_defs"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bot_common",
  "cbindgen",
- "common",
- "serde",
 ]
 
 [[package]]
@@ -2023,7 +2030,7 @@ name = "tictactoe_baseline_rs"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "common",
+ "bot_common",
  "tictactoe_defs",
 ]
 
@@ -2032,9 +2039,8 @@ name = "tictactoe_defs"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bot_common",
  "cbindgen",
- "common",
- "serde",
 ]
 
 [[package]]
@@ -2210,7 +2216,7 @@ name = "tron_baseline_rs"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "common",
+ "bot_common",
  "tron_defs",
 ]
 
@@ -2219,9 +2225,8 @@ name = "tron_defs"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bot_common",
  "cbindgen",
- "common",
- "serde",
 ]
 
 [[package]]

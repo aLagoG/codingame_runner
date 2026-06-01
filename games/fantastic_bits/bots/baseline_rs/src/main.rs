@@ -1,8 +1,8 @@
 use std::io::{self, Write};
 
-use common::{ReadFrom, WireInput, WriteTo};
-use fantastic_bits_defs::{InitialInput, TurnInput};
+use bot_common::{ReadFrom, WireInput, WriteTo};
 use fantastic_bits_baseline_rs::{decide, on_init};
+use fantastic_bits_defs::{InitialInput, TurnInput};
 
 fn main() -> anyhow::Result<()> {
     let mut input = io::stdin().lock();

@@ -69,10 +69,7 @@ pub const ALLOWED_STYLES: &[(&str, &str)] = &[
 /// `statement-story-background`) and its child (`statement-story`)
 /// is fine; the child entry is just a fallback for pastes that omit
 /// the wrapper.
-pub const DROPPED_SECTIONS: &[&str] = &[
-    "statement-story-background",
-    "statement-story",
-];
+pub const DROPPED_SECTIONS: &[&str] = &["statement-story-background", "statement-story"];
 
 pub fn is_dropped_section(token: &str) -> bool {
     DROPPED_SECTIONS.contains(&token)

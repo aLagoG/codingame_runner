@@ -105,6 +105,24 @@ pub fn parse_package(path: impl AsRef<Path>) -> Result<FlattenedPackage> {
     parse_target(path, &TargetSelector::Auto)
 }
 
+/// If `crate_root` has a `[lib]` target (whether implicit `src/lib.rs`
+/// or explicit), return its flattened form. Used by `vendor_package`
+/// to auto-inline a bin's same-package lib so `use <self_pkg>::X;` in
+/// `main.rs` resolves in the flat output. Returns `Ok(None)` when
+/// there is no manifest or no lib target.
+pub fn parse_self_lib(crate_root: impl AsRef<Path>) -> Result<Option<FlattenedPackage>> {
+    let crate_root = crate_root.as_ref();
+    let manifest = load_manifest(crate_root)?;
+    let has_lib = manifest
+        .as_ref()
+        .map(|m| m.lib.is_some() || crate_root.join("src/lib.rs").is_file())
+        .unwrap_or(false);
+    if !has_lib {
+        return Ok(None);
+    }
+    Ok(Some(parse_target(crate_root, &TargetSelector::Lib)?))
+}
+
 /// Flatten a specific target.
 pub fn parse_target(path: impl AsRef<Path>, selector: &TargetSelector) -> Result<FlattenedPackage> {
     let path = path.as_ref();

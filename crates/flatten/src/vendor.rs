@@ -185,11 +185,7 @@ pub fn report(crate_root: impl AsRef<Path>) -> Result<VendorReport> {
                 .map(|n| {
                     n.deps
                         .iter()
-                        .filter(|d| {
-                            d.dep_kinds
-                                .iter()
-                                .any(|k| k.kind == DependencyKind::Normal)
-                        })
+                        .filter(|d| d.dep_kinds.iter().any(|k| k.kind == DependencyKind::Normal))
                         .filter_map(|d| {
                             metadata
                                 .packages
@@ -649,10 +645,7 @@ pub fn run_expander(
 
     // Write source to a temp file. The expander takes a path argument.
     let tmp_dir = std::env::temp_dir();
-    let tmp_in = tmp_dir.join(format!(
-        "flatten_expand-input-{}.rs",
-        std::process::id()
-    ));
+    let tmp_in = tmp_dir.join(format!("flatten_expand-input-{}.rs", std::process::id()));
     std::fs::write(&tmp_in, source).map_err(|e| FlattenError::Io {
         context: format!("Failed to write expander input to `{}`", tmp_in.display()),
         source: e,
@@ -661,7 +654,8 @@ pub fn run_expander(
     let mut cmd = std::process::Command::new(expander_path);
     cmd.arg(&tmp_in).arg("--rewrite");
     for (name, path) in dylibs {
-        cmd.arg("--extern").arg(format!("{name}={}", path.display()));
+        cmd.arg("--extern")
+            .arg(format!("{name}={}", path.display()));
     }
     // Set DYLD_LIBRARY_PATH (macOS) / LD_LIBRARY_PATH (Linux) to the nightly
     // sysroot's lib dir so the expander binary can locate librustc_driver.
@@ -696,9 +690,8 @@ pub fn run_expander(
             String::from_utf8_lossy(&output.stderr)
         )));
     }
-    let rewritten = String::from_utf8(output.stdout).map_err(|e| {
-        FlattenError::other(format!("expander emitted non-UTF8 output: {e}"))
-    })?;
+    let rewritten = String::from_utf8(output.stdout)
+        .map_err(|e| FlattenError::other(format!("expander emitted non-UTF8 output: {e}")))?;
 
     // Conservative: assume every proc-macro dylib we passed via --extern
     // could have been consumed. The assembler downstream only
@@ -822,8 +815,7 @@ pub fn rewrite_absolute_sibling_paths(src: &str, siblings: &HashSet<String>) -> 
                         let hi = ident_span.end;
                         let key = (lo, hi);
                         if self.seen.insert(key) {
-                            self.edits
-                                .push((lo..hi, format!("crate::{name}")));
+                            self.edits.push((lo..hi, format!("crate::{name}")));
                         }
                     }
                 }
@@ -876,8 +868,7 @@ pub fn rewrite_absolute_sibling_paths(src: &str, siblings: &HashSet<String>) -> 
                         let hi = ident_range.end;
                         let key = (lo, hi);
                         if self.seen.insert(key) {
-                            self.edits
-                                .push((lo..hi, format!("crate::{name}")));
+                            self.edits.push((lo..hi, format!("crate::{name}")));
                         }
                     }
                 }
@@ -927,9 +918,7 @@ pub fn scrub_assembled(body: Vec<u8>, pkg: &VendoredPackage) -> Vec<u8> {
     let body_str = match String::from_utf8(body) {
         Ok(s) => s,
         Err(e) => {
-            tracing::warn!(
-                "scrub_assembled: assembled output is not UTF-8; skipping scrub ({e})"
-            );
+            tracing::warn!("scrub_assembled: assembled output is not UTF-8; skipping scrub ({e})");
             return e.into_bytes();
         }
     };
@@ -1244,11 +1233,11 @@ pub fn collect_proc_macro_export_names(src: &str) -> HashSet<String> {
                 break;
             }
             if path.is_ident("proc_macro_derive") {
-                use syn::punctuated::Punctuated;
                 use syn::Token;
-                if let Ok(items) = attr.parse_args_with(
-                    Punctuated::<syn::Meta, Token![,]>::parse_terminated,
-                ) {
+                use syn::punctuated::Punctuated;
+                if let Ok(items) =
+                    attr.parse_args_with(Punctuated::<syn::Meta, Token![,]>::parse_terminated)
+                {
                     if let Some(first) = items.first() {
                         if let Some(id) = first.path().get_ident() {
                             derive_name = Some(id.to_string());
@@ -1295,10 +1284,7 @@ fn collect_exports_from_items(
     visiting: &mut HashSet<String>,
     self_ident: &str,
 ) {
-    fn add_use_leaf(
-        t: &syn::UseTree,
-        out: &mut HashSet<String>,
-    ) {
+    fn add_use_leaf(t: &syn::UseTree, out: &mut HashSet<String>) {
         match t {
             syn::UseTree::Name(n) => {
                 out.insert(n.ident.to_string());
@@ -1387,9 +1373,7 @@ fn collect_exports_from_items(
         match tree {
             syn::UseTree::Path(p) => {
                 let seg = p.ident.to_string();
-                if path_so_far.is_empty()
-                    && (seg == "self" || seg == "super")
-                {
+                if path_so_far.is_empty() && (seg == "self" || seg == "super") {
                     return;
                 }
                 if seg == "crate" {
@@ -1416,26 +1400,12 @@ fn collect_exports_from_items(
                     return;
                 }
                 path_so_far.push(seg);
-                walk_for_wildcards(
-                    &p.tree,
-                    crate_root,
-                    path_so_far,
-                    out,
-                    visiting,
-                    self_ident,
-                );
+                walk_for_wildcards(&p.tree, crate_root, path_so_far, out, visiting, self_ident);
                 path_so_far.pop();
             }
             syn::UseTree::Group(g) => {
                 for it in &g.items {
-                    walk_for_wildcards(
-                        it,
-                        crate_root,
-                        path_so_far,
-                        out,
-                        visiting,
-                        self_ident,
-                    );
+                    walk_for_wildcards(it, crate_root, path_so_far, out, visiting, self_ident);
                 }
             }
             syn::UseTree::Glob(_) => {
@@ -1447,10 +1417,7 @@ fn collect_exports_from_items(
                     let next = current_items.iter().find_map(|it| {
                         if let syn::Item::Mod(m) = it {
                             if m.ident == seg.as_str() {
-                                return m
-                                    .content
-                                    .as_ref()
-                                    .map(|(_, items)| items.as_slice());
+                                return m.content.as_ref().map(|(_, items)| items.as_slice());
                             }
                         }
                         None
@@ -1496,10 +1463,7 @@ pub fn rewrite_bare_trait_object_aliases(src: &str) -> String {
         return src.to_string();
     };
     let mut edits: Vec<(std::ops::Range<usize>, String)> = Vec::new();
-    fn walk(
-        toks: &[TokenTree],
-        edits: &mut Vec<(std::ops::Range<usize>, String)>,
-    ) {
+    fn walk(toks: &[TokenTree], edits: &mut Vec<(std::ops::Range<usize>, String)>) {
         let mut i = 0;
         while i < toks.len() {
             // Recurse into braces (mod bodies, impl bodies). Skip
@@ -1625,10 +1589,7 @@ pub fn rewrite_pat_followed_by_pipe(src: &str) -> String {
         return src.to_string();
     };
     let mut edits: Vec<(std::ops::Range<usize>, String)> = Vec::new();
-    fn walk(
-        toks: &[TokenTree],
-        edits: &mut Vec<(std::ops::Range<usize>, String)>,
-    ) {
+    fn walk(toks: &[TokenTree], edits: &mut Vec<(std::ops::Range<usize>, String)>) {
         for i in 0..toks.len() {
             // Recurse into every Group (macro_rules bodies live inside
             // Brace groups, but matchers also nest inside Paren groups
@@ -2083,9 +2044,43 @@ pub fn vendor_package(
 ) -> Result<VendoredPackage> {
     let crate_root = crate_root.as_ref();
     let mut user_pkg = parse_target(crate_root, selector)?;
-    let report = report(crate_root)?;
+    let mut report = report(crate_root)?;
     let user_edition = user_edition(crate_root).unwrap_or(cargo_metadata::Edition::E2015);
     let mut max_edition = user_edition;
+
+    // Same-package lib auto-vendoring: when the user picked a bin from a
+    // package that also has a `[lib]` target, the bin's
+    // `use <self_pkg>::X;` would otherwise dangle in the flat output
+    // (cargo metadata treats bin+lib as one package, so the lib isn't a
+    // dep). Synthesize a `DepEntry` for the lib and feed it into the
+    // normal vendoring pipeline — it then ends up as a sibling
+    // `pub mod <self_lib>` in the bundle and the bin's top-level
+    // `use <self_lib>::X;` resolves to it via crate-root scope.
+    // Tagged so a future polish pass can label the self-lib distinctly
+    // in the bundle header ("self-lib" vs ordinary vendored dep). Today
+    // it just rides through the same render path.
+    let _self_lib_name: Option<String> = if matches!(user_pkg.kind, PackageType::Bin) {
+        crate::parse_self_lib(crate_root)?.map(|lib| {
+            let crate_name = lib.crate_name;
+            report.deps.push(DepEntry {
+                name: crate_name.clone(),
+                version: report.root_version.clone(),
+                manifest_path: crate_root.join("Cargo.toml"),
+                classification: Classification::Vendorable,
+                features: HashSet::new(),
+                edition: user_edition,
+                // Empty — the lib's actual deps are already in
+                // `report.deps` via the shared package dep table, so
+                // the existing BFS picks them up naturally.
+                normal_deps: Vec::new(),
+                build_cfgs: Vec::new(),
+                out_dir: None,
+            });
+            crate_name
+        })
+    } else {
+        None
+    };
 
     // Shallow `--expand` runs immediately on the user crate further
     // below (after auto_externals is seeded with proc-macro names).
@@ -2405,10 +2400,8 @@ pub fn vendor_package(
                 // is the full vendored set, including the dep itself, in
                 // case its proc-macros emit absolute paths back to it).
                 if options.expand {
-                    let rewritten = rewrite_absolute_sibling_paths(
-                        &vd.source.to_string(),
-                        &sibling_idents,
-                    );
+                    let rewritten =
+                        rewrite_absolute_sibling_paths(&vd.source.to_string(), &sibling_idents);
                     vd.source = SourceFile::from_string(rewritten);
                 }
                 version_map.insert(vd.name.clone(), vd.version.clone());
@@ -2685,10 +2678,7 @@ fn vendor_one_dep(
     // at call sites inside other vendored crates (rapier2d uses
     // nalgebra-macros' `vector!()` from many submods).
     let sibling_paths: Vec<String> = {
-        let mut v: Vec<String> = siblings
-            .iter()
-            .map(|n| format!("crate::{n}"))
-            .collect();
+        let mut v: Vec<String> = siblings.iter().map(|n| format!("crate::{n}")).collect();
         v.sort();
         v
     };
@@ -2783,8 +2773,11 @@ fn vendor_one_dep(
 
     let rendered = source.to_string();
     let macro_exports = collect_macro_export_paths(&rendered);
-    let mut extern_std_libs: Vec<String> =
-        extern_std_libs_seen.into_inner().unwrap().into_iter().collect();
+    let mut extern_std_libs: Vec<String> = extern_std_libs_seen
+        .into_inner()
+        .unwrap()
+        .into_iter()
+        .collect();
     extern_std_libs.sort();
 
     // Capture this dep's own lib.rs `#![cfg(...)]` predicate so the
@@ -2916,9 +2909,8 @@ fn mod_cfg_predicates(attrs: &[syn::Attribute]) -> Vec<String> {
 // compatibility with external callers that imported them from `vendor`.
 pub use crate::cfg::expand_cfg_if;
 use crate::cfg::{
-    cfg_expr_references_feature, eval_cfg, format_cfg_expr, parse_cfg_expr,
-    parse_one_cfg_expr, simplify_cfg_expr,
-    split_top_level_commas, CfgEval,
+    CfgEval, cfg_expr_references_feature, eval_cfg, format_cfg_expr, parse_cfg_expr,
+    parse_one_cfg_expr, simplify_cfg_expr, split_top_level_commas,
 };
 
 /// Apply vendoring rewrites to one source file:
@@ -3027,13 +3019,7 @@ fn rewrite_for_vendoring(
     collect_lint_attr_removals(&file, &deleted, &mut edits);
     collect_mod_visibility_bumps(&file, &deleted, &mut edits);
     collect_extern_crate_reexport_downgrades(&file, &deleted, &mut edits);
-    collect_extern_crate_removals(
-        &file,
-        siblings,
-        inlined_proc_macros,
-        &deleted,
-        &mut edits,
-    );
+    collect_extern_crate_removals(&file, siblings, inlined_proc_macros, &deleted, &mut edits);
 
     // Add deletion edits last; they don't overlap each other or the
     // skip-checked edits above.
@@ -3049,7 +3035,12 @@ fn rewrite_for_vendoring(
     // applying the duplicate edit causes the second `replace_range` to
     // over-delete adjacent bytes — the first replace already shortened
     // the string under it. Dedupe identical (range, replacement) pairs.
-    edits.sort_by(|a, b| a.0.start.cmp(&b.0.start).then(a.0.end.cmp(&b.0.end)).then(a.1.cmp(&b.1)));
+    edits.sort_by(|a, b| {
+        a.0.start
+            .cmp(&b.0.start)
+            .then(a.0.end.cmp(&b.0.end))
+            .then(a.1.cmp(&b.1))
+    });
     edits.dedup();
     // When two edits target the same exact range with different
     // replacements, the deletion-list mechanism (which converts every
@@ -3263,11 +3254,7 @@ fn collect_macro_body_cfg_rewrites(
         ///
         /// Skip if preceded by `#` or `:` (already inside an attr or
         /// a path), or by `if`/`else` (cfg_if!-style DSL).
-        fn maybe_bake_bare_cfg(
-            &mut self,
-            toks: &[TokenTree],
-            i: usize,
-        ) -> bool {
+        fn maybe_bake_bare_cfg(&mut self, toks: &[TokenTree], i: usize) -> bool {
             let TokenTree::Ident(id) = &toks[i] else {
                 return false;
             };
@@ -3375,12 +3362,13 @@ fn collect_macro_body_cfg_rewrites(
                                 match eval_cfg(&expr, self.features) {
                                     CfgEval::True if refs_feat => {}
                                     CfgEval::True => {
-                                        self.edits.push((attr_span, format!("#{bang}[cfg(all())]")));
+                                        self.edits
+                                            .push((attr_span, format!("#{bang}[cfg(all())]")));
                                     }
                                     CfgEval::False if refs_feat => {}
-                                    CfgEval::False => self
-                                        .edits
-                                        .push((attr_span, format!("#{bang}[cfg(any())]"))),
+                                    CfgEval::False => {
+                                        self.edits.push((attr_span, format!("#{bang}[cfg(any())]")))
+                                    }
                                     CfgEval::Unknown => {
                                         // Partial eval: substitute
                                         // feature predicates with
@@ -3411,15 +3399,12 @@ fn collect_macro_body_cfg_rewrites(
                                         if !cfg_expr_references_feature(&expr) {
                                             return;
                                         }
-                                        let simplified =
-                                            simplify_cfg_expr(&expr, self.features);
+                                        let simplified = simplify_cfg_expr(&expr, self.features);
                                         if let Some(s) = simplified
                                             && s != format_cfg_expr(&expr)
                                         {
-                                            self.edits.push((
-                                                attr_span,
-                                                format!("#{bang}[cfg({s})]"),
-                                            ));
+                                            self.edits
+                                                .push((attr_span, format!("#{bang}[cfg({s})]")));
                                         }
                                     }
                                 }
@@ -3645,7 +3630,9 @@ fn collect_all_macro_rules_names(file: &syn::File) -> HashSet<String> {
             }
         }
     }
-    let mut v = V { names: HashSet::new() };
+    let mut v = V {
+        names: HashSet::new(),
+    };
     v.visit_file(file);
     v.names
 }
@@ -3749,7 +3736,9 @@ fn collect_item_list_macro_names(file: &syn::File) -> HashSet<String> {
             self.check_macro_rules(&name.to_string(), &im.mac.tokens);
         }
     }
-    let mut v = V { names: HashSet::new() };
+    let mut v = V {
+        names: HashSet::new(),
+    };
     v.visit_file(file);
     v.names
 }
@@ -4266,10 +4255,7 @@ fn walk_wrapper_invocations(
                 continue;
             }
             let end = item_span.end;
-            edits.push((
-                end..end,
-                format!("\npub(crate) use {inner_name};\n"),
-            ));
+            edits.push((end..end, format!("\npub(crate) use {inner_name};\n")));
         }
     }
 }
@@ -4611,14 +4597,12 @@ fn collect_crate_path_rewrites(
                         // Same skip as `maybe_rewrite_path`: don't
                         // hijack `use crate::alloc::*;` style paths.
                         let next_is_stdlib = match &*path.tree {
-                            syn::UseTree::Path(inner) => matches!(
-                                inner.ident.to_string().as_str(),
-                                "alloc" | "core" | "std"
-                            ),
-                            syn::UseTree::Name(n) => matches!(
-                                n.ident.to_string().as_str(),
-                                "alloc" | "core" | "std"
-                            ),
+                            syn::UseTree::Path(inner) => {
+                                matches!(inner.ident.to_string().as_str(), "alloc" | "core" | "std")
+                            }
+                            syn::UseTree::Name(n) => {
+                                matches!(n.ident.to_string().as_str(), "alloc" | "core" | "std")
+                            }
                             _ => false,
                         };
                         if !next_is_stdlib {
@@ -4798,7 +4782,9 @@ fn collect_crate_root_item_names(lib_path: &Path) -> HashSet<String> {
     let mut names = HashSet::new();
     fn walk_pub_use_leaves(tree: &syn::UseTree, parent: Option<&str>, names: &mut HashSet<String>) {
         match tree {
-            syn::UseTree::Path(p) => walk_pub_use_leaves(&p.tree, Some(&p.ident.to_string()), names),
+            syn::UseTree::Path(p) => {
+                walk_pub_use_leaves(&p.tree, Some(&p.ident.to_string()), names)
+            }
             syn::UseTree::Name(n) => {
                 let n = n.ident.to_string();
                 if n == "self" {
@@ -4948,10 +4934,8 @@ fn collect_edition_2015_bare_path_rewrites(
                 && let Some(first) = path.segments.first()
             {
                 let name = first.ident.to_string();
-                if !matches!(
-                    name.as_str(),
-                    "alloc" | "core" | "std"
-                ) && self.crate_root_items.contains(&name)
+                if !matches!(name.as_str(), "alloc" | "core" | "std")
+                    && self.crate_root_items.contains(&name)
                     && !self.siblings.contains(&name)
                     && !self.aliases.contains_key(&name)
                 {
@@ -4963,10 +4947,8 @@ fn collect_edition_2015_bare_path_rewrites(
                     let span_end = first.ident.span().byte_range().end;
                     let span = span_start..span_end;
                     if span.end > span.start && !is_in_deleted(&span, self.deleted) {
-                        self.edits.push((
-                            span,
-                            format!("crate::{}::{}", self.crate_name, name),
-                        ));
+                        self.edits
+                            .push((span, format!("crate::{}::{}", self.crate_name, name)));
                     }
                 }
             }
@@ -5030,7 +5012,7 @@ fn collect_macro_use_externals(
     siblings: &HashSet<String>,
     features: &HashSet<String>,
 ) -> Vec<String> {
-    use crate::cfg::{eval_cfg, parse_cfg_expr, CfgEval};
+    use crate::cfg::{CfgEval, eval_cfg, parse_cfg_expr};
     let Ok(src) = std::fs::read_to_string(lib_path) else {
         return Vec::new();
     };
@@ -5153,10 +5135,7 @@ fn inject_imports(
 /// injection at the top of the file would collide with them
 /// otherwise. Walks proc_macro2 tokens, similar to
 /// `inline_mods_inside_macros`.
-fn mods_inside_item_list_macros(
-    src: &str,
-    item_list_macros: &HashSet<String>,
-) -> HashSet<String> {
+fn mods_inside_item_list_macros(src: &str, item_list_macros: &HashSet<String>) -> HashSet<String> {
     use proc_macro2::TokenTree;
     use std::str::FromStr;
     let mut out = HashSet::new();
@@ -5364,7 +5343,9 @@ fn collect_macro_invocation_token_rewrites(
                 }
             }
             let in_skip = |span: &Range<usize>| -> bool {
-                skip_ranges.iter().any(|r| span.start >= r.start && span.end <= r.end)
+                skip_ranges
+                    .iter()
+                    .any(|r| span.start >= r.start && span.end <= r.end)
             };
             for i in 0..tokens.len() {
                 if let TokenTree::Ident(id) = &tokens[i] {
@@ -5574,9 +5555,7 @@ fn collect_lint_attr_removals(
             // `macro_rules!` item marks the macro as "macro-expanded"
             // for the purposes of `#[macro_export]` resolution, which
             // disables `crate::macro_name!()` access entirely.
-            let is_lint = path.is_ident("deny")
-                || path.is_ident("warn")
-                || path.is_ident("forbid");
+            let is_lint = path.is_ident("deny") || path.is_ident("warn") || path.is_ident("forbid");
             let is_tool_attr = path.segments.len() >= 2
                 && matches!(
                     path.segments.first().map(|s| s.ident.to_string()),
@@ -5638,7 +5617,11 @@ fn collect_extern_crate_reexport_downgrades(
             _ => false,
         }
     }
-    fn walk(items: &[syn::Item], deleted: &[Range<usize>], edits: &mut Vec<(Range<usize>, String)>) {
+    fn walk(
+        items: &[syn::Item],
+        deleted: &[Range<usize>],
+        edits: &mut Vec<(Range<usize>, String)>,
+    ) {
         for item in items {
             if let syn::Item::Use(u) = item
                 && matches!(u.vis, syn::Visibility::Public(_))
@@ -5781,11 +5764,9 @@ fn collect_pub_use_leaves(items: &[syn::Item]) -> HashSet<String> {
             // colliding with `pub use NAME` (REVIEW B5).
             let is_pub_or_pub_crate = match &u.vis {
                 syn::Visibility::Public(_) => true,
-                syn::Visibility::Restricted(r) => r
-                    .path
-                    .get_ident()
-                    .map(|id| id == "crate")
-                    .unwrap_or(false),
+                syn::Visibility::Restricted(r) => {
+                    r.path.get_ident().map(|id| id == "crate").unwrap_or(false)
+                }
                 syn::Visibility::Inherited => false,
             };
             if is_pub_or_pub_crate {
@@ -5879,9 +5860,10 @@ fn walk_extern_crate_strip(
         if let syn::Item::ExternCrate(ec) = item {
             let crate_name = ec.ident.to_string();
             let is_stdlib = matches!(crate_name.as_str(), "alloc" | "core" | "std");
-            let alias_is_stdlib = ec.rename.as_ref().is_some_and(|(_, a)| {
-                matches!(a.to_string().as_str(), "alloc" | "core" | "std")
-            });
+            let alias_is_stdlib = ec
+                .rename
+                .as_ref()
+                .is_some_and(|(_, a)| matches!(a.to_string().as_str(), "alloc" | "core" | "std"));
             let has_alias = ec.rename.is_some();
             // Stripped (no replacement):
             //   - plain `extern crate alloc;` (stdlib, no alias) —
@@ -5939,10 +5921,7 @@ fn walk_extern_crate(
             // every later `use BAR::Foo` (e.g. nalgebra's
             // `extern crate num_traits as num;` followed by
             // `use num::Zero;`). Replace with the equivalent `use`.
-            let alias = ec
-                .rename
-                .as_ref()
-                .map(|(_, ident)| ident.to_string());
+            let alias = ec.rename.as_ref().map(|(_, ident)| ident.to_string());
             // `#[macro_use] extern crate SIBLING;` is the legacy 2015
             // way to bring SIBLING's exported macros into scope at the
             // crate root. Stripping the line drops the macro import too,
@@ -5969,16 +5948,13 @@ fn walk_extern_crate(
                     // external + macro_use: re-export the dep so
                     // `crate::SELF::FOO::Bar` references in submods
                     // resolve, AND glob in for the macros.
-                    Some(format!(
-                        "pub(crate) use {crate_name}; use {crate_name}::*;"
-                    ))
+                    Some(format!("pub(crate) use {crate_name}; use {crate_name}::*;"))
                 }
                 (_, Some(alias)) if siblings.contains(&crate_name) => {
                     Some(format!("use crate::{crate_name} as {alias};"))
                 }
                 (_, Some(alias))
-                    if is_stdlib
-                        && matches!(alias.as_str(), "alloc" | "core" | "std") =>
+                    if is_stdlib && matches!(alias.as_str(), "alloc" | "core" | "std") =>
                 {
                     // Stdlib alias-of-stdlib (e.g. `extern crate core as std;`
                     // — the no_std → pseudo-std shim). The user's flat
@@ -6108,4 +6084,3 @@ fn walk_for_extern_std(items: &[syn::Item], found: &mut Vec<String>) {
         }
     }
 }
-

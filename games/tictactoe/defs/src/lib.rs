@@ -12,7 +12,7 @@ use std::{
 };
 
 use anyhow::{Context, bail};
-use common::{
+use bot_common::{
     Defs, NoInitialInput, NoInitialInputFfi, ReadFrom, SingleLine, TurnResult, WireInput,
     WireInputFfi, WireOutput, WriteTo,
 };
@@ -21,14 +21,14 @@ pub const BOARD_SIZE: usize = 3;
 pub const BOARD_CELLS: usize = BOARD_SIZE * BOARD_SIZE;
 
 #[repr(C)]
-#[derive(Debug, PartialEq, Eq, Copy, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub struct Pos {
     pub row: i32,
     pub col: i32,
 }
 
 #[repr(u8)]
-#[derive(Debug, PartialEq, Eq, Copy, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum Cell {
     Empty = 0,
     X = 1,
@@ -70,7 +70,7 @@ pub struct TurnInputFFI<'a> {
 }
 
 #[repr(C)]
-#[derive(Debug, PartialEq, Eq, Copy, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub struct TurnOutput {
     pub pos: Pos,
 }

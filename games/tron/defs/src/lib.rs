@@ -12,21 +12,20 @@ use std::{
 };
 
 use anyhow::{Context, bail};
-use common::{
+use bot_common::{
     Defs, NoInitialInput, NoInitialInputFfi, ReadFrom, SingleLine, TurnResult, WireInput,
     WireInputFfi, WireOutput, WriteTo,
 };
-use serde::{Deserialize, Serialize};
 
 #[repr(C)]
-#[derive(Debug, PartialEq, Eq, Copy, Clone, Serialize, Deserialize, Hash)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone, Hash)]
 pub struct Pos {
     pub x: i32,
     pub y: i32,
 }
 
 #[repr(C)]
-#[derive(Debug, PartialEq, Eq, Copy, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub struct Line {
     pub start: Pos,
     pub end: Pos,
@@ -60,7 +59,7 @@ pub struct TurnInputFFI<'a> {
 }
 
 #[repr(u8)]
-#[derive(Debug, PartialEq, Eq, Copy, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum Direction {
     Up,
     Down,
@@ -69,7 +68,7 @@ pub enum Direction {
 }
 
 #[repr(C)]
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct TurnOutput {
     pub direction: Direction,
 }

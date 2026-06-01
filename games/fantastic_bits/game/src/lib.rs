@@ -344,9 +344,8 @@ impl Game for FantasticBitsGame {
         for s in &mut self.snaffles {
             s.thrust_force = V2::ZERO;
             let this_pos = s.disc.pos;
-            s.ignore_collision.retain(|sid| {
-                snaffles_still_overlap_pos(*sid, this_pos, &snaffle_positions)
-            });
+            s.ignore_collision
+                .retain(|sid| snaffles_still_overlap_pos(*sid, this_pos, &snaffle_positions));
         }
 
         // 3. Parse outputs: per wizard, set thrust / throw force /
@@ -476,8 +475,12 @@ impl FantasticBitsGame {
         match action.kind {
             ActionKind::Move => {
                 let power = action.power.clamp(0, MAX_POD_THRUST) as f64;
-                let thrust = compute_thrust_toward(self.wizards[wiz_id].disc.pos, action.x, action.y, power);
-                WizardIntent { thrust, was_holding }
+                let thrust =
+                    compute_thrust_toward(self.wizards[wiz_id].disc.pos, action.x, action.y, power);
+                WizardIntent {
+                    thrust,
+                    was_holding,
+                }
             }
             ActionKind::Throw => {
                 // Only valid if currently holding. Referee throws an
@@ -488,8 +491,7 @@ impl FantasticBitsGame {
                         .snaffle_index(snaffle_id)
                         .expect("held snaffle id must resolve");
                     let from = self.wizards[wiz_id].disc.pos;
-                    let force =
-                        compute_thrust_toward(from, action.x, action.y, power);
+                    let force = compute_thrust_toward(from, action.x, action.y, power);
                     self.snaffles[snaffle_idx].thrust_force = force;
                 }
                 WizardIntent {
@@ -503,7 +505,9 @@ impl FantasticBitsGame {
             | ActionKind::Flipendo) => {
                 let kind = SpellKind::from_action(spell_action).unwrap();
                 let cost = kind.cost();
-                if self.magic[player_id] >= cost && self.spell_target_valid(player_id, kind, action.target_id) {
+                if self.magic[player_id] >= cost
+                    && self.spell_target_valid(player_id, kind, action.target_id)
+                {
                     self.magic[player_id] -= cost;
                     self.wizards[wiz_id].spells.pending = Some(PendingSpell {
                         kind,
@@ -639,9 +643,7 @@ impl FantasticBitsGame {
                             self.snaffles[idx].ignore_collision.push(*other_id);
                         }
                         if let Some(other_idx) = self.snaffle_index(*other_id)
-                            && !self.snaffles[other_idx]
-                                .ignore_collision
-                                .contains(&held_id)
+                            && !self.snaffles[other_idx].ignore_collision.contains(&held_id)
                         {
                             self.snaffles[other_idx].ignore_collision.push(held_id);
                         }
@@ -1054,7 +1056,9 @@ impl FantasticBitsGame {
                 HEIGHT as f64,
                 GOAL_Y_TOP as f64,
                 GOAL_Y_BOTTOM as f64,
-            ) && hit.t > 0.0 && hit.t <= remaining {
+            ) && hit.t > 0.0
+                && hit.t <= remaining
+            {
                 out.push(CollisionEvent::Wall {
                     kind: EntityRef::Snaffle,
                     id: s.disc.id,
@@ -1064,10 +1068,7 @@ impl FantasticBitsGame {
             }
             // Snaffle vs other snaffles.
             for (j, s2) in self.snaffles.iter().enumerate().take(i) {
-                if !s2.alive
-                    || s2.held_by.is_some()
-                    || s.ignore_collision.contains(&s2.disc.id)
-                {
+                if !s2.alive || s2.held_by.is_some() || s.ignore_collision.contains(&s2.disc.id) {
                     continue;
                 }
                 push_disc_disc_toi(
@@ -1407,10 +1408,18 @@ impl FantasticBitsGame {
         });
         // Track bludger last-victim for the AI.
         if a_kind == EntityRef::Bludger && b_kind == EntityRef::Wizard {
-            let b = self.bludgers.iter_mut().find(|b| b.disc.id == a_id).unwrap();
+            let b = self
+                .bludgers
+                .iter_mut()
+                .find(|b| b.disc.id == a_id)
+                .unwrap();
             b.last_victim = b_id;
         } else if b_kind == EntityRef::Bludger && a_kind == EntityRef::Wizard {
-            let b = self.bludgers.iter_mut().find(|b| b.disc.id == b_id).unwrap();
+            let b = self
+                .bludgers
+                .iter_mut()
+                .find(|b| b.disc.id == b_id)
+                .unwrap();
             b.last_victim = a_id;
         }
     }
@@ -1681,11 +1690,7 @@ fn place_goal_posts(next_id: &mut i32) -> Vec<GoalPost> {
     out
 }
 
-fn snaffles_still_overlap_pos(
-    other_id: i32,
-    this_pos: V2,
-    positions: &[(i32, V2)],
-) -> bool {
+fn snaffles_still_overlap_pos(other_id: i32, this_pos: V2, positions: &[(i32, V2)]) -> bool {
     let Some(&(_, other_pos)) = positions.iter().find(|(id, _)| *id == other_id) else {
         return false;
     };
@@ -1759,8 +1764,11 @@ mod tests {
         let cx = WIDTH as f64 / 2.0;
         let cy = HEIGHT as f64 / 2.0;
         let off = (SNAFFLE_RADIUS + 2 * BLUDGER_RADIUS) as f64;
-        let positions: Vec<(f64, f64)> =
-            g.bludgers.iter().map(|b| (b.disc.pos.x, b.disc.pos.y)).collect();
+        let positions: Vec<(f64, f64)> = g
+            .bludgers
+            .iter()
+            .map(|b| (b.disc.pos.x, b.disc.pos.y))
+            .collect();
         assert_eq!(positions[0], (cx - off, cy));
         assert_eq!(positions[1], (cx + off, cy));
     }
@@ -1909,18 +1917,31 @@ mod tests {
             let idle = WizardAction::move_to(0, HEIGHT / 2, 0);
             // Order outputs by team wizard slot (wiz id 0 → primary, etc.).
             let p0 = if wiz == 0 {
-                TurnOutput { primary: action, secondary: idle }
+                TurnOutput {
+                    primary: action,
+                    secondary: idle,
+                }
             } else {
-                TurnOutput { primary: idle, secondary: action }
+                TurnOutput {
+                    primary: idle,
+                    secondary: action,
+                }
             };
-            let p1_idle = TurnOutput { primary: idle, secondary: idle };
+            let p1_idle = TurnOutput {
+                primary: idle,
+                secondary: idle,
+            };
             let _ = other_wiz;
             let outcome = g.step(&[Some(p0), Some(p1_idle)]);
             if g.score()[0] > 0 || outcome.is_some() {
                 break;
             }
         }
-        assert!(g.score()[0] > 0, "expected P0 to score within 100 ticks; got {:?}", g.score());
+        assert!(
+            g.score()[0] > 0,
+            "expected P0 to score within 100 ticks; got {:?}",
+            g.score()
+        );
     }
 
     /// Inline greedy bot vs itself. Same policy the `_rs` crate uses;
@@ -1986,7 +2007,10 @@ mod tests {
                 any_scored = true;
             }
         }
-        assert!(any_scored, "no scoring across 5 seeds — likely an engine bug");
+        assert!(
+            any_scored,
+            "no scoring across 5 seeds — likely an engine bug"
+        );
     }
 
     #[test]

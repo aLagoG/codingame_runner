@@ -1,8 +1,6 @@
-use flatten::vendor::{self, VendorOptions, VendoredPackage};
-use flatten::{
-    FlattenError, FlattenedPackage, ModuleTreeNode, TargetSelector, parse_target,
-};
 use clap::Parser;
+use flatten::vendor::{self, VendorOptions, VendoredPackage};
+use flatten::{FlattenError, FlattenedPackage, ModuleTreeNode, TargetSelector, parse_target};
 use miette::Result;
 use std::{
     ffi::OsString,
@@ -14,7 +12,10 @@ use std::{
 use tracing::{Level, info, warn};
 
 #[derive(Parser)]
-#[command(version, about = "Flatten a Rust crate's source tree into a single .rs file")]
+#[command(
+    version,
+    about = "Flatten a Rust crate's source tree into a single .rs file"
+)]
 struct Args {
     /// Path to the directory of the package you want to flatten
     #[arg(default_value = ".")]
@@ -220,8 +221,7 @@ pub fn main() -> Result<()> {
     let (mut buf, banner, kind_str, target_name) = if args.vendor {
         // User-typed `--external NAME` entries — typos here produce a
         // warning so users notice mismatches.
-        let external: std::collections::HashSet<String> =
-            args.external.iter().cloned().collect();
+        let external: std::collections::HashSet<String> = args.external.iter().cloned().collect();
         // Curated-source entries (`--external-file`, `--external-preset`).
         // These intentionally cover more crates than any single project
         // uses, so unmatched names DO NOT warn.
@@ -239,9 +239,10 @@ pub fn main() -> Result<()> {
         for name in &args.external_preset {
             let contents = match name.as_str() {
                 "infra" => include_str!("../presets/infra.txt"),
+                "codingame" => include_str!("../presets/codingame.txt"),
                 _ => {
                     return Err(FlattenError::other(format!(
-                        "Unknown --external-preset `{name}`; known: infra"
+                        "Unknown --external-preset `{name}`; known: infra, codingame"
                     ))
                     .into());
                 }
@@ -366,15 +367,9 @@ fn warn_skipped_mods_summary(skipped: &[flatten::SkippedMod]) {
             eprintln!("    {krate}: mod {} — {}", m.mod_name, m.reason);
         }
     }
-    eprintln!(
-        "Workarounds:"
-    );
-    eprintln!(
-        "  - Re-run on the target where these mods resolve (different OS, etc.)"
-    );
-    eprintln!(
-        "  - `--external <CRATE>` for the affected dep(s); user adds to their Cargo.toml"
-    );
+    eprintln!("Workarounds:");
+    eprintln!("  - Re-run on the target where these mods resolve (different OS, etc.)");
+    eprintln!("  - `--external <CRATE>` for the affected dep(s); user adds to their Cargo.toml");
     eprintln!();
 }
 
@@ -397,7 +392,10 @@ fn parent_crate_name(file_path: &Path) -> String {
         {
             // Cargo cache: `foo-1.2.3` → `foo`. Dump dir: `foo` → `foo`.
             if let Some(dash) = prev_s.rfind('-')
-                && prev_s[dash + 1..].chars().next().is_some_and(|c| c.is_ascii_digit())
+                && prev_s[dash + 1..]
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_digit())
             {
                 return prev_s[..dash].to_string();
             }
@@ -450,10 +448,8 @@ fn write_to_destination(buf: &[u8], args: &Args, target_name: &str) -> Result<()
             parent.display()
         )))?;
     }
-    fs::write(&out_path, buf).map_err(io_err(format!(
-        "Failed writing `{}`",
-        out_path.display()
-    )))?;
+    fs::write(&out_path, buf)
+        .map_err(io_err(format!("Failed writing `{}`", out_path.display())))?;
     info!("Wrote flattened source to `{}`", out_path.display());
     Ok(())
 }
@@ -644,10 +640,7 @@ fn write_vendored_banner<W: Write>(w: &mut W, pkg: &VendoredPackage) -> io::Resu
             "//   1. Create a Cargo.toml with the External + Excluded + Required items"
         )?;
         writeln!(w, "//      as direct dependencies.")?;
-        writeln!(
-            w,
-            "//   2. Place this file at src/main.rs (or src/lib.rs)."
-        )?;
+        writeln!(w, "//   2. Place this file at src/main.rs (or src/lib.rs).")?;
         writeln!(w, "//   3. cargo build.")?;
     }
 
@@ -713,15 +706,18 @@ fn write_vendored_body<W: Write>(w: &mut W, pkg: &VendoredPackage) -> io::Result
 fn print_tree_vendored(pkg: &VendoredPackage) -> Result<()> {
     let stdout = io::stdout();
     let mut handle = stdout.lock();
-    writeln!(handle, "{} ({}) — vendored:", pkg.crate_name, pkg.kind.as_str())
-        .map_err(io_err("writing tree"))?;
+    writeln!(
+        handle,
+        "{} ({}) — vendored:",
+        pkg.crate_name,
+        pkg.kind.as_str()
+    )
+    .map_err(io_err("writing tree"))?;
     for d in &pkg.vendored {
-        writeln!(handle, "  vendored: {} {}", d.name, d.version)
-            .map_err(io_err("writing tree"))?;
+        writeln!(handle, "  vendored: {} {}", d.name, d.version).map_err(io_err("writing tree"))?;
     }
     for d in &pkg.external {
-        writeln!(handle, "  external: {} {}", d.name, d.version)
-            .map_err(io_err("writing tree"))?;
+        writeln!(handle, "  external: {} {}", d.name, d.version).map_err(io_err("writing tree"))?;
     }
     Ok(())
 }

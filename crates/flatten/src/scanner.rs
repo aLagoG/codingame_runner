@@ -4,9 +4,9 @@
 //! splicing layer can rewrite the original source) and the chain of inline
 //! `mod` blocks the declaration is nested inside.
 
+use proc_macro2::TokenTree;
 use std::ops::Range;
 use syn::{Attribute, Expr, File, Item, Lit, Meta};
-use proc_macro2::TokenTree;
 
 /// One external `mod foo;` declaration discovered in a source file.
 #[derive(Debug, Clone)]
@@ -125,9 +125,7 @@ fn is_path_form_attr(attr: &Attribute) -> bool {
     false
 }
 
-fn extract_path_attrs(
-    attrs: &[Attribute],
-) -> Vec<(Option<proc_macro2::TokenStream>, String)> {
+fn extract_path_attrs(attrs: &[Attribute]) -> Vec<(Option<proc_macro2::TokenStream>, String)> {
     let mut out = Vec::new();
     for attr in attrs {
         if attr.path().is_ident("path") {
@@ -167,9 +165,7 @@ fn extract_path_from_cfg_attr_tokens(
     let mut after: Vec<TokenTree> = Vec::new();
     let mut seen_comma = false;
     for tt in toks {
-        if !seen_comma
-            && matches!(&tt, TokenTree::Punct(p) if p.as_char() == ',')
-        {
+        if !seen_comma && matches!(&tt, TokenTree::Punct(p) if p.as_char() == ',') {
             seen_comma = true;
             continue;
         }

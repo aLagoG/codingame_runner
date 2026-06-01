@@ -129,7 +129,9 @@ fn inlines_single_external_mod() {
     assert!(contains_normalized(&out, "pub use foo::x;"), "got:\n{out}");
     // The original mod-with-semicolon should be gone; the closing `}` of the
     // inlined block should appear before the `pub use`.
-    let close_idx = out.find('}').expect("expected closing brace from inlined mod");
+    let close_idx = out
+        .find('}')
+        .expect("expected closing brace from inlined mod");
     let use_idx = out.find("pub use").unwrap();
     assert!(close_idx < use_idx, "got:\n{out}");
 }
@@ -263,10 +265,7 @@ fn included_items_participate_in_mod_resolution() {
 
 #[test]
 fn include_macro_missing_file_errors() {
-    let dir = make_crate(&[(
-        "src/lib.rs",
-        "include!(\"does_not_exist.rs\");\n",
-    )]);
+    let dir = make_crate(&[("src/lib.rs", "include!(\"does_not_exist.rs\");\n")]);
     let pkg = parse_package(dir.path());
     let err = pkg.err().expect("expected an error for missing include");
     let msg = format!("{err}");
@@ -358,7 +357,10 @@ fn inlines_pub_super_mod() {
 #[test]
 fn inlines_pub_in_path_mod() {
     let dir = make_crate(&[
-        ("src/lib.rs", "pub(in crate::vis) mod foo;\npub mod vis { pub use super::foo::*; }\n"),
+        (
+            "src/lib.rs",
+            "pub(in crate::vis) mod foo;\npub mod vis { pub use super::foo::*; }\n",
+        ),
         ("src/foo.rs", "pub fn f() {}\n"),
     ]);
     let (_, out) = flatten_str(dir.path());
@@ -486,9 +488,19 @@ fn to_file_truncates_existing_longer_content() {
     fs::write(&out_path, "x".repeat(50_000)).unwrap();
 
     let written = flatten_to_file(dir.path(), &out_path);
-    assert!(written.contains("pub fn x()"), "expected new content, got:\n{written}");
-    assert!(!written.contains("xxxxx"), "truncate bug — old bytes leaked through");
-    assert!(written.len() < 200, "output should be small, got {} bytes", written.len());
+    assert!(
+        written.contains("pub fn x()"),
+        "expected new content, got:\n{written}"
+    );
+    assert!(
+        !written.contains("xxxxx"),
+        "truncate bug — old bytes leaked through"
+    );
+    assert!(
+        written.len() < 200,
+        "output should be small, got {} bytes",
+        written.len()
+    );
 }
 
 #[test]
@@ -546,7 +558,12 @@ fn flat_output_compiles_for_simple_lib() {
     flatten_to_file(dir.path(), &out_path);
 
     let status = std::process::Command::new("rustc")
-        .args(["--edition=2021", "--crate-type=lib", "--emit=metadata", "-o"])
+        .args([
+            "--edition=2021",
+            "--crate-type=lib",
+            "--emit=metadata",
+            "-o",
+        ])
         .arg(out_dir.path().join("flat.rmeta"))
         .arg(&out_path)
         .status()
@@ -562,15 +579,26 @@ fn flat_output_compiles_for_nested_visibility() {
     }
     let dir = make_crate(&[
         ("src/lib.rs", "pub mod outer;\n"),
-        ("src/outer.rs", "pub(crate) mod helpers;\npub fn run() -> u32 { helpers::value() }\n"),
-        ("src/outer/helpers.rs", "pub(super) fn value() -> u32 { 99 }\n"),
+        (
+            "src/outer.rs",
+            "pub(crate) mod helpers;\npub fn run() -> u32 { helpers::value() }\n",
+        ),
+        (
+            "src/outer/helpers.rs",
+            "pub(super) fn value() -> u32 { 99 }\n",
+        ),
     ]);
     let out_dir = tempfile::tempdir().unwrap();
     let out_path = out_dir.path().join("flat.rs");
     flatten_to_file(dir.path(), &out_path);
 
     let status = std::process::Command::new("rustc")
-        .args(["--edition=2021", "--crate-type=lib", "--emit=metadata", "-o"])
+        .args([
+            "--edition=2021",
+            "--crate-type=lib",
+            "--emit=metadata",
+            "-o",
+        ])
         .arg(out_dir.path().join("flat.rmeta"))
         .arg(&out_path)
         .status()
@@ -590,7 +618,10 @@ fn does_not_match_mod_inside_string_literal() {
         "pub const SAMPLE: &str = \"\nmod ghost;\n\";\npub fn a() {}\n",
     )]);
     let (_, out) = flatten_str(dir.path());
-    assert!(out.contains("mod ghost"), "string literal should pass through");
+    assert!(
+        out.contains("mod ghost"),
+        "string literal should pass through"
+    );
     assert!(out.contains("pub fn a()"));
     // No file lookup should have been triggered for the literal text.
     assert!(!out.contains("// ==="));
@@ -598,10 +629,7 @@ fn does_not_match_mod_inside_string_literal() {
 
 #[test]
 fn does_not_match_mod_inside_block_comment() {
-    let dir = make_crate(&[(
-        "src/lib.rs",
-        "/*\n  mod ghost;\n*/\npub fn a() {}\n",
-    )]);
+    let dir = make_crate(&[("src/lib.rs", "/*\n  mod ghost;\n*/\npub fn a() {}\n")]);
     let (_, out) = flatten_str(dir.path());
     assert!(out.contains("mod ghost"));
     assert!(out.contains("pub fn a()"));
@@ -692,7 +720,10 @@ fn cfg_gated_missing_mod_is_skipped_with_warning() {
     // tries to read the missing file.
     assert!(out.contains("#[cfg(any())]"), "got:\n{out}");
     assert!(out.contains("mod never_exists"), "got:\n{out}");
-    assert!(!out.contains("mod never_exists;"), "expected `;` swapped for body, got:\n{out}");
+    assert!(
+        !out.contains("mod never_exists;"),
+        "expected `;` swapped for body, got:\n{out}"
+    );
     assert!(out.contains("cfg-skipped"), "got:\n{out}");
 }
 
@@ -720,10 +751,7 @@ fn external_mod_nested_inside_inline_mod_block() {
     // `lib.rs` contains an inline `mod outer { ... }` whose body declares
     // `mod inner;`. Resolution should look in `src/outer/inner.rs`.
     let dir = make_crate(&[
-        (
-            "src/lib.rs",
-            "pub mod outer {\n    pub mod inner;\n}\n",
-        ),
+        ("src/lib.rs", "pub mod outer {\n    pub mod inner;\n}\n"),
         ("src/outer/inner.rs", "pub fn x() {}\n"),
     ]);
     let (_, out) = flatten_str(dir.path());
@@ -762,10 +790,7 @@ fn errors_on_unparseable_source() {
 fn extern_crate_is_left_alone() {
     // syn parses `extern crate alloc;` as Item::ExternCrate, not Item::Mod —
     // so the scanner ignores it and the line passes through verbatim.
-    let dir = make_crate(&[(
-        "src/lib.rs",
-        "extern crate alloc;\npub fn a() {}\n",
-    )]);
+    let dir = make_crate(&[("src/lib.rs", "extern crate alloc;\npub fn a() {}\n")]);
     let (_, out) = flatten_str(dir.path());
     assert!(out.contains("extern crate alloc;"));
     assert!(out.contains("pub fn a()"));
@@ -793,9 +818,7 @@ fn cfg_attr_on_mod_with_existing_file_is_preserved() {
 // ---------------------------------------------------------------------------
 
 fn minimal_manifest(name: &str) -> String {
-    format!(
-        "[package]\nname = \"{name}\"\nversion = \"0.0.0\"\nedition = \"2021\"\n"
-    )
+    format!("[package]\nname = \"{name}\"\nversion = \"0.0.0\"\nedition = \"2021\"\n")
 }
 
 #[test]
@@ -1152,8 +1175,8 @@ fn vendor_report_excludes_dev_dependencies() {
 
 #[test]
 fn vendor_report_summary_renders() {
-    let report = vendor::report(project_dir().join("test-crates/script-with-deps"))
-        .expect("vendor report");
+    let report =
+        vendor::report(project_dir().join("test-crates/script-with-deps")).expect("vendor report");
     let rendered = format!("{report}");
     assert!(rendered.contains("script-with-deps"));
     assert!(rendered.contains("Vendorable"));
@@ -1185,9 +1208,7 @@ fn make_user_with_path_dep(dep_name: &str, dep_src: &str, user_main: &str) -> Te
     fs::create_dir_all(dir.path().join(dep_name).join("src")).unwrap();
     fs::write(
         dir.path().join(dep_name).join("Cargo.toml"),
-        format!(
-            "[package]\nname = \"{dep_name}\"\nversion = \"0.0.1\"\nedition = \"2021\"\n"
-        ),
+        format!("[package]\nname = \"{dep_name}\"\nversion = \"0.0.1\"\nedition = \"2021\"\n"),
     )
     .unwrap();
     fs::write(dir.path().join(dep_name).join("src/lib.rs"), dep_src).unwrap();
@@ -1234,9 +1255,18 @@ fn vendor_handles_cfg_false_mod_with_inner_extern_crate() {
     assert_eq!(pkg.vendored.len(), 1);
     let s = pkg.vendored[0].source.to_string();
     // The cfg-False mod tests must have been dropped entirely.
-    assert!(!s.contains("mod tests"), "cfg-False mod should be deleted; got:\n{s}");
-    assert!(!s.contains("extern crate std"), "inner extern crate should be deleted with the mod; got:\n{s}");
-    assert!(s.contains("pub fn x"), "the kept code should remain; got:\n{s}");
+    assert!(
+        !s.contains("mod tests"),
+        "cfg-False mod should be deleted; got:\n{s}"
+    );
+    assert!(
+        !s.contains("extern crate std"),
+        "inner extern crate should be deleted with the mod; got:\n{s}"
+    );
+    assert!(
+        s.contains("pub fn x"),
+        "the kept code should remain; got:\n{s}"
+    );
 }
 
 #[test]
@@ -1499,8 +1529,14 @@ fn vendor_evaluates_feature_cfg_when_feature_enabled() {
     assert!(s.contains("pub fn always"), "always kept: {s}");
     // The `not(feature = "x")` cfg evaluates to False; the gated item is
     // deleted from the vendored output entirely.
-    assert!(!s.contains("pub fn no_x"), "no_x should be deleted; got:\n{s}");
-    assert!(!s.contains("cfg(any())"), "no force-off marker should remain; got:\n{s}");
+    assert!(
+        !s.contains("pub fn no_x"),
+        "no_x should be deleted; got:\n{s}"
+    );
+    assert!(
+        !s.contains("cfg(any())"),
+        "no force-off marker should remain; got:\n{s}"
+    );
 }
 
 #[test]
@@ -1523,8 +1559,14 @@ fn vendor_evaluates_feature_cfg_when_feature_disabled() {
 
     let s = pkg.vendored[0].source.to_string();
     // cfg(feature = "x") evaluates to false → x_only is deleted entirely
-    assert!(!s.contains("pub fn x_only"), "x_only should be deleted; got:\n{s}");
-    assert!(s.contains("pub fn always"), "always should remain; got:\n{s}");
+    assert!(
+        !s.contains("pub fn x_only"),
+        "x_only should be deleted; got:\n{s}"
+    );
+    assert!(
+        s.contains("pub fn always"),
+        "always should remain; got:\n{s}"
+    );
 }
 
 #[test]
@@ -1576,7 +1618,10 @@ fn vendor_evaluates_complex_cfg_expression() {
     // any(x, y) → True (x enabled)
     assert!(s.contains("pub fn either()"));
     // all(x, y) → False (y not enabled) → `both` deleted entirely
-    assert!(!s.contains("pub fn both"), "`both` should be deleted; got:\n{s}");
+    assert!(
+        !s.contains("pub fn both"),
+        "`both` should be deleted; got:\n{s}"
+    );
 }
 
 #[test]
@@ -1592,9 +1637,7 @@ fn vendor_handles_multiple_deps() {
         fs::create_dir_all(dir.path().join(name).join("src")).unwrap();
         fs::write(
             dir.path().join(name).join("Cargo.toml"),
-            format!(
-                "[package]\nname = \"{name}\"\nversion = \"0.0.1\"\nedition = \"2021\"\n"
-            ),
+            format!("[package]\nname = \"{name}\"\nversion = \"0.0.1\"\nedition = \"2021\"\n"),
         )
         .unwrap();
         fs::write(dir.path().join(name).join("src/lib.rs"), body).unwrap();
@@ -1705,8 +1748,14 @@ fn vendor_deletes_top_level_struct_when_cfg_false() {
     .unwrap();
     let s = pkg.vendored[0].source.to_string();
     assert!(!s.contains("Gone"), "deleted struct should not appear: {s}");
-    assert!(!s.contains("pub a: i32"), "struct fields should be gone too: {s}");
-    assert!(s.contains("pub struct Stays"), "kept struct should remain: {s}");
+    assert!(
+        !s.contains("pub a: i32"),
+        "struct fields should be gone too: {s}"
+    );
+    assert!(
+        s.contains("pub struct Stays"),
+        "kept struct should remain: {s}"
+    );
 }
 
 #[test]
@@ -1726,9 +1775,18 @@ fn vendor_deletes_whole_inline_mod_when_cfg_false() {
     )
     .unwrap();
     let s = pkg.vendored[0].source.to_string();
-    assert!(!s.contains("pub mod gated"), "gated mod should be deleted: {s}");
-    assert!(!s.contains("pub fn one"), "items inside should be deleted: {s}");
-    assert!(!s.contains("pub fn two"), "items inside should be deleted: {s}");
+    assert!(
+        !s.contains("pub mod gated"),
+        "gated mod should be deleted: {s}"
+    );
+    assert!(
+        !s.contains("pub fn one"),
+        "items inside should be deleted: {s}"
+    );
+    assert!(
+        !s.contains("pub fn two"),
+        "items inside should be deleted: {s}"
+    );
     assert!(s.contains("pub fn always"), "sibling kept: {s}");
 }
 
@@ -1944,7 +2002,10 @@ fn vendor_deletion_output_compiles() {
     // Sanity check: deleted symbols must not appear textually in the output.
     assert!(!out.contains("deleted_fn"), "deleted_fn leaked: {out}");
     assert!(!out.contains("deleted_mod"), "deleted_mod leaked: {out}");
-    assert!(!out.contains("deleted_method"), "deleted_method leaked: {out}");
+    assert!(
+        !out.contains("deleted_method"),
+        "deleted_method leaked: {out}"
+    );
     assert!(out.contains("pub fn alive"));
 
     // Compile check.
@@ -1977,13 +2038,7 @@ fn vendor_output_size_smaller_with_deletion() {
     // vendored size against the size of the original dep source.
     let dep_src = "#[cfg(feature = \"x\")]\npub fn really_really_long_function_name_that_takes_up_lots_of_bytes() -> i32 { 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10 }\n\
                    pub fn small() {}\n";
-    let dir = make_user_with_featured_dep(
-        "fdep",
-        &["x"],
-        &[],
-        dep_src,
-        "fn main() {}\n",
-    );
+    let dir = make_user_with_featured_dep("fdep", &["x"], &[], dep_src, "fn main() {}\n");
     let pkg = vendor::vendor_package(
         dir.path().join("user"),
         &TargetSelector::Auto,
@@ -2004,11 +2059,7 @@ fn vendor_output_size_smaller_with_deletion() {
 
 #[test]
 fn vendor_tracks_max_edition() {
-    let dir = make_user_with_path_dep(
-        "pure_dep",
-        "pub fn x() {}\n",
-        "fn main() {}\n",
-    );
+    let dir = make_user_with_path_dep("pure_dep", "pub fn x() {}\n", "fn main() {}\n");
     let pkg = vendor::vendor_package(
         dir.path().join("user"),
         &TargetSelector::Auto,
@@ -2281,7 +2332,11 @@ fn vendor_expands_include_macros_inside_macro_invocations() {
          [dependencies]\ndep = { path = \"../dep\" }\n",
     )
     .unwrap();
-    fs::write(dir.path().join("user").join("src/main.rs"), "fn main() {}\n").unwrap();
+    fs::write(
+        dir.path().join("user").join("src/main.rs"),
+        "fn main() {}\n",
+    )
+    .unwrap();
 
     let pkg = vendor::vendor_package(
         dir.path().join("user"),
@@ -2363,7 +2418,11 @@ fn vendor_inject_imports_skips_mods_inside_item_list_macros() {
          [dependencies]\ndep = { path = \"../dep\" }\ncollide = { path = \"../collide\" }\n",
     )
     .unwrap();
-    fs::write(dir.path().join("user").join("src/main.rs"), "fn main() {}\n").unwrap();
+    fs::write(
+        dir.path().join("user").join("src/main.rs"),
+        "fn main() {}\n",
+    )
+    .unwrap();
 
     let pkg = vendor::vendor_package(
         dir.path().join("user"),
@@ -2373,7 +2432,10 @@ fn vendor_inject_imports_skips_mods_inside_item_list_macros() {
     .expect("vendor with collision pattern");
 
     // Find the dep's vendored source.
-    let dep = pkg.vendored.iter().find(|d| d.name == "dep")
+    let dep = pkg
+        .vendored
+        .iter()
+        .find(|d| d.name == "dep")
         .expect("dep should be vendored");
     let s = dep.source.to_string();
     // The `mod collide` was inlined inside `cfg_rt!`. The sibling
@@ -2428,7 +2490,11 @@ fn vendor_bakes_bare_cfg_passed_as_macro_argument() {
          [dependencies]\ndep = { path = \"../dep\" }\n",
     )
     .unwrap();
-    fs::write(dir.path().join("user").join("src/main.rs"), "fn main() {}\n").unwrap();
+    fs::write(
+        dir.path().join("user").join("src/main.rs"),
+        "fn main() {}\n",
+    )
+    .unwrap();
 
     let pkg = vendor::vendor_package(
         dir.path().join("user"),
@@ -2446,8 +2512,7 @@ fn vendor_bakes_bare_cfg_passed_as_macro_argument() {
         "expected `cfg(all())` baked into macro arg; got:\n{s}"
     );
     assert!(
-        !s.contains("cfg(feature = \"std\")")
-            && !s.contains("cfg (feature = \"std\")"),
+        !s.contains("cfg(feature = \"std\")") && !s.contains("cfg (feature = \"std\")"),
         "expected no surviving `cfg(feature = \"std\")` in macro arg; got:\n{s}"
     );
 }
@@ -2494,7 +2559,11 @@ fn vendor_bakes_cfg_attrs_in_item_list_macro_invocations() {
          [dependencies]\ndep = { path = \"../dep\" }\n",
     )
     .unwrap();
-    fs::write(dir.path().join("user").join("src/main.rs"), "fn main() {}\n").unwrap();
+    fs::write(
+        dir.path().join("user").join("src/main.rs"),
+        "fn main() {}\n",
+    )
+    .unwrap();
 
     let pkg = vendor::vendor_package(
         dir.path().join("user"),
@@ -2514,8 +2583,8 @@ fn vendor_bakes_cfg_attrs_in_item_list_macro_invocations() {
     );
     // And the original `cfg(feature = "net")` should NOT appear
     // unbaked inside the macro args anywhere.
-    let baked_count = s.matches("cfg(feature = \"net\")")
-        .count() + s.matches("cfg (feature = \"net\")").count();
+    let baked_count =
+        s.matches("cfg(feature = \"net\")").count() + s.matches("cfg (feature = \"net\")").count();
     assert_eq!(
         baked_count, 0,
         "expected no surviving `cfg(feature = \"net\")` (vendor-time True must be baked); \
@@ -2569,7 +2638,11 @@ fn vendor_bakes_feature_predicates_to_literal_true_false() {
          [dependencies]\ndep = { path = \"../dep\" }\n",
     )
     .unwrap();
-    fs::write(dir.path().join("user").join("src/main.rs"), "fn main() {}\n").unwrap();
+    fs::write(
+        dir.path().join("user").join("src/main.rs"),
+        "fn main() {}\n",
+    )
+    .unwrap();
 
     let pkg = vendor::vendor_package(
         dir.path().join("user"),
@@ -2651,7 +2724,11 @@ fn vendor_inactive_lib_rs_dep_is_vendored_with_cfg_gated_injections() {
          [dependencies]\nuses_winonly = { path = \"../uses_winonly\" }\nwinonly = { path = \"../winonly\" }\n",
     )
     .unwrap();
-    fs::write(dir.path().join("user").join("src/main.rs"), "fn main() {}\n").unwrap();
+    fs::write(
+        dir.path().join("user").join("src/main.rs"),
+        "fn main() {}\n",
+    )
+    .unwrap();
 
     let pkg = vendor::vendor_package(
         dir.path().join("user"),
@@ -2674,8 +2751,7 @@ fn vendor_inactive_lib_rs_dep_is_vendored_with_cfg_gated_injections() {
     // Verify the gated injection. The cfg expression flows through
     // verbatim so the user's compile picks it up correctly.
     assert!(
-        s.contains("#[cfg(windows)]")
-            && s.contains("use crate::winonly"),
+        s.contains("#[cfg(windows)]") && s.contains("use crate::winonly"),
         "expected cfg(windows)-gated `use crate::winonly`; got:\n{s}"
     );
 }
@@ -2717,7 +2793,11 @@ fn vendor_preserves_compiler_set_cfgs_even_when_feature_collides() {
          [dependencies]\ndep = { path = \"../dep\" }\n",
     )
     .unwrap();
-    fs::write(dir.path().join("user").join("src/main.rs"), "fn main() {}\n").unwrap();
+    fs::write(
+        dir.path().join("user").join("src/main.rs"),
+        "fn main() {}\n",
+    )
+    .unwrap();
 
     let pkg = vendor::vendor_package(
         dir.path().join("user"),
@@ -2731,11 +2811,7 @@ fn vendor_preserves_compiler_set_cfgs_even_when_feature_collides() {
     // are NOT evaluated at vendor time. The dep's `windows` Cargo
     // feature must not be allowed to spuriously satisfy
     // `cfg(windows)`.
-    for needle in [
-        "cfg(windows)",
-        "cfg(unix)",
-        "cfg(target_os = \"linux\")",
-    ] {
+    for needle in ["cfg(windows)", "cfg(unix)", "cfg(target_os = \"linux\")"] {
         assert!(
             s.contains(needle),
             "compiler-set predicate `{needle}` must be preserved verbatim; got:\n{s}"
@@ -2799,7 +2875,11 @@ fn vendor_bakes_compound_cfg_with_feature_and_target_predicates_inside_macro_inv
          [dependencies]\ndep = { path = \"../dep\" }\n",
     )
     .unwrap();
-    fs::write(dir.path().join("user").join("src/main.rs"), "fn main() {}\n").unwrap();
+    fs::write(
+        dir.path().join("user").join("src/main.rs"),
+        "fn main() {}\n",
+    )
+    .unwrap();
 
     let pkg = vendor::vendor_package(
         dir.path().join("user"),
@@ -2908,7 +2988,11 @@ fn vendor_re_exports_inner_item_via_self_path_inside_unix_macro_chain() {
          [dependencies]\ndep = { path = \"../dep\" }\n",
     )
     .unwrap();
-    fs::write(dir.path().join("user").join("src/main.rs"), "fn main() {}\n").unwrap();
+    fs::write(
+        dir.path().join("user").join("src/main.rs"),
+        "fn main() {}\n",
+    )
+    .unwrap();
 
     let pkg = vendor::vendor_package(
         dir.path().join("user"),
@@ -2998,7 +3082,11 @@ fn vendor_pub_crate_mod_supports_internal_path_re_export() {
          [dependencies]\ndep = { path = \"../dep\" }\n",
     )
     .unwrap();
-    fs::write(dir.path().join("user").join("src/main.rs"), "fn main() {}\n").unwrap();
+    fs::write(
+        dir.path().join("user").join("src/main.rs"),
+        "fn main() {}\n",
+    )
+    .unwrap();
 
     let pkg = vendor::vendor_package(
         dir.path().join("user"),
@@ -3081,8 +3169,7 @@ fn vendor_macro_rules_inside_doc_wrapper_emits_use_export() {
     let s = pkg.vendored[0].source.to_string();
     // The macro_rules definition must appear in the flat output.
     assert!(
-        s.contains("macro_rules ! select")
-            || s.contains("macro_rules! select"),
+        s.contains("macro_rules ! select") || s.contains("macro_rules! select"),
         "macro_rules! select definition missing:\n{s}"
     );
     // The synthesised re-export under the dep's namespace must be
@@ -3109,10 +3196,7 @@ fn real_vendor_signal_hook_registry_parses_clean() {
         "signal-hook-registry = \"1\"\n",
         "fn main() { let _ = signal_hook_registry::SIGNALS_FORBIDDEN.iter(); }\n",
     );
-    let out = run_flatten_capture(
-        user.path(),
-        &["--vendor", "--no-banner", "--stdout"],
-    );
+    let out = run_flatten_capture(user.path(), &["--vendor", "--no-banner", "--stdout"]);
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         // Make the failure mode obvious: distinguish parse failure from
@@ -3173,7 +3257,11 @@ fn vendor_inlines_mod_whose_target_has_inactive_inner_cfg() {
          [dependencies]\ndep = { path = \"../dep\" }\n",
     )
     .unwrap();
-    fs::write(dir.path().join("user").join("src/main.rs"), "fn main() {}\n").unwrap();
+    fs::write(
+        dir.path().join("user").join("src/main.rs"),
+        "fn main() {}\n",
+    )
+    .unwrap();
 
     let pkg = vendor::vendor_package(
         dir.path().join("user"),
@@ -3242,7 +3330,11 @@ fn vendor_emits_all_cfg_attr_path_candidates_for_top_level_mod() {
          [dependencies]\ndep = { path = \"../dep\" }\n",
     )
     .unwrap();
-    fs::write(dir.path().join("user").join("src/main.rs"), "fn main() {}\n").unwrap();
+    fs::write(
+        dir.path().join("user").join("src/main.rs"),
+        "fn main() {}\n",
+    )
+    .unwrap();
 
     let pkg = vendor::vendor_package(
         dir.path().join("user"),
@@ -3314,7 +3406,11 @@ fn vendor_resolves_cfg_attr_path_for_top_level_mod() {
          [dependencies]\ndep = { path = \"../dep\" }\n",
     )
     .unwrap();
-    fs::write(dir.path().join("user").join("src/main.rs"), "fn main() {}\n").unwrap();
+    fs::write(
+        dir.path().join("user").join("src/main.rs"),
+        "fn main() {}\n",
+    )
+    .unwrap();
 
     let pkg = vendor::vendor_package(
         dir.path().join("user"),
@@ -3418,13 +3514,7 @@ fn vendor_macro_with_dollar_crate_compiles_via_rustc() {
     let flat = tmp.path().join("flat.rs");
     fs::write(&flat, &out).unwrap();
     let res = std::process::Command::new("rustc")
-        .args([
-            "--edition=2021",
-            "--crate-type=bin",
-            "-A",
-            "warnings",
-            "-o",
-        ])
+        .args(["--edition=2021", "--crate-type=bin", "-A", "warnings", "-o"])
         .arg(tmp.path().join("bin"))
         .arg(&flat)
         .output()
@@ -3435,7 +3525,9 @@ fn vendor_macro_with_dollar_crate_compiles_via_rustc() {
     }
 
     // Run the binary; verify the macro actually expanded and printed.
-    let run = std::process::Command::new(tmp.path().join("bin")).output().unwrap();
+    let run = std::process::Command::new(tmp.path().join("bin"))
+        .output()
+        .unwrap();
     let stdout = String::from_utf8_lossy(&run.stdout);
     assert!(
         stdout.contains("[log] hello 42"),
@@ -3557,7 +3649,10 @@ fn external_keeps_dep_out_of_vendored_set() {
     assert!(pkg.vendored.is_empty(), "no deps should be vendored");
     assert_eq!(pkg.external.len(), 1);
     assert_eq!(pkg.external[0].name, "pure_dep");
-    assert!(matches!(pkg.external[0].reason, ExternalReason::UserExcluded));
+    assert!(matches!(
+        pkg.external[0].reason,
+        ExternalReason::UserExcluded
+    ));
 }
 
 #[test]
@@ -3571,7 +3666,8 @@ fn external_does_not_emit_mod_block_for_skipped_dep() {
         external: ["pure_dep".to_string()].into_iter().collect(),
         ..VendorOptions::default()
     };
-    let pkg = vendor::vendor_package(dir.path().join("user"), &TargetSelector::Auto, &opts).unwrap();
+    let pkg =
+        vendor::vendor_package(dir.path().join("user"), &TargetSelector::Auto, &opts).unwrap();
     let user_src = pkg.user_source.to_string();
     // The user's main remains; no `mod pure_dep { ... }` is added since
     // we don't vendor it. (main.rs handles the actual mod-emission per dep.)
@@ -3620,7 +3716,10 @@ fn external_overrides_unvendorable_refusal() {
         &TargetSelector::Auto,
         &VendorOptions::default(),
     );
-    assert!(strict.is_err(), "expected strict refusal without --external");
+    assert!(
+        strict.is_err(),
+        "expected strict refusal without --external"
+    );
 
     // With --external buildy, succeeds.
     let opts = VendorOptions {
@@ -3630,7 +3729,11 @@ fn external_overrides_unvendorable_refusal() {
     let pkg = vendor::vendor_package(dir.path().join("user"), &TargetSelector::Auto, &opts)
         .expect("--external should bypass refusal");
     assert!(matches!(
-        pkg.external.iter().find(|d| d.name == "buildy").unwrap().reason,
+        pkg.external
+            .iter()
+            .find(|d| d.name == "buildy")
+            .unwrap()
+            .reason,
         ExternalReason::UserExcluded
     ));
 }
@@ -3656,7 +3759,11 @@ fn external_orphan_dep_is_dropped_from_output() {
          [dependencies]\nshared = { path = \"../shared\" }\n",
     )
     .unwrap();
-    fs::write(dir.path().join("outer/src/lib.rs"), "pub fn x() { shared::x() }\n").unwrap();
+    fs::write(
+        dir.path().join("outer/src/lib.rs"),
+        "pub fn x() { shared::x() }\n",
+    )
+    .unwrap();
 
     fs::create_dir_all(dir.path().join("user/src")).unwrap();
     fs::write(
@@ -3675,10 +3782,15 @@ fn external_orphan_dep_is_dropped_from_output() {
         external: ["outer".to_string()].into_iter().collect(),
         ..VendorOptions::default()
     };
-    let pkg = vendor::vendor_package(dir.path().join("user"), &TargetSelector::Auto, &opts).unwrap();
+    let pkg =
+        vendor::vendor_package(dir.path().join("user"), &TargetSelector::Auto, &opts).unwrap();
     assert!(pkg.vendored.is_empty(), "no vendored deps expected");
     let external_names: Vec<&str> = pkg.external.iter().map(|d| d.name.as_str()).collect();
-    assert_eq!(external_names, vec!["outer"], "shared should be dropped, not promoted");
+    assert_eq!(
+        external_names,
+        vec!["outer"],
+        "shared should be dropped, not promoted"
+    );
 }
 
 #[test]
@@ -3693,15 +3805,25 @@ fn external_diamond_vendors_orphan_through_other_path() {
         external: ["outer".to_string()].into_iter().collect(),
         ..VendorOptions::default()
     };
-    let pkg = vendor::vendor_package(dir.path().join("user"), &TargetSelector::Auto, &opts).unwrap();
+    let pkg =
+        vendor::vendor_package(dir.path().join("user"), &TargetSelector::Auto, &opts).unwrap();
 
     let mut vendored_names: Vec<&str> = pkg.vendored.iter().map(|d| d.name.as_str()).collect();
     vendored_names.sort();
     assert_eq!(vendored_names, vec!["other", "shared"]);
 
-    let outer = pkg.external.iter().find(|d| d.name == "outer").expect("outer external");
+    let outer = pkg
+        .external
+        .iter()
+        .find(|d| d.name == "outer")
+        .expect("outer external");
     assert!(matches!(outer.reason, ExternalReason::UserExcluded));
-    assert_eq!(pkg.external.len(), 1, "only outer should be external; got {:?}", pkg.external);
+    assert_eq!(
+        pkg.external.len(),
+        1,
+        "only outer should be external; got {:?}",
+        pkg.external
+    );
 }
 
 #[test]
@@ -3716,7 +3838,8 @@ fn external_unknown_name_does_not_break() {
         external: ["nonexistent_typo".to_string()].into_iter().collect(),
         ..VendorOptions::default()
     };
-    let pkg = vendor::vendor_package(dir.path().join("user"), &TargetSelector::Auto, &opts).unwrap();
+    let pkg =
+        vendor::vendor_package(dir.path().join("user"), &TargetSelector::Auto, &opts).unwrap();
     // pure_dep still got vendored normally.
     assert_eq!(pkg.vendored.len(), 1);
     assert_eq!(pkg.vendored[0].name, "pure_dep");
@@ -3732,9 +3855,7 @@ fn external_file_via_cli_combines_with_inline_flag() {
         fs::create_dir_all(dir.path().join(name).join("src")).unwrap();
         fs::write(
             dir.path().join(name).join("Cargo.toml"),
-            format!(
-                "[package]\nname = \"{name}\"\nversion = \"0.0.1\"\nedition = \"2021\"\n"
-            ),
+            format!("[package]\nname = \"{name}\"\nversion = \"0.0.1\"\nedition = \"2021\"\n"),
         )
         .unwrap();
         fs::write(dir.path().join(name).join("src/lib.rs"), "pub fn x() {}\n").unwrap();
@@ -3765,12 +3886,7 @@ fn external_file_via_cli_combines_with_inline_flag() {
     let bin = env!("CARGO_BIN_EXE_flatten");
     let output = std::process::Command::new(bin)
         .arg(dir.path().join("user"))
-        .args([
-            "--vendor",
-            "--external",
-            "dep_a",
-            "--external-file",
-        ])
+        .args(["--vendor", "--external", "dep_a", "--external-file"])
         .arg(&externals_file)
         .args(["--stdout", "--no-banner"])
         .output()
@@ -3783,8 +3899,14 @@ fn external_file_via_cli_combines_with_inline_flag() {
 
     let out = String::from_utf8(output.stdout).unwrap();
     // Neither dep should be vendored — no `mod dep_a {` or `mod dep_b {` block.
-    assert!(!out.contains("mod dep_a {"), "dep_a should be external; got:\n{out}");
-    assert!(!out.contains("mod dep_b {"), "dep_b should be external; got:\n{out}");
+    assert!(
+        !out.contains("mod dep_a {"),
+        "dep_a should be external; got:\n{out}"
+    );
+    assert!(
+        !out.contains("mod dep_b {"),
+        "dep_b should be external; got:\n{out}"
+    );
     // User code's references survive.
     assert!(out.contains("dep_a::x()"));
     assert!(out.contains("dep_b::x()"));
@@ -3835,7 +3957,13 @@ fn external_via_cli_compiles_with_cargo() {
     let bin = env!("CARGO_BIN_EXE_flatten");
     let output = std::process::Command::new(bin)
         .arg(src_workspace.path().join("user"))
-        .args(["--vendor", "--external", "pure_dep", "--stdout", "--no-banner"])
+        .args([
+            "--vendor",
+            "--external",
+            "pure_dep",
+            "--stdout",
+            "--no-banner",
+        ])
         .output()
         .expect("spawn flatten");
     assert!(
@@ -3966,7 +4094,8 @@ fn external_without_deep_vendors_shared_transitive() {
         external: ["c".to_string()].into_iter().collect(),
         ..VendorOptions::default()
     };
-    let pkg = vendor::vendor_package(dir.path().join("user"), &TargetSelector::Auto, &opts).unwrap();
+    let pkg =
+        vendor::vendor_package(dir.path().join("user"), &TargetSelector::Auto, &opts).unwrap();
 
     let mut vendored: Vec<&str> = pkg.vendored.iter().map(|d| d.name.as_str()).collect();
     vendored.sort();
@@ -3995,13 +4124,18 @@ fn external_deep_externalises_transitive_cone() {
         external_deep_aggressive: true,
         ..VendorOptions::default()
     };
-    let pkg = vendor::vendor_package(dir.path().join("user"), &TargetSelector::Auto, &opts).unwrap();
+    let pkg =
+        vendor::vendor_package(dir.path().join("user"), &TargetSelector::Auto, &opts).unwrap();
 
     let mut vendored: Vec<&str> = pkg.vendored.iter().map(|d| d.name.as_str()).collect();
     vendored.sort();
     assert_eq!(vendored, vec!["a", "b"], "c_core should NOT be vendored");
 
-    let c = pkg.external.iter().find(|d| d.name == "c").expect("c external");
+    let c = pkg
+        .external
+        .iter()
+        .find(|d| d.name == "c")
+        .expect("c external");
     assert!(matches!(c.reason, ExternalReason::UserExcluded));
 
     let c_core = pkg
@@ -4028,9 +4162,21 @@ fn external_deep_drops_unreferenced_transitives_silently() {
 
     for (name, deps_section, body) in [
         ("c_core", "", "pub fn x() -> i32 { 1 }\n"),
-        ("c", "[dependencies]\nc_core = { path = \"../c_core\" }\n", "pub fn x() -> i32 { c_core::x() }\n"),
-        ("b", "[dependencies]\nc = { path = \"../c\" }\n", "pub fn x() -> i32 { c::x() }\n"),
-        ("a", "[dependencies]\nb = { path = \"../b\" }\n", "pub fn x() -> i32 { b::x() }\n"),
+        (
+            "c",
+            "[dependencies]\nc_core = { path = \"../c_core\" }\n",
+            "pub fn x() -> i32 { c_core::x() }\n",
+        ),
+        (
+            "b",
+            "[dependencies]\nc = { path = \"../c\" }\n",
+            "pub fn x() -> i32 { c::x() }\n",
+        ),
+        (
+            "a",
+            "[dependencies]\nb = { path = \"../b\" }\n",
+            "pub fn x() -> i32 { b::x() }\n",
+        ),
     ] {
         fs::create_dir_all(dir.path().join(name).join("src")).unwrap();
         fs::write(
@@ -4061,7 +4207,8 @@ fn external_deep_drops_unreferenced_transitives_silently() {
         external_deep: true,
         ..VendorOptions::default()
     };
-    let pkg = vendor::vendor_package(dir.path().join("user"), &TargetSelector::Auto, &opts).unwrap();
+    let pkg =
+        vendor::vendor_package(dir.path().join("user"), &TargetSelector::Auto, &opts).unwrap();
 
     assert!(
         pkg.vendored.is_empty(),
@@ -4069,7 +4216,11 @@ fn external_deep_drops_unreferenced_transitives_silently() {
         pkg.vendored.iter().map(|d| &d.name).collect::<Vec<_>>()
     );
     let externals: Vec<&str> = pkg.external.iter().map(|d| d.name.as_str()).collect();
-    assert_eq!(externals, vec!["a"], "only the explicit external should appear");
+    assert_eq!(
+        externals,
+        vec!["a"],
+        "only the explicit external should appear"
+    );
 }
 
 #[test]
@@ -4082,7 +4233,8 @@ fn external_deep_no_op_without_external() {
         external_deep: true, // but no `external`
         ..VendorOptions::default()
     };
-    let pkg = vendor::vendor_package(dir.path().join("user"), &TargetSelector::Auto, &opts).unwrap();
+    let pkg =
+        vendor::vendor_package(dir.path().join("user"), &TargetSelector::Auto, &opts).unwrap();
     assert_eq!(pkg.vendored.len(), 1);
     assert_eq!(pkg.vendored[0].name, "pure_dep");
     assert!(pkg.external.is_empty());
@@ -4097,8 +4249,16 @@ fn external_deep_with_multiple_explicit_externals_unions_their_cones() {
     for (name, deps_section, body) in [
         ("leaf_x", "", "pub fn x() {}\n"),
         ("leaf_y", "", "pub fn y() {}\n"),
-        ("mid_x", "[dependencies]\nleaf_x = { path = \"../leaf_x\" }\n", "pub fn mx() { leaf_x::x() }\n"),
-        ("mid_y", "[dependencies]\nleaf_y = { path = \"../leaf_y\" }\n", "pub fn my() { leaf_y::y() }\n"),
+        (
+            "mid_x",
+            "[dependencies]\nleaf_x = { path = \"../leaf_x\" }\n",
+            "pub fn mx() { leaf_x::x() }\n",
+        ),
+        (
+            "mid_y",
+            "[dependencies]\nleaf_y = { path = \"../leaf_y\" }\n",
+            "pub fn my() { leaf_y::y() }\n",
+        ),
     ] {
         fs::create_dir_all(dir.path().join(name).join("src")).unwrap();
         fs::write(
@@ -4125,11 +4285,14 @@ fn external_deep_with_multiple_explicit_externals_unions_their_cones() {
     .unwrap();
 
     let opts = VendorOptions {
-        external: ["mid_x".to_string(), "mid_y".to_string()].into_iter().collect(),
+        external: ["mid_x".to_string(), "mid_y".to_string()]
+            .into_iter()
+            .collect(),
         external_deep: true,
         ..VendorOptions::default()
     };
-    let pkg = vendor::vendor_package(dir.path().join("user"), &TargetSelector::Auto, &opts).unwrap();
+    let pkg =
+        vendor::vendor_package(dir.path().join("user"), &TargetSelector::Auto, &opts).unwrap();
 
     assert!(pkg.vendored.is_empty(), "everything cut");
     let mut external_names: Vec<&str> = pkg.external.iter().map(|d| d.name.as_str()).collect();
@@ -4236,7 +4399,11 @@ fn external_deep_banner_lists_required_section() {
         ])
         .output()
         .expect("spawn flatten");
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let s = String::from_utf8(output.stdout).unwrap();
     assert!(
         s.contains("Required by vendored deps"),
@@ -4262,7 +4429,8 @@ fn external_deep_keeps_dual_path_dep_vendored() {
         external_deep: true,
         ..VendorOptions::default()
     };
-    let pkg = vendor::vendor_package(dir.path().join("user"), &TargetSelector::Auto, &opts).unwrap();
+    let pkg =
+        vendor::vendor_package(dir.path().join("user"), &TargetSelector::Auto, &opts).unwrap();
 
     let mut vendored: Vec<&str> = pkg.vendored.iter().map(|d| d.name.as_str()).collect();
     vendored.sort();
@@ -4377,7 +4545,13 @@ fn real_vendor_nalgebra_with_expand_deep_compiles() {
     );
     let out = run_flatten_capture(
         user.path(),
-        &["--vendor", "--expand", "--expand-deep", "--stdout", "--no-banner"],
+        &[
+            "--vendor",
+            "--expand",
+            "--expand-deep",
+            "--stdout",
+            "--no-banner",
+        ],
     );
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
@@ -4407,7 +4581,13 @@ fn real_vendor_glam_with_expand_deep_compiles() {
     );
     let out = run_flatten_capture(
         user.path(),
-        &["--vendor", "--expand", "--expand-deep", "--stdout", "--no-banner"],
+        &[
+            "--vendor",
+            "--expand",
+            "--expand-deep",
+            "--stdout",
+            "--no-banner",
+        ],
     );
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
@@ -4446,7 +4626,13 @@ fn real_vendor_rayon_with_expand_deep_compiles() {
     );
     let out = run_flatten_capture(
         user.path(),
-        &["--vendor", "--expand", "--expand-deep", "--stdout", "--no-banner"],
+        &[
+            "--vendor",
+            "--expand",
+            "--expand-deep",
+            "--stdout",
+            "--no-banner",
+        ],
     );
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
@@ -4477,7 +4663,13 @@ fn real_vendor_regex_with_expand_deep_compiles() {
     );
     let out = run_flatten_capture(
         user.path(),
-        &["--vendor", "--expand", "--expand-deep", "--stdout", "--no-banner"],
+        &[
+            "--vendor",
+            "--expand",
+            "--expand-deep",
+            "--stdout",
+            "--no-banner",
+        ],
     );
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
@@ -4543,8 +4735,7 @@ fn real_vendor_rapier2d_with_expand_deep_compiles() {
     }
     let flat = String::from_utf8(out.stdout).unwrap();
     assert!(
-        !flat.contains("#[profiling::function]")
-            && !flat.contains("#[crate::profiling::function]"),
+        !flat.contains("#[profiling::function]") && !flat.contains("#[crate::profiling::function]"),
         "expected profiling::function Attr macros to be inlined"
     );
     if let Err(stderr) = cargo_build_downstream(&flat, "") {
@@ -4579,7 +4770,13 @@ fn real_vendor_bytemuck_with_expand_deep_compiles() {
     );
     let out = run_flatten_capture(
         user.path(),
-        &["--vendor", "--expand", "--expand-deep", "--stdout", "--no-banner"],
+        &[
+            "--vendor",
+            "--expand",
+            "--expand-deep",
+            "--stdout",
+            "--no-banner",
+        ],
     );
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
@@ -4633,7 +4830,8 @@ fn real_vendor_tokio_with_expand_deep_strips_attr_macro() {
             "--vendor",
             "--expand",
             "--expand-deep",
-            "--external-preset", "infra",
+            "--external-preset",
+            "infra",
             "--external-deep",
             "--stdout",
             "--no-banner",
@@ -4703,7 +4901,8 @@ fn real_vendor_axum_with_expand_deep_vendors_clean() {
             "--vendor",
             "--expand",
             "--expand-deep",
-            "--external-preset", "infra",
+            "--external-preset",
+            "infra",
             "--external-deep",
             "--stdout",
             "--no-banner",
@@ -4764,7 +4963,8 @@ fn real_vendor_ratatui_with_expand_deep_vendors_clean() {
             "--vendor",
             "--expand",
             "--expand-deep",
-            "--external-preset", "infra",
+            "--external-preset",
+            "infra",
             "--external-deep",
             "--stdout",
             "--no-banner",
@@ -4822,8 +5022,10 @@ fn real_vendor_rand_with_expand_deep_compiles() {
             "--vendor",
             "--expand",
             "--expand-deep",
-            "--external", "libc",
-            "--external", "zerocopy",
+            "--external",
+            "libc",
+            "--external",
+            "zerocopy",
             "--stdout",
             "--no-banner",
         ],
@@ -4834,10 +5036,7 @@ fn real_vendor_rand_with_expand_deep_compiles() {
         return;
     }
     let flat = String::from_utf8(out.stdout).unwrap();
-    if let Err(stderr) = cargo_build_downstream(
-        &flat,
-        "libc = \"0.2\"\nzerocopy = \"0.8\"\n",
-    ) {
+    if let Err(stderr) = cargo_build_downstream(&flat, "libc = \"0.2\"\nzerocopy = \"0.8\"\n") {
         let head: String = flat.lines().take(40).collect::<Vec<_>>().join("\n");
         panic!("flat rand output failed to compile:\n{stderr}\n--- head ---\n{head}");
     }
@@ -4884,7 +5083,8 @@ fn real_vendor_serde_with_derive_and_expand_deep_compiles() {
             "--vendor",
             "--expand",
             "--expand-deep",
-            "--external", "serde",
+            "--external",
+            "serde",
             "--stdout",
             "--no-banner",
         ],
@@ -4956,9 +5156,7 @@ fn real_vendor_clap_with_derive_and_expand_deep_compiles() {
     // No --extern flags should be required to compile the flat output.
     if let Err(stderr) = cargo_build_downstream(&flat, "") {
         let head: String = flat.lines().take(40).collect::<Vec<_>>().join("\n");
-        panic!(
-            "flat clap+derive output failed to compile:\n{stderr}\n--- head ---\n{head}"
-        );
+        panic!("flat clap+derive output failed to compile:\n{stderr}\n--- head ---\n{head}");
     }
 }
 
@@ -4998,7 +5196,9 @@ fn real_vendor_clap_compiles() {
     // Bottom-line check: this whole vendored output compiles.
     if let Err(stderr) = cargo_build_downstream(&flat, "") {
         let head: String = flat.lines().take(80).collect::<Vec<_>>().join("\n");
-        panic!("cargo build rejected vendored clap output:\n{stderr}\n--- head of output ---\n{head}");
+        panic!(
+            "cargo build rejected vendored clap output:\n{stderr}\n--- head of output ---\n{head}"
+        );
     }
 }
 
@@ -5030,8 +5230,10 @@ fn real_vendor_regex_compiles_with_externals() {
         user.path(),
         &[
             "--vendor",
-            "--external", "aho-corasick",
-            "--external", "regex-automata",
+            "--external",
+            "aho-corasick",
+            "--external",
+            "regex-automata",
             "--stdout",
             "--no-banner",
         ],
@@ -5052,13 +5254,12 @@ fn real_vendor_regex_compiles_with_externals() {
     );
 
     // Build with both externals listed in downstream Cargo.toml.
-    let result = cargo_build_downstream(
-        &flat,
-        "aho-corasick = \"1\"\nregex-automata = \"0.4\"\n",
-    );
+    let result = cargo_build_downstream(&flat, "aho-corasick = \"1\"\nregex-automata = \"0.4\"\n");
     if let Err(stderr) = result {
         let head: String = flat.lines().take(80).collect::<Vec<_>>().join("\n");
-        panic!("cargo build rejected vendored regex output:\n{stderr}\n--- head of output ---\n{head}");
+        panic!(
+            "cargo build rejected vendored regex output:\n{stderr}\n--- head of output ---\n{head}"
+        );
     }
 }
 
@@ -5085,8 +5286,10 @@ fn real_vendor_regex_external_deep_promotes_required() {
         user.path(),
         &[
             "--vendor",
-            "--external", "aho-corasick",
-            "--external", "regex-automata",
+            "--external",
+            "aho-corasick",
+            "--external",
+            "regex-automata",
             "--external-deep",
             "--external-deep-aggressive",
             "--stdout",
@@ -5124,7 +5327,9 @@ fn real_vendor_regex_external_deep_promotes_required() {
     );
     if let Err(stderr) = result {
         let head: String = flat.lines().take(80).collect::<Vec<_>>().join("\n");
-        panic!("cargo build rejected --external-deep regex output:\n{stderr}\n--- head of output ---\n{head}");
+        panic!(
+            "cargo build rejected --external-deep regex output:\n{stderr}\n--- head of output ---\n{head}"
+        );
     }
 }
 
@@ -5158,11 +5363,16 @@ fn real_vendor_rand_compiles() {
             "--vendor",
             // libc, proc-macro2, quote, zerocopy* are unvendorable
             // (build scripts / proc-macros). Externalise them.
-            "--external", "libc",
-            "--external", "proc-macro2",
-            "--external", "quote",
-            "--external", "zerocopy",
-            "--external", "zerocopy-derive",
+            "--external",
+            "libc",
+            "--external",
+            "proc-macro2",
+            "--external",
+            "quote",
+            "--external",
+            "zerocopy",
+            "--external",
+            "zerocopy-derive",
             "--stdout",
             "--no-banner",
         ],
@@ -5181,13 +5391,12 @@ fn real_vendor_rand_compiles() {
         "expected `crate::rand_core` references for sibling-vendored rand_core"
     );
 
-    let result = cargo_build_downstream(
-        &flat,
-        "libc = \"0.2\"\nzerocopy = \"0.8\"\n",
-    );
+    let result = cargo_build_downstream(&flat, "libc = \"0.2\"\nzerocopy = \"0.8\"\n");
     if let Err(stderr) = result {
         let head: String = flat.lines().take(80).collect::<Vec<_>>().join("\n");
-        panic!("cargo build rejected vendored rand output:\n{stderr}\n--- head of output ---\n{head}");
+        panic!(
+            "cargo build rejected vendored rand output:\n{stderr}\n--- head of output ---\n{head}"
+        );
     }
 }
 
@@ -5208,11 +5417,16 @@ fn real_vendor_rand_preserves_target_cfgs() {
         user.path(),
         &[
             "--vendor",
-            "--external", "libc",
-            "--external", "proc-macro2",
-            "--external", "quote",
-            "--external", "zerocopy",
-            "--external", "zerocopy-derive",
+            "--external",
+            "libc",
+            "--external",
+            "proc-macro2",
+            "--external",
+            "quote",
+            "--external",
+            "zerocopy",
+            "--external",
+            "zerocopy-derive",
             "--stdout",
             "--no-banner",
         ],
@@ -5275,7 +5489,10 @@ fn real_vendor_glam_compiles() {
         return;
     }
     let flat = String::from_utf8(out.stdout).unwrap();
-    assert!(flat.contains("pub mod glam"), "expected `pub mod glam` wrapper");
+    assert!(
+        flat.contains("pub mod glam"),
+        "expected `pub mod glam` wrapper"
+    );
 
     if let Err(stderr) = cargo_build_downstream(&flat, "") {
         let head: String = flat.lines().take(80).collect::<Vec<_>>().join("\n");
@@ -5310,15 +5527,24 @@ fn real_vendor_nalgebra_compiles() {
         user.path(),
         &[
             "--vendor",
-            "--external", "matrixmultiply",
-            "--external", "nalgebra-macros",
-            "--external", "num-traits",
-            "--external", "paste",
-            "--external", "proc-macro2",
-            "--external", "quote",
-            "--external", "num-bigint",
-            "--external", "approx",
-            "--external", "typenum",
+            "--external",
+            "matrixmultiply",
+            "--external",
+            "nalgebra-macros",
+            "--external",
+            "num-traits",
+            "--external",
+            "paste",
+            "--external",
+            "proc-macro2",
+            "--external",
+            "quote",
+            "--external",
+            "num-bigint",
+            "--external",
+            "approx",
+            "--external",
+            "typenum",
             "--stdout",
             "--no-banner",
         ],
@@ -5395,15 +5621,24 @@ fn real_vendor_rapier2d_compiles() {
             // either the proc-macro crate itself or a runtime crate
             // a proc-macro derive expands paths into. Pre-expansion
             // (V5) would unblock these. Categories A in EXTERNAL.md.
-            "--external", "nalgebra-macros",
-            "--external", "num-derive",
-            "--external", "num-traits",
-            "--external", "paste",
-            "--external", "proc-macro2",
-            "--external", "profiling-procmacros",
-            "--external", "quote",
-            "--external", "thiserror",
-            "--external", "thiserror-impl",
+            "--external",
+            "nalgebra-macros",
+            "--external",
+            "num-derive",
+            "--external",
+            "num-traits",
+            "--external",
+            "paste",
+            "--external",
+            "proc-macro2",
+            "--external",
+            "profiling-procmacros",
+            "--external",
+            "quote",
+            "--external",
+            "thiserror",
+            "--external",
+            "thiserror-impl",
             "--stdout",
             "--no-banner",
         ],
@@ -5414,9 +5649,18 @@ fn real_vendor_rapier2d_compiles() {
         return;
     }
     let flat = String::from_utf8(out.stdout).unwrap();
-    assert!(flat.contains("pub mod rapier2d"), "expected `pub mod rapier2d`");
-    assert!(flat.contains("pub mod parry2d"), "expected `pub mod parry2d`");
-    assert!(flat.contains("pub mod nalgebra"), "expected `pub mod nalgebra`");
+    assert!(
+        flat.contains("pub mod rapier2d"),
+        "expected `pub mod rapier2d`"
+    );
+    assert!(
+        flat.contains("pub mod parry2d"),
+        "expected `pub mod parry2d`"
+    );
+    assert!(
+        flat.contains("pub mod nalgebra"),
+        "expected `pub mod nalgebra`"
+    );
 
     let result = cargo_build_downstream(
         &flat,
@@ -5458,7 +5702,11 @@ fn minify_via_cli_shrinks_vendored_output_and_still_compiles() {
         .args(["--vendor", "--stdout", "--no-banner"])
         .output()
         .expect("spawn flatten plain");
-    assert!(plain.status.success(), "plain failed: {}", String::from_utf8_lossy(&plain.stderr));
+    assert!(
+        plain.status.success(),
+        "plain failed: {}",
+        String::from_utf8_lossy(&plain.stderr)
+    );
 
     // Minified vendored output
     let mini = std::process::Command::new(bin)
@@ -5466,7 +5714,11 @@ fn minify_via_cli_shrinks_vendored_output_and_still_compiles() {
         .args(["--vendor", "--stdout", "--no-banner", "--minify"])
         .output()
         .expect("spawn flatten minified");
-    assert!(mini.status.success(), "minified failed: {}", String::from_utf8_lossy(&mini.stderr));
+    assert!(
+        mini.status.success(),
+        "minified failed: {}",
+        String::from_utf8_lossy(&mini.stderr)
+    );
 
     let plain_len = plain.stdout.len();
     let mini_len = mini.stdout.len();
@@ -5764,10 +6016,7 @@ fn fmt_does_not_deadlock_on_large_input() {
     };
     let _ = stdout_thread.join();
     let _ = stderr_thread.join();
-    assert!(
-        status.success(),
-        "flatten --fmt failed on large input"
-    );
+    assert!(status.success(), "flatten --fmt failed on large input");
 }
 
 #[test]
@@ -5810,9 +6059,18 @@ fn flattens_own_lib() {
         );
     }
     // Sanity: known identifiers from each module made it through.
-    assert!(out.contains("scan_external_mods"), "scanner content missing");
-    assert!(out.contains("ExternalModule"), "source_file content missing");
-    assert!(out.contains("TargetSelector"), "lib top-level content missing");
+    assert!(
+        out.contains("scan_external_mods"),
+        "scanner content missing"
+    );
+    assert!(
+        out.contains("ExternalModule"),
+        "source_file content missing"
+    );
+    assert!(
+        out.contains("TargetSelector"),
+        "lib top-level content missing"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -5865,8 +6123,7 @@ fn vendor_expand_strips_third_party_derive_and_appends_impl() {
         expand: true,
         ..Default::default()
     };
-    let pkg =
-        vendor::vendor_package(dir.path(), &TargetSelector::Auto, &opts).expect("vendor");
+    let pkg = vendor::vendor_package(dir.path(), &TargetSelector::Auto, &opts).expect("vendor");
     let s = pkg.user_source.to_string();
 
     assert!(
@@ -5877,10 +6134,7 @@ fn vendor_expand_strips_third_party_derive_and_appends_impl() {
         !s.contains("Hello"),
         "third-party derive name and use stripped; got:\n{s}"
     );
-    assert!(
-        s.contains("impl G"),
-        "expanded impl appended; got:\n{s}"
-    );
+    assert!(s.contains("impl G"), "expanded impl appended; got:\n{s}");
     assert!(
         s.contains("hello from G"),
         "expansion content present; got:\n{s}"
@@ -5904,8 +6158,7 @@ fn vendor_expand_strips_use_of_proc_macro_crate() {
         expand: true,
         ..Default::default()
     };
-    let pkg =
-        vendor::vendor_package(dir.path(), &TargetSelector::Auto, &opts).expect("vendor");
+    let pkg = vendor::vendor_package(dir.path(), &TargetSelector::Auto, &opts).expect("vendor");
     let s = pkg.user_source.to_string();
     assert!(
         !s.contains("use derive_hello"),
@@ -5932,8 +6185,7 @@ fn vendor_expand_succeeds_in_strict_mode_with_proc_macro_dep() {
     // Sanity: without --expand, strict vendoring fails (or marks derive_hello
     // as Unvendorable).
     let plain_opts = VendorOptions::default();
-    let plain_result =
-        vendor::vendor_package(dir.path(), &TargetSelector::Auto, &plain_opts);
+    let plain_result = vendor::vendor_package(dir.path(), &TargetSelector::Auto, &plain_opts);
     assert!(
         plain_result.is_err(),
         "without --expand, strict mode should refuse on proc-macro dep"
@@ -5975,8 +6227,7 @@ fn vendor_expand_strips_helper_attrs_when_owning_derive_inlined() {
         expand: true,
         ..Default::default()
     };
-    let pkg =
-        vendor::vendor_package(dir.path(), &TargetSelector::Auto, &opts).expect("vendor");
+    let pkg = vendor::vendor_package(dir.path(), &TargetSelector::Auto, &opts).expect("vendor");
     let s = pkg.user_source.to_string();
     assert!(
         !s.contains("#[hello"),
@@ -5993,7 +6244,10 @@ fn vendor_expand_strips_helper_attrs_when_owning_derive_inlined() {
         .arg(&out_bin)
         .status()
         .expect("spawn rustc");
-    assert!(status.success(), "output failed to compile after helper-attr strip");
+    assert!(
+        status.success(),
+        "output failed to compile after helper-attr strip"
+    );
     let out = std::process::Command::new(&out_bin).output().expect("run");
     assert!(String::from_utf8_lossy(&out.stdout).contains("hello from G"));
 }
@@ -6019,8 +6273,7 @@ fn vendor_expand_inlines_attr_macro() {
         expand: true,
         ..Default::default()
     };
-    let pkg =
-        vendor::vendor_package(dir.path(), &TargetSelector::Auto, &opts).expect("vendor");
+    let pkg = vendor::vendor_package(dir.path(), &TargetSelector::Auto, &opts).expect("vendor");
     let s = pkg.user_source.to_string();
     assert!(
         s.contains("pub const MARKER: bool = true"),
@@ -6067,8 +6320,7 @@ fn vendor_expand_inlines_bang_macro() {
         expand: true,
         ..Default::default()
     };
-    let pkg =
-        vendor::vendor_package(dir.path(), &TargetSelector::Auto, &opts).expect("vendor");
+    let pkg = vendor::vendor_package(dir.path(), &TargetSelector::Auto, &opts).expect("vendor");
     let s = pkg.user_source.to_string();
     assert!(
         s.contains("pub const ANSWER: i32 = 42"),
@@ -6120,8 +6372,7 @@ fn vendor_expand_output_compiles_via_rustc() {
         expand: true,
         ..Default::default()
     };
-    let pkg =
-        vendor::vendor_package(dir.path(), &TargetSelector::Auto, &opts).expect("vendor");
+    let pkg = vendor::vendor_package(dir.path(), &TargetSelector::Auto, &opts).expect("vendor");
 
     let out_dir = tempfile::tempdir().unwrap();
     let out_rs = out_dir.path().join("flat.rs");
@@ -6135,7 +6386,10 @@ fn vendor_expand_output_compiles_via_rustc() {
         .arg(&out_bin)
         .status()
         .expect("spawn rustc");
-    assert!(status.success(), "flattened+expanded output failed to compile");
+    assert!(
+        status.success(),
+        "flattened+expanded output failed to compile"
+    );
 
     let out = std::process::Command::new(&out_bin)
         .output()
@@ -6267,7 +6521,13 @@ fn vendor_expand_deep_output_compiles_via_rustc() {
     let dir = make_middle_dep_fixture();
     let out = run_flatten_capture(
         &dir.path().join("user"),
-        &["--vendor", "--expand", "--expand-deep", "--no-banner", "--stdout"],
+        &[
+            "--vendor",
+            "--expand",
+            "--expand-deep",
+            "--no-banner",
+            "--stdout",
+        ],
     );
     assert!(
         out.status.success(),

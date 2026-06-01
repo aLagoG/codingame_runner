@@ -60,10 +60,7 @@ mod tests {
         // Pre-sort guarantees the apply order matches the input order
         // when iterating in reverse — so even if caller passes them out
         // of source order, the result is correct.
-        let edits = vec![
-            (6..11, "world".to_string()),
-            (0..5, "HELLO".to_string()),
-        ];
+        let edits = vec![(6..11, "world".to_string()), (0..5, "HELLO".to_string())];
         assert_eq!(apply_simple_edits("hello there", edits), "HELLO world");
     }
 
@@ -71,10 +68,7 @@ mod tests {
     fn multiple_non_overlapping_passed_unsorted() {
         // Same edits as above, passed in source order. Should still
         // sort + apply back-to-front correctly.
-        let edits = vec![
-            (0..5, "HELLO".to_string()),
-            (6..11, "world".to_string()),
-        ];
+        let edits = vec![(0..5, "HELLO".to_string()), (6..11, "world".to_string())];
         assert_eq!(apply_simple_edits("hello there", edits), "HELLO world");
     }
 
@@ -88,10 +82,7 @@ mod tests {
     fn replacement_with_different_length() {
         // Apply order is back-to-front so lengthening one edit does
         // not shift another's indices.
-        let edits = vec![
-            (0..5, "HI".to_string()),
-            (6..11, "EVERYBODY".to_string()),
-        ];
+        let edits = vec![(0..5, "HI".to_string()), (6..11, "EVERYBODY".to_string())];
         assert_eq!(apply_simple_edits("hello world", edits), "HI EVERYBODY");
     }
 }

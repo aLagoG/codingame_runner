@@ -109,7 +109,11 @@ enum SpliceKind {
         /// Applied to each cfg-gated mod block so the multi-splice
         /// preserves the original visibility.
         vis: String,
-        candidates: Vec<(Option<proc_macro2::TokenStream>, SourceFile, String /* display */)>,
+        candidates: Vec<(
+            Option<proc_macro2::TokenStream>,
+            SourceFile,
+            String, /* display */
+        )>,
     },
 }
 
@@ -244,10 +248,7 @@ impl SourceFile {
         // build-script-generated content like thiserror's
         // `OUT_DIR/private.rs` keeps unrewritten `crate::Foo` paths and
         // fails to resolve once wrapped in `pub mod thiserror`.)
-        let containing_dir = file_path
-            .parent()
-            .unwrap_or(Path::new(""))
-            .to_path_buf();
+        let containing_dir = file_path.parent().unwrap_or(Path::new("")).to_path_buf();
         let raw = expand_include_macros(&raw, &containing_dir, options.out_dir.as_deref(), 0)?;
         // Inline `mod NAME;` declarations that appear INSIDE macro
         // invocations (tokio's `cfg_io_driver! { mod io; … }` etc.).
@@ -299,20 +300,13 @@ impl SourceFile {
             //     would always pick the windows-only file.
             let multi: Vec<(Option<proc_macro2::TokenStream>, PathBuf)> =
                 resolve_path_attr_candidates(&decl, &containing_dir, &submod_search_dir);
-            let cfg_attr_count = decl
-                .path_attrs
-                .iter()
-                .filter(|(p, _)| p.is_some())
-                .count();
+            let cfg_attr_count = decl.path_attrs.iter().filter(|(p, _)| p.is_some()).count();
             if cfg_attr_count >= 1
                 && multi.len() >= 1
                 && let Some(attrs_range) = decl.path_attrs_range.clone()
             {
-                let mut candidates: Vec<(
-                    Option<proc_macro2::TokenStream>,
-                    SourceFile,
-                    String,
-                )> = Vec::new();
+                let mut candidates: Vec<(Option<proc_macro2::TokenStream>, SourceFile, String)> =
+                    Vec::new();
                 for (pred, target) in &multi {
                     let display_path = display_for(target, crate_root);
                     let source = SourceFile::from_file_with_root_inner(
@@ -328,10 +322,7 @@ impl SourceFile {
                 // exists. This handles the common "exception
                 // for Windows, default for everything else"
                 // pattern used by rustix and others.
-                let has_unconditional_path = decl
-                    .path_attrs
-                    .iter()
-                    .any(|(p, _)| p.is_none());
+                let has_unconditional_path = decl.path_attrs.iter().any(|(p, _)| p.is_none());
                 if !has_unconditional_path {
                     let fallback_path: Option<PathBuf> = {
                         let mut search = submod_search_dir.to_path_buf();
@@ -353,18 +344,14 @@ impl SourceFile {
                         // Skip if it's the same file as one of the
                         // cfg_attr candidates (avoid duplicate mod
                         // bodies).
-                        let already_listed = multi
-                            .iter()
-                            .any(|(_, p)| p == &fallback);
+                        let already_listed = multi.iter().any(|(_, p)| p == &fallback);
                         if !already_listed {
                             // Build `not(any(pred1, pred2, ...))`
                             // from the cfg_attr predicates.
                             let preds: Vec<String> = decl
                                 .path_attrs
                                 .iter()
-                                .filter_map(|(p, _)| {
-                                    p.as_ref().map(|t| t.to_string())
-                                })
+                                .filter_map(|(p, _)| p.as_ref().map(|t| t.to_string()))
                                 .collect();
                             let neg_pred_str = if preds.len() == 1 {
                                 format!("not({})", preds[0])
@@ -480,9 +467,7 @@ impl SourceFile {
                 .flat_map(|m| -> Box<dyn Iterator<Item = ModuleTreeNode>> {
                     match &m.kind {
                         SpliceKind::External(source, display_path) => {
-                            Box::new(std::iter::once(
-                                source.tree(display_path.clone()),
-                            ))
+                            Box::new(std::iter::once(source.tree(display_path.clone())))
                         }
                         SpliceKind::SkippedCfg(_) => Box::new(std::iter::empty()),
                         SpliceKind::MultiCfg { candidates, .. } => Box::new(
@@ -540,7 +525,11 @@ impl SourceFile {
                          on this build target */ }}"
                     )?;
                 }
-                SpliceKind::MultiCfg { mod_name, vis, candidates } => {
+                SpliceKind::MultiCfg {
+                    mod_name,
+                    vis,
+                    candidates,
+                } => {
                     // Replace `[#[cfg_attr(_, path = ...)]]* (pub)?
                     // mod NAME;` with one `#[cfg(PRED)] (pub)? mod
                     // NAME { contents }` block per candidate. The
@@ -560,10 +549,7 @@ impl SourceFile {
                         if let Some(pred_tokens) = pred {
                             writeln!(w, "#[cfg({})]", pred_tokens)?;
                         }
-                        writeln!(
-                            w,
-                            "{vis_prefix}mod {mod_name} {{ // === {display_path} ===",
-                        )?;
+                        writeln!(w, "{vis_prefix}mod {mod_name} {{ // === {display_path} ===",)?;
                         source.write_to(w)?;
                         writeln!(w, "\n}} // === end {display_path} ===")?;
                     }
@@ -598,7 +584,10 @@ impl fmt::Display for SourceFile {
             }
         }
 
-        let mut adapter = Adapter { inner: f, err: None };
+        let mut adapter = Adapter {
+            inner: f,
+            err: None,
+        };
         match self.write_to(&mut adapter) {
             Ok(()) => Ok(()),
             Err(_) => Err(adapter.err.unwrap_or(fmt::Error)),
@@ -613,11 +602,7 @@ impl fmt::Display for SourceFile {
 /// - `#[path]` on a mod nested inside inline `mod` blocks is relative
 ///   to the file's *submod search dir* + each inline mod name as a
 ///   directory component.
-fn path_attr_base(
-    decl: &ModDecl,
-    containing_dir: &Path,
-    submod_search_dir: &Path,
-) -> PathBuf {
+fn path_attr_base(decl: &ModDecl, containing_dir: &Path, submod_search_dir: &Path) -> PathBuf {
     if decl.inline_path.is_empty() {
         containing_dir.to_path_buf()
     } else {
@@ -816,9 +801,7 @@ fn expand_include_macros(
             //   2. `include!(concat!(env!("OUT_DIR"), "/file.rs"))` —
             //      the conventional pattern for build-script-generated
             //      source. Only resolvable when `out_dir` is set.
-            let resolved_path = if let Ok(lit) =
-                syn::parse2::<syn::LitStr>(mac.tokens.clone())
-            {
+            let resolved_path = if let Ok(lit) = syn::parse2::<syn::LitStr>(mac.tokens.clone()) {
                 self.dir.join(lit.value())
             } else if let Some(out_dir) = self.out_dir
                 && let Some(rel) = parse_concat_out_dir(&mac.tokens)
@@ -836,7 +819,11 @@ fn expand_include_macros(
                         context: format!(
                             "Failed reading `{}` for {} macro",
                             resolved_path.display(),
-                            if is_include { "include!" } else { "include_str!" }
+                            if is_include {
+                                "include!"
+                            } else {
+                                "include_str!"
+                            }
                         ),
                         source: e,
                     });
@@ -848,12 +835,7 @@ fn expand_include_macros(
                     .parent()
                     .unwrap_or(Path::new(""))
                     .to_path_buf();
-                match expand_include_macros(
-                    &contents,
-                    &inner_dir,
-                    self.out_dir,
-                    self.depth + 1,
-                ) {
+                match expand_include_macros(&contents, &inner_dir, self.out_dir, self.depth + 1) {
                     Ok(s) => s,
                     Err(e) => {
                         self.err = Some(e);
@@ -1020,18 +1002,10 @@ fn inline_mods_inside_macros_inner(
             let Ok(contents) = fs::read_to_string(target) else {
                 continue;
             };
-            let target_dir = target
-                .parent()
-                .unwrap_or(Path::new(""))
-                .to_path_buf();
+            let target_dir = target.parent().unwrap_or(Path::new("")).to_path_buf();
             let target_kind = FileKind::from_file(target);
-            let processed = inline_mods_inside_macros_inner(
-                &contents,
-                &target_dir,
-                target_kind,
-                target,
-                true,
-            );
+            let processed =
+                inline_mods_inside_macros_inner(&contents, &target_dir, target_kind, target, true);
             if let Some(pred_tokens) = pred {
                 out.push_str(&format!("\n#[cfg({})]\n", pred_tokens));
             } else {
@@ -1058,7 +1032,10 @@ fn inline_mods_inside_macros_inner(
     fn collect_path_attrs_before(
         toks: &[TokenTree],
         before: usize,
-    ) -> (Vec<(Option<proc_macro2::TokenStream>, String)>, Option<usize>) {
+    ) -> (
+        Vec<(Option<proc_macro2::TokenStream>, String)>,
+        Option<usize>,
+    ) {
         let mut paths: Vec<(Option<proc_macro2::TokenStream>, String)> = Vec::new();
         let mut first_attr_start: Option<usize> = None;
         // Walk backward in pairs of (Punct(#), Group([attr...])).
@@ -1121,9 +1098,7 @@ fn inline_mods_inside_macros_inner(
             let mut after_comma: Vec<TokenTree> = Vec::new();
             let mut seen_comma = false;
             for tt in stream {
-                if !seen_comma
-                    && matches!(&tt, TokenTree::Punct(p) if p.as_char() == ',')
-                {
+                if !seen_comma && matches!(&tt, TokenTree::Punct(p) if p.as_char() == ',') {
                     seen_comma = true;
                     continue;
                 }
@@ -1185,14 +1160,8 @@ fn inline_mods_inside_macros_inner(
                 && matches!(toks.get(i + 3), Some(TokenTree::Group(g)) if g.delimiter() == proc_macro2::Delimiter::Brace);
             if is_macro_rules_def {
                 if let Some(TokenTree::Group(body)) = toks.get(i + 3) {
-                    let arm_toks: Vec<TokenTree> =
-                        body.stream().into_iter().collect();
-                    walk_macro_rules_arms(
-                        &arm_toks,
-                        containing_dir,
-                        submod_search_dir,
-                        edits,
-                    );
+                    let arm_toks: Vec<TokenTree> = body.stream().into_iter().collect();
+                    walk_macro_rules_arms(&arm_toks, containing_dir, submod_search_dir, edits);
                 }
                 i += 4;
                 continue;
@@ -1220,13 +1189,7 @@ fn inline_mods_inside_macros_inner(
                 //     macro can't accept.
                 if !matches!(macro_name.as_str(), "cfg_if") {
                     if let Some(TokenTree::Group(g)) = toks.get(i + 2) {
-                        walk(
-                            g.stream(),
-                            true,
-                            containing_dir,
-                            submod_search_dir,
-                            edits,
-                        );
+                        walk(g.stream(), true, containing_dir, submod_search_dir, edits);
                     }
                 }
                 i += 3;
@@ -1257,13 +1220,7 @@ fn inline_mods_inside_macros_inner(
                 };
                 if !matches!(last_seg.as_str(), "cfg_if") {
                     if let Some(TokenTree::Group(g)) = toks.get(i + 5) {
-                        walk(
-                            g.stream(),
-                            true,
-                            containing_dir,
-                            submod_search_dir,
-                            edits,
-                        );
+                        walk(g.stream(), true, containing_dir, submod_search_dir, edits);
                     }
                 }
                 i += 6;
@@ -1281,8 +1238,7 @@ fn inline_mods_inside_macros_inner(
                 // Look for `#[path = "P"]` / `#[cfg_attr(PRED, path =
                 // "P")]` attributes immediately preceding the `mod`
                 // keyword.
-                let (path_candidates, first_attr_start) =
-                    collect_path_attrs_before(&toks, i);
+                let (path_candidates, first_attr_start) = collect_path_attrs_before(&toks, i);
 
                 // Cross-target portability: when multiple cfg_attr-
                 // paths list per-platform alternatives (mio's
@@ -1313,18 +1269,13 @@ fn inline_mods_inside_macros_inner(
                 // would wipe the cfg attr too. For these single-
                 // path-attr cases, fall through to the legacy
                 // single-file splice that just replaces the `;`.
-                let has_cfg_attr_path = path_candidates
-                    .iter()
-                    .any(|(p, _)| p.is_some());
+                let has_cfg_attr_path = path_candidates.iter().any(|(p, _)| p.is_some());
                 if has_cfg_attr_path
                     && !multi_candidates.is_empty()
                     && let Some(start) = first_attr_start
                 {
                     let semi_end = p.span().byte_range().end;
-                    let splice = build_multi_cfg_mod_splice(
-                        &mod_name,
-                        &multi_candidates,
-                    );
+                    let splice = build_multi_cfg_mod_splice(&mod_name, &multi_candidates);
                     edits.push((start..semi_end, splice));
                     i += 3;
                     continue;
@@ -1357,21 +1308,14 @@ fn inline_mods_inside_macros_inner(
                             Some(alt)
                         } else {
                             let alt2 = containing_dir.join(fs_name).join("mod.rs");
-                            if alt2.is_file() {
-                                Some(alt2)
-                            } else {
-                                None
-                            }
+                            if alt2.is_file() { Some(alt2) } else { None }
                         }
                     };
                 }
                 if let Some(target) = resolved
                     && let Ok(contents) = fs::read_to_string(&target)
                 {
-                    let target_dir = target
-                        .parent()
-                        .unwrap_or(Path::new(""))
-                        .to_path_buf();
+                    let target_dir = target.parent().unwrap_or(Path::new("")).to_path_buf();
                     let target_kind = FileKind::from_file(&target);
                     let processed = inline_mods_inside_macros_inner(
                         &contents,
@@ -1710,9 +1654,7 @@ fn cfg_bare_ident_known_true(name: &str) -> bool {
 
 /// Split a token stream on top-level commas. Used to enumerate the
 /// arguments of `all(...)` / `any(...)` cfg predicates.
-fn split_top_level_commas(
-    stream: &proc_macro2::TokenStream,
-) -> Vec<proc_macro2::TokenStream> {
+fn split_top_level_commas(stream: &proc_macro2::TokenStream) -> Vec<proc_macro2::TokenStream> {
     use proc_macro2::TokenTree;
     let mut out = Vec::new();
     let mut current = proc_macro2::TokenStream::new();

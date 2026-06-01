@@ -12,9 +12,7 @@
 
 use std::sync::OnceLock;
 
-use fantastic_bits_defs::{
-    Entity, EntityKind, InitialInputRef, TurnOutput, TurnRef, WizardAction,
-};
+use fantastic_bits_defs::{Entity, EntityKind, InitialInputRef, TurnOutput, TurnRef, WizardAction};
 
 /// Map / goal constants — duplicated here (instead of depending on
 /// `fantastic_bits_game`) so the bot stays a standalone leaf crate
@@ -81,7 +79,7 @@ fn sq_dist(ax: i32, ay: i32, bx: i32, by: i32) -> i64 {
     dx * dx + dy * dy
 }
 
-common::ffi_bot!(fantastic_bits_defs::Ffi, decide, on_init);
+bot_common::ffi_bot!(fantastic_bits_defs::Ffi, decide, on_init);
 
 #[cfg(test)]
 mod tests {
@@ -168,8 +166,8 @@ mod tests {
             my_wizard(0, 1000, GOAL_Y, false),
             my_wizard(1, 2000, GOAL_Y, false),
             snaffle(10, 9000, GOAL_Y, false),
-            snaffle(11, 5000, GOAL_Y, false),  // closer to wizard 0
-            snaffle(12, 12000, GOAL_Y, true),  // held — skipped
+            snaffle(11, 5000, GOAL_Y, false), // closer to wizard 0
+            snaffle(12, 12000, GOAL_Y, true), // held — skipped
         ];
         let out = decide_with_team(turn(&entities), 0);
         assert_eq!(out.primary.kind, ActionKind::Move);

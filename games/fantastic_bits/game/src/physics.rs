@@ -118,13 +118,7 @@ pub struct WallHit {
 /// Returns `None` when the quadratic has no real root or relative
 /// velocity is zero. May return a negative `t` when the discs are
 /// already overlapping and separating — the caller filters `t > 0`.
-pub fn toi_disc_disc(
-    a_pos: V2,
-    a_vel: V2,
-    b_pos: V2,
-    b_vel: V2,
-    target_dist: f64,
-) -> Option<f64> {
+pub fn toi_disc_disc(a_pos: V2, a_vel: V2, b_pos: V2, b_vel: V2, target_dist: f64) -> Option<f64> {
     let dv = a_vel.sub(b_vel);
     let d = a_pos.sub(b_pos);
     let aa = dv.len_sq();
@@ -147,13 +141,7 @@ pub fn toi_disc_disc(
 /// of the playing field. Returns the earliest wall hit (smallest
 /// non-negative t). Field is `[0, width] × [0, height]`; the disc
 /// touches a wall when its centre is `radius` units from that wall.
-pub fn toi_disc_wall(
-    pos: V2,
-    vel: V2,
-    radius: f64,
-    width: f64,
-    height: f64,
-) -> Option<WallHit> {
+pub fn toi_disc_wall(pos: V2, vel: V2, radius: f64, width: f64, height: f64) -> Option<WallHit> {
     let mut best: Option<WallHit> = None;
 
     let mut consider = |side: WallSide, t: f64| {
@@ -309,7 +297,12 @@ pub fn resolve_dyn_dyn(
         (V2::ZERO, V2::ZERO)
     };
 
-    DynDynResolution { dv_a, dv_b, dp_a, dp_b }
+    DynDynResolution {
+        dv_a,
+        dv_b,
+        dp_a,
+        dp_b,
+    }
 }
 
 /// Result of a dyn/static collision: Δvel for the moving body, Δpos
@@ -561,8 +554,14 @@ mod tests {
 
     #[test]
     fn wall_flips_normal_component() {
-        let (new_vel, _) =
-            resolve_wall(WallSide::Right, v(15990.0, 3750.0), v(50.0, 30.0), 150.0, 16000.0, 7500.0);
+        let (new_vel, _) = resolve_wall(
+            WallSide::Right,
+            v(15990.0, 3750.0),
+            v(50.0, 30.0),
+            150.0,
+            16000.0,
+            7500.0,
+        );
         assert_eq!(new_vel.x, -50.0);
         assert_eq!(new_vel.y, 30.0);
     }
@@ -571,8 +570,14 @@ mod tests {
     fn wall_corrects_penetration() {
         // Disc has overshot the right wall by 5 units; correction
         // pushes it 10 units left (2 * 5).
-        let (_, dp) =
-            resolve_wall(WallSide::Right, v(15855.0, 3750.0), v(50.0, 0.0), 150.0, 16000.0, 7500.0);
+        let (_, dp) = resolve_wall(
+            WallSide::Right,
+            v(15855.0, 3750.0),
+            v(50.0, 0.0),
+            150.0,
+            16000.0,
+            7500.0,
+        );
         assert!((dp.x - (-10.0)).abs() < 1e-9);
     }
 

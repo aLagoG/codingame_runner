@@ -5,7 +5,10 @@ edition.workspace = true
 
 [dependencies]
 fantastic_bits_defs.workspace = true
-common.workspace = true
+# Deliberately `bot_common`, not `common` — `common` pulls in serde /
+# thiserror / libloading via the runner side, which the flatten step
+# can't vendor. `bot_common` is the trimmed bot-facing surface.
+bot_common.workspace = true
 anyhow.workspace = true
 
 [lib]

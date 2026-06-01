@@ -60,6 +60,7 @@ where
         outcome,
         stats,
         replay,
+        ..
     } = run_match::<G>(num_players, seed, players, RunConfig::default())?;
 
     println!("outcome: {outcome:?}");

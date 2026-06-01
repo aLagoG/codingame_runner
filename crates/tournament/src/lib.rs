@@ -346,6 +346,7 @@ fn run_match_typed<G: FfiGame + 'static>(
         outcome,
         stats,
         replay,
+        ..
     } = run_match::<G>(num_players, seed, players, RunConfig::default())
         .with_context(|| format!("running match for game {game_name}"))?;
 

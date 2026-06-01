@@ -12,7 +12,7 @@ use fantastic_bits_game::{
     SNAFFLE_RADIUS, WIDTH, WIZARD_RADIUS,
 };
 use macroquad::prelude::*;
-use viz::{CellGrid, Replay, VizCtx, Visualize, color_chip, egui, to_egui};
+use viz::{CellGrid, Replay, Visualize, VizCtx, color_chip, egui, to_egui};
 
 /// Pixels per `WORLD_PER_CELL` world units. `grid_size()` returns the
 /// playing field divided by this constant; the engine's `CellGrid`
@@ -60,7 +60,13 @@ impl Visualize for FantasticBitsViz {
         let left_tl = to_screen(0.0, GOAL_Y_TOP as f64);
         let mouth_w = (POLE_RADIUS as f32) * scale;
         let mouth_h = (mouth_height as f32) * scale;
-        draw_rectangle(left_tl.x - mouth_w, left_tl.y, mouth_w, mouth_h, GOAL_MOUTH_COLOUR);
+        draw_rectangle(
+            left_tl.x - mouth_w,
+            left_tl.y,
+            mouth_w,
+            mouth_h,
+            GOAL_MOUTH_COLOUR,
+        );
         let right_tl = to_screen(WIDTH as f64, GOAL_Y_TOP as f64);
         draw_rectangle(right_tl.x, right_tl.y, mouth_w, mouth_h, GOAL_MOUTH_COLOUR);
 

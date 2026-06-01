@@ -1,0 +1,9 @@
+[package]
+name = "bot_common"
+version.workspace = true
+edition.workspace = true
+description = "Bot-facing trait + macro surface shared across every CodinGame bot. Deliberately tiny dep footprint (anyhow + std) so flattened bots stay vendor-clean for CodinGame submission."
+
+[dependencies]
+# Vendor-friendly. Used for `ReadFrom::read_from` return types.
+anyhow.workspace = true

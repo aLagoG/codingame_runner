@@ -11,9 +11,9 @@ pub fn decide(turn: TurnRef<'_>) -> TurnOutput {
     // When the runner enables counters (--counters), these
     // surface in the tournament report; otherwise they're a cheap
     // no-op (one atomic load + null check).
-    common::emit_counter("players_alive", turn.number_of_players as f64);
-    common::emit_counter("my_seat", turn.player_number as f64);
+    bot_common::emit_counter("players_alive", turn.number_of_players as f64);
+    bot_common::emit_counter("my_seat", turn.player_number as f64);
     TurnOutput::default()
 }
 
-common::ffi_bot!(tron_defs::Ffi, decide);
+bot_common::ffi_bot!(tron_defs::Ffi, decide);
