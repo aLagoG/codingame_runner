@@ -1,4 +1,4 @@
-// Fantastic Bits — v1 strategy.
+// Fantastic Bits — v1.5 strategy.
 //
 // Single source of truth for the bot's per-turn logic, shared by:
 //   * `bot.cpp` — FFI wrapper consumed by the runner / tournament.
@@ -6,10 +6,16 @@
 //     `cpp_flatten` bundles for CodinGame submission (cpp_flatten
 //     inlines this header into the bundled output).
 //
-// Line-by-line port of the original C# v1 bot — *with two corrected
-// Flipendo physics bugs noted at the call site*. The corrections are
-// the only intentional divergence from the C# tic-for-tic translation;
-// preserve them when porting further fixes.
+// Started as a line-by-line port of the original C# v1 bot. Diffs
+// from the C# original (preserve when porting further fixes):
+//   * Two corrected Flipendo physics bugs noted at the call site
+//     (symmetric wall radii + correct bounce x-formula). [from v1]
+//   * Post-aware Flipendo: a cast is rejected unless the snaffle's
+//     trajectory clears both goal posts by at least
+//     `SNAFFLE_RADIUS + POLE_RADIUS + POST_PAD` (perpendicular
+//     distance from the trajectory line to each post). v1 only
+//     checked the y-crossing inside a tight goal-mouth window, which
+//     accepted shots that grazed a post and bounced off. [new in v1.5]
 //
 // Decision order each turn:
 //   1. FLIPENDO on a snaffle whose line-of-fire (direct or one wall
@@ -33,7 +39,7 @@
 #include <utility>
 #include <vector>
 
-namespace fantastic_bits_v1 {
+namespace fantastic_bits_v1_cpp {
 
 // Bot-wide state, set by `on_init` (called once at match start) and
 // read by `decide` every tick. Owned by the strategy so both bot.cpp
@@ -129,6 +135,42 @@ inline WizardAction make_spell(ActionKind kind, int target_id) {
     return WizardAction{kind, 0, 0, 0, target_id};
 }
 
+// --- Post-aware Flipendo geometry (v1.5) ---
+// Mirrors the engine: goal posts are solid circular bumpers at the
+// four mouth corners (radius `POLE_RADIUS`); snaffles collide with a
+// post when their centres come within `SNAFFLE_RADIUS + POLE_RADIUS`.
+// The Flipendo check below rejects any cast whose trajectory line
+// passes closer to a target-side post than that distance plus a
+// small safety pad. Constants kept in sync with the Rust engine
+// (`fantastic_bits_game::lib.rs`).
+inline constexpr int   POLE_RADIUS    = 300;
+inline constexpr int   SNAFFLE_RADIUS = 150;
+inline constexpr int   POST_PAD       = 60;   // safety wiggle room
+inline constexpr int   GOAL_Y_TOP     = 1750;
+inline constexpr int   GOAL_Y_BOTTOM  = 5750;
+inline constexpr float POST_CLEAR     =
+    static_cast<float>(SNAFFLE_RADIUS + POLE_RADIUS + POST_PAD);
+
+// Perpendicular distance from the LINE through (sx, sy) with
+// direction (dx, dy) to point (px, py). Returns +inf for a
+// degenerate direction so callers can compare against `POST_CLEAR`
+// without special-casing.
+inline float perp_dist(float sx, float sy, float dx, float dy, float px, float py) {
+    const float len = std::hypot(dx, dy);
+    if (len < 1e-3f) return std::numeric_limits<float>::infinity();
+    return std::fabs(dx * (py - sy) - dy * (px - sx)) / len;
+}
+
+// True iff the trajectory line through (sx, sy) with direction
+// (dx, dy) clears BOTH posts of the goal at x = `goal_x`. Used by
+// both Flipendo branches (direct + post-bounce) — the bounce branch
+// passes the reflected segment's origin and slope.
+inline bool flipendo_clears_posts(float sx, float sy, float dx, float dy, int goal_x) {
+    const float gx = static_cast<float>(goal_x);
+    return perp_dist(sx, sy, dx, dy, gx, GOAL_Y_TOP)    > POST_CLEAR
+        && perp_dist(sx, sy, dx, dy, gx, GOAL_Y_BOTTOM) > POST_CLEAR;
+}
+
 // The strategy. Pure: takes the parsed entity lists + score/magic +
 // stateful guards (my_team, petr), returns the two-wizard output.
 inline TurnOutput decide_from_entities(std::vector<LocalEntity>& wizards,
@@ -188,7 +230,17 @@ inline TurnOutput decide_from_entities(std::vector<LocalEntity>& wizards,
                 float goal_dx = goals[my_team][0] - sn.x2;
                 float slope = dy / dx;
                 float dest_y = sn.y2 + slope * goal_dx;
-                if (std::fabs(dest_y - goals[my_team][1]) < GOAL_SIZE / 2.0f) {
+                // v1.5: replace v1's tight `|dest_y - goal_y| < 1750`
+                // check (which let through shots grazing a post) with
+                // "trajectory crosses inside the mouth AND clears
+                // both posts by `POST_CLEAR`". Same intent, but the
+                // perp-distance check catches steep angles where v1's
+                // y-only check was wrong.
+                const bool in_mouth =
+                    dest_y > GOAL_Y_TOP && dest_y < GOAL_Y_BOTTOM;
+                if (in_mouth &&
+                    flipendo_clears_posts(sn.x2, sn.y2, dx, dy,
+                                          goals[my_team][0])) {
                     wiz->action = make_spell(ActionKind::Flipendo, sn.id);
                     wiz->target_id = sn.id;
                     break;
@@ -212,8 +264,20 @@ inline TurnOutput decide_from_entities(std::vector<LocalEntity>& wizards,
                     float dest_x = sn.x2 + (dest_y - sn.y2) * dx / dy;
                     goal_dx = goals[my_team][0] - dest_x;
                     slope = -dy / dx;
+                    const float seg_b_sx = dest_x;
+                    const float seg_b_sy = dest_y;
+                    const float seg_b_dx = dx;          // x-direction preserved
+                    const float seg_b_dy = -dy;         // y-direction reflected by the wall
                     dest_y = dest_y + slope * goal_dx;
-                    if (std::fabs(dest_y - goals[my_team][1]) < GOAL_SIZE / 2.0f) {
+                    // v1.5: same post-clear check as the direct branch,
+                    // applied to the post-bounce segment B (from the
+                    // wall-bounce point with the reflected slope).
+                    const bool in_mouth =
+                        dest_y > GOAL_Y_TOP && dest_y < GOAL_Y_BOTTOM;
+                    if (in_mouth &&
+                        flipendo_clears_posts(seg_b_sx, seg_b_sy,
+                                              seg_b_dx, seg_b_dy,
+                                              goals[my_team][0])) {
                         wiz->action = make_spell(ActionKind::Flipendo, sn.id);
                         wiz->target_id = sn.id;
                         break;
@@ -437,4 +501,4 @@ inline TurnOutput decide(const cgio::TurnRef& turn) {
     return decide_from_entities(wizards, opponents, snaffles, bludgers, turn.my_magic);
 }
 
-}  // namespace fantastic_bits_v1
+}  // namespace fantastic_bits_v1_cpp

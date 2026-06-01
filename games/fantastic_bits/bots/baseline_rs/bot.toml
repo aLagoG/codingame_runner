@@ -1,0 +1,4 @@
+name = "baseline"
+lang = "rs"
+description = "baseline Rust — MOVE to closest snaffle, THROW at goal when holding"
+champion = true

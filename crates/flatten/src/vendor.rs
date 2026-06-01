@@ -4459,11 +4459,7 @@ fn collect_implicit_borrow_match_rewrites(
             let syn::Expr::Reference(r) = &*m.expr else {
                 return;
             };
-            let prefix = if r.mutability.is_some() {
-                "&mut "
-            } else {
-                "&"
-            };
+            let prefix = if r.mutability.is_some() { "&mut " } else { "&" };
             for arm in &m.arms {
                 if !pat_needs_ref_wrap(&arm.pat) {
                     continue;

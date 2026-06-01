@@ -36,12 +36,52 @@ struct Cli {
 enum Command {
     Run(RunArgs),
     Report(ReportArgs),
+    Compare(CompareArgs),
     /// Internal: play a schedule chunk read from stdin and write
     /// JSONL results to stdout. Not for direct use — `run --parallel
     /// N` spawns N of these. `clap`'s `hide = true` keeps it out of
     /// `--help`.
     #[command(hide = true)]
     Worker(WorkerArgs),
+}
+
+#[derive(Parser)]
+#[command(
+    about = "Resolve N bots by name, build them, play a round-robin, print a focused verdict.",
+    long_about = "\
+Wraps `run` + `report` for the most common case: \"is candidate X better than baseline Y?\". \
+Bot names are stems (e.g. `v1`, `baseline`) — `compare` reads each bot's `bot.toml` to \
+figure out which language variant exists and resolves the dylib path under `target/release/`. \
+Re-runs `cargo build --release -p <crate>` for every bot (incremental, so a no-op when up-to-date). \
+For N=2 prints a single verdict line + a \"need ≈ X more games\" epilogue when inconclusive; \
+for N≥3 prints a ranked table + pairwise verdict block.",
+)]
+struct CompareArgs {
+    /// Game to play.
+    #[arg(long)]
+    game: String,
+
+    /// Bot stems to compare (≥ 2). Each is auto-resolved to
+    /// `games/<game>/bots/<bot>_<lang>/` via `bot.toml`. If both rs
+    /// and cpp variants exist for the same stem, qualify the name
+    /// with `<bot>:rs` or `<bot>:cpp` to pick one.
+    #[arg(required = true, num_args = 2..)]
+    bots: Vec<String>,
+
+    /// Number of seeds to play. Each (bot-combination × seat
+    /// rotation) is played at every seed.
+    #[arg(long, default_value_t = 100)]
+    rounds: u32,
+
+    /// Players per match. Default 2; pass `--bots-per-match 4` for
+    /// 4-player games like tron.
+    #[arg(long, default_value_t = 2)]
+    bots_per_match: usize,
+
+    /// Skip the `cargo build --release` step. Useful when the dylibs
+    /// are already built and you want the fastest possible iteration.
+    #[arg(long)]
+    no_build: bool,
 }
 
 #[derive(Parser)]
@@ -142,6 +182,7 @@ fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Run(args) => cmd_run(args),
         Command::Report(args) => cmd_report(args),
+        Command::Compare(args) => cmd_compare(args),
         Command::Worker(args) => cmd_worker(args),
     }
 }
@@ -466,7 +507,95 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
     print_summary(&report);
     println!();
     print_matrix(&report);
+    println!();
+    print_pairwise_verdicts(&report);
     Ok(())
+}
+
+/// Print a "Pairwise verdicts" block — one row per unordered bot
+/// pair, ranking each row by the LEFT bot's effective win-rate so
+/// the strongest-vs-weakest comparisons sit at the top. For each
+/// pair: win-rate ± Wilson 95% CI, LOS, two-sided p-value, and a
+/// verdict ("significant (BETTER)" / "(WORSE)" / "inconclusive").
+fn print_pairwise_verdicts(report: &tournament::Report) {
+    use tournament::pairwise_stats::{PairStats, Verdict};
+
+    let names: Vec<String> = report.per_bot.keys().cloned().collect();
+    if names.len() < 2 {
+        return;
+    }
+
+    // Pre-compute every unordered pair's stats (orient A so its
+    // effective win-rate ≥ B's, so each row reads naturally as "A is
+    // (or isn't) better than B").
+    let mut rows: Vec<(String, String, PairStats)> = Vec::new();
+    for i in 0..names.len() {
+        for j in (i + 1)..names.len() {
+            let (a, b) = (&names[i], &names[j]);
+            let games = report
+                .pair_games
+                .get(&(a.clone(), b.clone()))
+                .copied()
+                .unwrap_or(0);
+            if games == 0 {
+                continue;
+            }
+            let wins_a = report
+                .pair_wins
+                .get(&(a.clone(), b.clone()))
+                .copied()
+                .unwrap_or(0);
+            let wins_b = report
+                .pair_wins
+                .get(&(b.clone(), a.clone()))
+                .copied()
+                .unwrap_or(0);
+            let draws = games.saturating_sub(wins_a + wins_b);
+            let stats = PairStats::compute(wins_a, wins_b, draws);
+            // Orient so A is the better side.
+            if stats.a_win_rate >= 0.5 {
+                rows.push((a.clone(), b.clone(), stats));
+            } else {
+                // Flip: recompute with B as A.
+                let flipped = PairStats::compute(wins_b, wins_a, draws);
+                rows.push((b.clone(), a.clone(), flipped));
+            }
+        }
+    }
+    // Sort: largest win-rate first, then by p (most-significant first).
+    rows.sort_by(|x, y| {
+        y.2.a_win_rate
+            .partial_cmp(&x.2.a_win_rate)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(x.2.p_value.partial_cmp(&y.2.p_value).unwrap_or(std::cmp::Ordering::Equal))
+    });
+
+    println!("Pairwise verdicts (95% CI, no Elo):");
+    let name_w = names.iter().map(|n| n.len()).max().unwrap_or(4);
+    for (a, b, s) in &rows {
+        let lo_pct = s.a_ci_95.0 * 100.0;
+        let hi_pct = s.a_ci_95.1 * 100.0;
+        // Half-width of the CI — what users actually read as "±".
+        let half = (hi_pct - lo_pct) / 2.0;
+        let verdict_glyph = match s.verdict {
+            Verdict::Better => "→ significant",
+            Verdict::Worse => "→ significant (WORSE)",
+            Verdict::Inconclusive => "→ inconclusive",
+        };
+        println!(
+            "  {a:<aw$} vs {b:<bw$}  {wr:>5.1}% ± {half:>4.1}%  \
+             LOS {los:>5.1}%  p={p:>6.3}  {verdict}",
+            a = a,
+            b = b,
+            aw = name_w,
+            bw = name_w,
+            wr = s.a_win_rate * 100.0,
+            half = half,
+            los = s.los * 100.0,
+            p = s.p_value,
+            verdict = verdict_glyph,
+        );
+    }
 }
 
 fn print_summary(report: &tournament::Report) {
@@ -627,4 +756,263 @@ fn print_matrix(report: &tournament::Report) {
         }
         println!();
     }
+}
+
+// ============================================================
+//  `compare` — focused N-bot A/B with verdicts
+// ============================================================
+
+/// One resolved bot — what its `bot.toml` says + where its dylib lives.
+struct ResolvedBot {
+    /// Short name used in the report (the bot stem, e.g. `v1_5`).
+    name: String,
+    /// `rs` or `cpp`.
+    lang: String,
+    /// Cargo crate name, e.g. `fantastic_bits_v1_5_cpp`.
+    crate_name: String,
+    /// Where the cdylib lives after `cargo build --release`.
+    dylib_path: PathBuf,
+}
+
+fn cmd_compare(args: CompareArgs) -> Result<()> {
+    anyhow::ensure!(args.bots.len() >= 2, "compare needs at least 2 bots");
+    let mut seen = BTreeSet::new();
+    for b in &args.bots {
+        if !seen.insert(b.clone()) {
+            bail!("duplicate bot: {b}");
+        }
+    }
+
+    // Resolve each bot name → ResolvedBot.
+    let resolved: Vec<ResolvedBot> = args
+        .bots
+        .iter()
+        .map(|spec| resolve_bot_for_compare(&args.game, spec))
+        .collect::<Result<_>>()?;
+
+    // Build (incremental; cargo no-ops when up-to-date).
+    if !args.no_build {
+        let crates: Vec<&str> = resolved.iter().map(|r| r.crate_name.as_str()).collect();
+        eprintln!("Building: {} (release)…", crates.join(", "));
+        let mut cmd = ProcCommand::new("cargo");
+        cmd.arg("build").arg("--release");
+        for c in &crates {
+            cmd.arg("-p").arg(c);
+        }
+        let status = cmd
+            .status()
+            .with_context(|| "spawning cargo build for compare")?;
+        anyhow::ensure!(status.success(), "cargo build failed (exit {status})");
+    }
+    // Verify every dylib actually exists post-build.
+    for r in &resolved {
+        anyhow::ensure!(
+            r.dylib_path.exists(),
+            "expected dylib not found: {} (pass --no-build to skip the build step \
+             only when you know the artifact is somewhere else)",
+            r.dylib_path.display(),
+        );
+    }
+
+    // Convert to BotSpec (the tournament's player handle).
+    let bot_specs: Vec<BotSpec> = resolved
+        .iter()
+        .map(|r| BotSpec {
+            name: r.name.clone(),
+            path: r.dylib_path.clone(),
+        })
+        .collect();
+
+    // Build the schedule. Reuse the `tournament run` logic — same
+    // seeds-and-rotations rules so `compare --rounds N` matches what
+    // `run --rounds N` would have done.
+    let seeds = assemble_seeds(&[], args.rounds as usize, false);
+    let cfg = ScheduleConfig {
+        bots_per_match: args.bots_per_match,
+        seeds,
+        rotate_seats: true,
+    };
+    let schedule = build_schedule(bot_specs.len(), &cfg)?;
+    anyhow::ensure!(
+        !schedule.is_empty(),
+        "empty schedule — check --bots-per-match (got {}) vs bot count ({})",
+        args.bots_per_match,
+        bot_specs.len(),
+    );
+
+    eprintln!(
+        "Playing {} matches of {} ({} bots × {}-per-match)…",
+        schedule.len(),
+        args.game,
+        bot_specs.len(),
+        args.bots_per_match,
+    );
+
+    // Play in-memory — no JSONL output, no temp file. Compare is a
+    // one-shot answer machine.
+    let mut records: Vec<MatchRecord> = Vec::with_capacity(schedule.len());
+    for (i, m) in schedule.iter().enumerate() {
+        let entries: Vec<BotSpec> = m.bot_idx.iter().map(|&j| bot_specs[j].clone()).collect();
+        let names: Vec<&str> = entries.iter().map(|b| b.name.as_str()).collect();
+        eprintln!(
+            "  [{:>4}/{}] seed={} {}",
+            i + 1,
+            schedule.len(),
+            m.seed,
+            names.join(" vs "),
+        );
+        let rec = tournament::run_match_named(&args.game, &entries, m.seed, false)
+            .with_context(|| format!("match {} ({})", i + 1, names.join(" vs ")))?;
+        records.push(rec);
+    }
+    let report = build_report(&records);
+
+    println!();
+    if bot_specs.len() == 2 {
+        print_compare_focused(&report, &bot_specs);
+    } else {
+        print_compare_ranking(&report, &bot_specs);
+    }
+    Ok(())
+}
+
+/// Find the cdylib for `<game>/<bot>[:<lang>]` and read its `bot.toml`
+/// to recover the language. Accepts `<bot>:rs` or `<bot>:cpp` as an
+/// explicit qualifier when both variants exist.
+fn resolve_bot_for_compare(game: &str, spec: &str) -> Result<ResolvedBot> {
+    let bots_dir = PathBuf::from("games").join(game).join("bots");
+    anyhow::ensure!(
+        bots_dir.exists(),
+        "no game at {} — is `{game}` the right name?",
+        bots_dir.display(),
+    );
+
+    // Parse `<bot>:<lang>` qualifier if present.
+    let (bot, explicit_lang): (&str, Option<&str>) = match spec.split_once(':') {
+        Some((b, "rs")) => (b, Some("rs")),
+        Some((b, "cpp")) => (b, Some("cpp")),
+        Some((_, other)) => bail!("unknown lang qualifier `:{other}` (expected `:rs` or `:cpp`)"),
+        None => (spec, None),
+    };
+
+    let rs_dir = bots_dir.join(format!("{bot}_rs"));
+    let cpp_dir = bots_dir.join(format!("{bot}_cpp"));
+    let lang: &str = match (explicit_lang, rs_dir.exists(), cpp_dir.exists()) {
+        (Some("rs"), true, _) => "rs",
+        (Some("cpp"), _, true) => "cpp",
+        (Some(want), _, _) => bail!(
+            "{bot}:{want} not found at games/{game}/bots/{bot}_{want}/",
+        ),
+        (None, true, false) => "rs",
+        (None, false, true) => "cpp",
+        (None, true, true) => bail!(
+            "{bot} has both rs and cpp variants — qualify as `{bot}:rs` or `{bot}:cpp`",
+        ),
+        (None, false, false) => bail!(
+            "no bot at games/{game}/bots/{bot}_rs/ or _cpp/",
+        ),
+    };
+
+    let crate_name = format!("{game}_{bot}_{lang}");
+    let dylib_path = PathBuf::from("target").join("release").join(format!(
+        "{}{}.{}",
+        std::env::consts::DLL_PREFIX,
+        crate_name,
+        std::env::consts::DLL_EXTENSION,
+    ));
+    Ok(ResolvedBot {
+        name: bot.to_string(),
+        lang: lang.to_string(),
+        crate_name,
+        dylib_path,
+    })
+}
+
+/// 2-bot single-verdict output. Resolves which bot the report
+/// orients as "stronger", prints one line + a rounds-needed
+/// epilogue when inconclusive.
+fn print_compare_focused(report: &tournament::Report, bot_specs: &[BotSpec]) {
+    use tournament::pairwise_stats::{PairStats, Verdict};
+    let (a, b) = (bot_specs[0].name.as_str(), bot_specs[1].name.as_str());
+    let games = report
+        .pair_games
+        .get(&(a.to_string(), b.to_string()))
+        .copied()
+        .unwrap_or(0);
+    if games == 0 {
+        println!("no matches played between {a} and {b}");
+        return;
+    }
+    let wins_a = report
+        .pair_wins
+        .get(&(a.to_string(), b.to_string()))
+        .copied()
+        .unwrap_or(0);
+    let wins_b = report
+        .pair_wins
+        .get(&(b.to_string(), a.to_string()))
+        .copied()
+        .unwrap_or(0);
+    let draws = games.saturating_sub(wins_a + wins_b);
+    let stats = PairStats::compute(wins_a, wins_b, draws);
+
+    // Orient so the LEFT bot is the stronger one — reads more naturally.
+    let (left, right, s) = if stats.a_win_rate >= 0.5 {
+        (a, b, stats)
+    } else {
+        (b, a, PairStats::compute(wins_b, wins_a, draws))
+    };
+
+    let lo = s.a_ci_95.0 * 100.0;
+    let hi = s.a_ci_95.1 * 100.0;
+    let half = (hi - lo) / 2.0;
+    println!(
+        "{left} vs {right}:  {wr:.1}% ± {half:.1}% (Wilson 95% CI),  LOS {los:.1}%,  p={p:.3}",
+        wr = s.a_win_rate * 100.0,
+        half = half,
+        los = s.los * 100.0,
+        p = s.p_value,
+    );
+    let verdict_line = match s.verdict {
+        Verdict::Better => format!("VERDICT: {left} is BETTER  (significant at p<0.05)"),
+        Verdict::Worse => format!("VERDICT: {left} is WORSE  (significant at p<0.05)"),
+        Verdict::Inconclusive => match s.rounds_needed_for_significance() {
+            Some(n) => format!(
+                "VERDICT: INCONCLUSIVE — collected {} games, need ≈ {} to resolve a {:.1}% gap at p<0.05",
+                s.n,
+                n,
+                (s.a_win_rate - 0.5).abs() * 100.0,
+            ),
+            None => "VERDICT: INCONCLUSIVE".to_string(),
+        },
+    };
+    println!("{verdict_line}");
+}
+
+/// N≥3 output: pts ranking + the same pairwise verdict block the
+/// `report` subcommand prints. No counters / timing / score columns
+/// (those live in `report` proper for the full picture).
+fn print_compare_ranking(report: &tournament::Report, bot_specs: &[BotSpec]) {
+    println!("Ranking (by pts):");
+    let mut sorted: Vec<(&String, &tournament::BotSummary)> = report.per_bot.iter().collect();
+    sorted.sort_by(|a, b| {
+        b.1.pts
+            .partial_cmp(&a.1.pts)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let name_w = bot_specs.iter().map(|b| b.name.len()).max().unwrap_or(4);
+    for (rank, (name, s)) in sorted.iter().enumerate() {
+        let total = (s.wins + s.losses + s.draws).max(1);
+        let win_pct = 100.0 * s.wins as f64 / total as f64;
+        println!(
+            "  {n}. {name:<width$}   pts {pts:>6.1}   {wp:>4.1}% wins overall",
+            n = rank + 1,
+            name = name,
+            width = name_w,
+            pts = s.pts,
+            wp = win_pct,
+        );
+    }
+    println!();
+    print_pairwise_verdicts(report);
 }

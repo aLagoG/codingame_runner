@@ -1,0 +1,4 @@
+name = "baseline"
+lang = "rs"
+description = "trivial baseline — TurnOutput::default()"
+champion = true

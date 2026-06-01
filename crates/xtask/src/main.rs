@@ -7,6 +7,9 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use toml_edit::{DocumentMut, InlineTable, Item, Table};
 
+mod bot_manifest;
+use bot_manifest::{BotManifest, now_rfc3339};
+
 /// Minimal ANSI helper for the scaffolder's printed instructions. Respects
 /// `NO_COLOR` and falls back to plain text when stdout isn't a terminal
 /// (e.g. piped into a file or another process).
@@ -83,6 +86,65 @@ enum Command {
         /// "v2 = tweak of v1" workflows.
         #[arg(long)]
         from_existing: Option<String>,
+    },
+    /// Promote a candidate bot into its parent's slot. Rename the
+    /// candidate to the parent's name, rewrite Cargo.toml + namespace
+    /// tokens, move the champion bit if the parent had it.
+    ///
+    /// By default, the old parent is deleted outright. Pass `--archive`
+    /// to keep it around under a timestamped name (`<parent>_archived_<ts>_<lang>`)
+    /// so you can A/B against it later.
+    ///
+    /// Siblings (other bots whose `parent` matches this candidate's parent)
+    /// are left alone by default. Pass `--cleanup-siblings` to also retire
+    /// them — plus any descendants of those siblings, so you don't end
+    /// up with orphans pointing at dead crates.
+    Promote {
+        /// Game the candidate belongs to.
+        #[arg(long)]
+        game: String,
+        /// Candidate bot stem to promote (without `_<lang>` suffix).
+        #[arg(long)]
+        name: String,
+        /// Which language variant to promote. Required when the
+        /// candidate has both `_rs` and `_cpp` variants; auto-detected
+        /// otherwise. `both` promotes each independently.
+        #[arg(long, value_enum)]
+        lang: Option<BotLang>,
+        /// Keep the old parent as `<parent>_archived_<ts>_<lang>`
+        /// instead of deleting it. The promoted bot's `parent` field
+        /// points at this archived name so the lineage chain is
+        /// preserved.
+        #[arg(long)]
+        archive: bool,
+        /// Also retire the candidate's siblings (other bots with the
+        /// same `parent`) and all their descendants. Use when you've
+        /// branched several candidates off the same baseline and want
+        /// to discard the ones that didn't win.
+        #[arg(long)]
+        cleanup_siblings: bool,
+    },
+    /// Retire (delete) a bot crate + remove its workspace member entry
+    /// + drop its cached build artifacts. Inverse of `new-bot`.
+    ///
+    /// Refuses to retire a bot that is currently champion or that
+    /// any other bot lists as its `parent` (would orphan descendants).
+    /// Pass `--force` to skip these safety checks.
+    Retire {
+        /// Game the bot belongs to.
+        #[arg(long)]
+        game: String,
+        /// Bot stem (e.g. `v1`, `baseline`) — without the `_<lang>` suffix.
+        #[arg(long)]
+        name: String,
+        /// Which language variant to retire. Required when the bot has
+        /// both `_rs` and `_cpp` variants; auto-detected otherwise.
+        /// Pass `both` to wipe both languages in one go.
+        #[arg(long, value_enum)]
+        lang: Option<BotLang>,
+        /// Skip the champion + has-children safety checks.
+        #[arg(long)]
+        force: bool,
     },
     /// Bundle a bot into a single self-contained source file ready to
     /// paste into CodinGame's web editor.
@@ -240,6 +302,19 @@ fn main() -> Result<()> {
             lang,
             from_existing,
         } => new_bot(&game, &name, lang, from_existing.as_deref())?,
+        Command::Retire {
+            game,
+            name,
+            lang,
+            force,
+        } => retire(&game, &name, lang, force)?,
+        Command::Promote {
+            game,
+            name,
+            lang,
+            archive,
+            cleanup_siblings,
+        } => promote(&game, &name, lang, archive, cleanup_siblings)?,
         Command::Bundle {
             game,
             bot,
@@ -734,6 +809,28 @@ fn new_bot(game: &str, bot: &str, lang: BotLang, from_existing: Option<&str>) ->
         }
         let crate_name = format!("{game}_{bot}_{suffix}");
         add_workspace_member("Cargo.toml", &dest_str)?;
+
+        // Drop a bot.toml so retire / promote / compare can walk
+        // lineage without grepping source. Fresh scaffolds get
+        // `parent = None`; clones get the source bot's stem.
+        let parent = from_existing.map(|s| s.to_string());
+        let description = match &parent {
+            Some(p) => format!("clone of {p}"),
+            None => format!("{game} bot ({suffix})"),
+        };
+        let manifest = BotManifest {
+            name: bot.to_string(),
+            lang: suffix.to_string(),
+            parent,
+            created_at: Some(now_rfc3339()),
+            description,
+            // Champion bit is never set on creation — promote flips it.
+            // A freshly-scaffolded bot has no tournament history yet.
+            champion: false,
+            history: vec![],
+        };
+        manifest.write(&BotManifest::path(game, bot, suffix))?;
+
         created.push(crate_name);
     }
 
@@ -761,6 +858,471 @@ fn new_bot(game: &str, bot: &str, lang: BotLang, from_existing: Option<&str>) ->
             "cargo run -p codingame_runner -- --game {game} \\\n     target/release/lib{}.dylib ...",
             created[0]
         )),
+    );
+    Ok(())
+}
+
+/// Delete a bot's crate(s) + drop their workspace member entries +
+/// cargo-clean their build artifacts. Inverse of `new_bot`.
+///
+/// Resolution rules for which language(s) to retire:
+///   * `--lang rust|cpp` — exactly that variant; errors if missing.
+///   * `--lang both`     — wipe both variants if present (each missing
+///                         one is silently skipped).
+///   * (no `--lang`)     — auto-detect: if exactly one variant exists
+///                         retire it; if both exist, error and demand
+///                         an explicit `--lang`.
+///
+/// Safety checks (skip with `--force`):
+///   * Bot's `bot.toml` has `champion = true`.
+///   * Some other bot in the same game+lang lane lists this bot as its
+///     `parent` (would orphan descendants).
+fn retire(game: &str, bot: &str, lang_override: Option<BotLang>, force: bool) -> Result<()> {
+    let bots_dir = PathBuf::from("games").join(game).join("bots");
+    anyhow::ensure!(
+        bots_dir.exists(),
+        "no game at {} — is `{game}` the right name?",
+        bots_dir.display(),
+    );
+
+    let langs = resolve_bot_langs(&bots_dir, bot, lang_override)?;
+
+    // Safety checks — collect all blockers up front before mutating
+    // anything, so a partial retire on a mixed champion/non-champion
+    // pair can't half-execute.
+    if !force {
+        let mut blockers: Vec<String> = Vec::new();
+        for lang in &langs {
+            let dir = bots_dir.join(format!("{bot}_{lang}"));
+            let manifest_path = dir.join("bot.toml");
+            if manifest_path.exists() {
+                let m = BotManifest::read(&manifest_path)?;
+                if m.champion {
+                    blockers.push(format!(
+                        "{bot}_{lang} is currently champion (set `champion = false` first, or pass --force)"
+                    ));
+                }
+            }
+            let children = find_children(game, bot, lang)?;
+            if !children.is_empty() {
+                blockers.push(format!(
+                    "{bot}_{lang} is parent of: {} (would orphan; pass --force to proceed)",
+                    children.join(", "),
+                ));
+            }
+        }
+        if !blockers.is_empty() {
+            anyhow::bail!("refusing to retire:\n  - {}", blockers.join("\n  - "));
+        }
+    }
+
+    let s = Style::new();
+    for lang in &langs {
+        let dir = bots_dir.join(format!("{bot}_{lang}"));
+        let member_path = dir.to_string_lossy().to_string();
+        let crate_name = format!("{game}_{bot}_{lang}");
+
+        // `cargo clean -p <crate>` BEFORE we remove the workspace
+        // entry — cargo refuses to operate on packages it can't see in
+        // the resolved graph.
+        let _ = std::process::Command::new("cargo")
+            .args(["clean", "-p", &crate_name])
+            .output();
+
+        remove_workspace_member("Cargo.toml", &member_path)?;
+        fs::remove_dir_all(&dir).with_context(|| format!("removing {}", dir.display()))?;
+
+        println!(
+            "{} Retired {} ({}) — removed crate dir, workspace member, and target cache.",
+            s.ok("✓"),
+            s.name(&format!("{bot}_{lang}")),
+            s.code(&crate_name),
+        );
+    }
+    Ok(())
+}
+
+/// Find every bot in `games/<game>/bots/*_<lang>/` whose `bot.toml`
+/// declares `parent = <parent>`. Used by `retire`'s safety check to
+/// flag orphans before they happen. Returns bare bot stems (e.g.
+/// `["v1_5", "v1_some_algo"]`).
+fn find_children(game: &str, parent: &str, lang: &str) -> Result<Vec<String>> {
+    let bots_dir = PathBuf::from("games").join(game).join("bots");
+    let mut children = Vec::new();
+    let Ok(entries) = fs::read_dir(&bots_dir) else {
+        return Ok(children);
+    };
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        // Skip dirs that don't end with `_<lang>` — we only walk the
+        // same-lang lane (siblings).
+        let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let suffix = format!("_{lang}");
+        if !name.ends_with(&suffix) {
+            continue;
+        }
+        // Skip the parent itself.
+        if name.strip_suffix(&suffix) == Some(parent) {
+            continue;
+        }
+        let manifest_path = dir.join("bot.toml");
+        if !manifest_path.exists() {
+            continue;
+        }
+        if let Ok(m) = BotManifest::read(&manifest_path)
+            && m.parent.as_deref() == Some(parent)
+        {
+            children.push(format!("{}_{lang}", m.name));
+        }
+    }
+    children.sort();
+    Ok(children)
+}
+
+/// Shared `--lang rust|cpp|both|(none)` → `Vec<lang_suffix>` resolver
+/// used by both `retire` and `promote`. `bot` is the bare stem (no
+/// `_<lang>` suffix); errors carry the directories actually probed.
+fn resolve_bot_langs<'a>(
+    bots_dir: &Path,
+    bot: &str,
+    lang_override: Option<BotLang>,
+) -> Result<Vec<&'a str>> {
+    let rs_dir = bots_dir.join(format!("{bot}_rs"));
+    let cpp_dir = bots_dir.join(format!("{bot}_cpp"));
+    let langs = match lang_override {
+        Some(BotLang::Rust) => {
+            anyhow::ensure!(rs_dir.exists(), "no rust variant at {}", rs_dir.display());
+            vec!["rs"]
+        }
+        Some(BotLang::Cpp) => {
+            anyhow::ensure!(cpp_dir.exists(), "no cpp variant at {}", cpp_dir.display());
+            vec!["cpp"]
+        }
+        Some(BotLang::Both) => {
+            let mut v = Vec::new();
+            if rs_dir.exists() {
+                v.push("rs");
+            }
+            if cpp_dir.exists() {
+                v.push("cpp");
+            }
+            anyhow::ensure!(
+                !v.is_empty(),
+                "no bot at {} or {}",
+                rs_dir.display(),
+                cpp_dir.display(),
+            );
+            v
+        }
+        None => match (rs_dir.exists(), cpp_dir.exists()) {
+            (true, false) => vec!["rs"],
+            (false, true) => vec!["cpp"],
+            (true, true) => anyhow::bail!(
+                "`{bot}` has both rs and cpp variants — pass `--lang rust|cpp|both` to pick"
+            ),
+            (false, false) => anyhow::bail!(
+                "no bot at {} or {}",
+                rs_dir.display(),
+                cpp_dir.display(),
+            ),
+        },
+    };
+    Ok(langs)
+}
+
+/// Walk a directory tree in-place, applying `content.replace(from, to)`
+/// to every text file. Used by `promote` to rewrite the full crate name
+/// — i.e. the post-Tier-0 namespace token — in Cargo.toml + source after
+/// a rename. Skips binary files via the same `is_text_file` heuristic
+/// `copy_dir_substituting` uses.
+fn rewrite_dir_contents(dir: &Path, from: &str, to: &str) -> Result<()> {
+    for entry in fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            rewrite_dir_contents(&path, from, to)?;
+        } else if is_text_file(&path) {
+            let content = fs::read_to_string(&path)
+                .with_context(|| format!("reading {}", path.display()))?;
+            let rewritten = content.replace(from, to);
+            if rewritten != content {
+                fs::write(&path, rewritten)
+                    .with_context(|| format!("writing {}", path.display()))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Find every descendant of `ancestor` in the same game+lang lane —
+/// transitively. Used by `promote --cleanup-siblings` to retire not
+/// just the candidate's siblings but anything those siblings parented,
+/// so we don't leave orphan grandchildren pointing at dead crates.
+/// Bounded by `MAX_DEPTH` (cycles would be a hand-edit bug, not a
+/// legitimate state, but we guard regardless). Returns the bot stems
+/// in topological order: deepest first, so retire-by-iteration safely
+/// removes children before parents.
+fn find_descendants(game: &str, ancestor: &str, lang: &str) -> Result<Vec<String>> {
+    const MAX_DEPTH: usize = 32;
+    let mut out: Vec<String> = Vec::new();
+    let mut frontier: Vec<(String, usize)> = vec![(ancestor.to_string(), 0)];
+    while let Some((cur, depth)) = frontier.pop() {
+        if depth > MAX_DEPTH {
+            anyhow::bail!(
+                "lineage walk exceeded depth {MAX_DEPTH} starting from {ancestor}_{lang} — \
+                 cycle in bot.toml parent fields?",
+            );
+        }
+        let children = find_children(game, &cur, lang)?;
+        for child in children {
+            // child is "v1_5_cpp" form; strip the suffix to get the stem
+            let stem = child
+                .strip_suffix(&format!("_{lang}"))
+                .map(str::to_string)
+                .unwrap_or(child);
+            frontier.push((stem.clone(), depth + 1));
+            out.push(stem);
+        }
+    }
+    // Deepest-first via reverse: ensures we retire `v1_5_a_smaller`
+    // before `v1_5_a` so retire's parent-of-X safety check (we use
+    // --force, but still) doesn't complain.
+    out.reverse();
+    Ok(out)
+}
+
+/// Run the retire path on a single bot+lang variant, bypassing the
+/// champion/parent safety checks (promote is the one deciding to
+/// remove these). Thin wrapper for clarity — promote calls this
+/// during sibling cleanup and during non-archive parent removal.
+fn force_retire_one(game: &str, bot: &str, lang: &str) -> Result<()> {
+    let bots_dir = PathBuf::from("games").join(game).join("bots");
+    let dir = bots_dir.join(format!("{bot}_{lang}"));
+    if !dir.exists() {
+        return Ok(());
+    }
+    let crate_name = format!("{game}_{bot}_{lang}");
+    let member_path = dir.to_string_lossy().to_string();
+    let _ = std::process::Command::new("cargo")
+        .args(["clean", "-p", &crate_name])
+        .output();
+    remove_workspace_member("Cargo.toml", &member_path)?;
+    fs::remove_dir_all(&dir).with_context(|| format!("removing {}", dir.display()))?;
+    Ok(())
+}
+
+/// Compact timestamp suitable for embedding in a directory name:
+/// `20260601_220930`. UTC, derived from `now_rfc3339`. Used by
+/// `promote --archive` to disambiguate snapshots of the same parent.
+fn archive_timestamp() -> String {
+    let s = now_rfc3339(); // "YYYY-MM-DDTHH:MM:SSZ"
+    format!(
+        "{}{}{}_{}{}{}",
+        &s[0..4],
+        &s[5..7],
+        &s[8..10],
+        &s[11..13],
+        &s[14..16],
+        &s[17..19],
+    )
+}
+
+/// Promote a candidate bot into its parent's slot. See the `Promote`
+/// CLI doc-comment for the full semantics; in short:
+///
+/// 1. Read `candidate/bot.toml` to discover the `parent`.
+/// 2. (If `--cleanup-siblings`) retire every sibling of the candidate
+///    plus all their descendants, deepest-first.
+/// 3. Either archive (`--archive`) or retire the old parent.
+/// 4. Rename the candidate dir → parent's slot, rewrite the full
+///    crate-name token in Cargo.toml + source, swap workspace member
+///    entries, and update bot.toml (`name`, `parent`, `champion`).
+///
+/// The champion bit only travels if the old parent had it; promoting
+/// a non-champion-branch sibling doesn't disturb the current champion.
+fn promote(
+    game: &str,
+    candidate: &str,
+    lang_override: Option<BotLang>,
+    archive: bool,
+    cleanup_siblings: bool,
+) -> Result<()> {
+    let bots_dir = PathBuf::from("games").join(game).join("bots");
+    anyhow::ensure!(
+        bots_dir.exists(),
+        "no game at {} — is `{game}` the right name?",
+        bots_dir.display(),
+    );
+    let langs = resolve_bot_langs(&bots_dir, candidate, lang_override)?;
+    for lang in &langs {
+        promote_one_lang(game, candidate, lang, archive, cleanup_siblings)?;
+    }
+    Ok(())
+}
+
+fn promote_one_lang(
+    game: &str,
+    candidate: &str,
+    lang: &str,
+    archive: bool,
+    cleanup_siblings: bool,
+) -> Result<()> {
+    let bots_dir = PathBuf::from("games").join(game).join("bots");
+    let candidate_dir = bots_dir.join(format!("{candidate}_{lang}"));
+    let candidate_manifest_path = candidate_dir.join("bot.toml");
+    anyhow::ensure!(
+        candidate_manifest_path.exists(),
+        "{candidate}_{lang} has no bot.toml — can't determine its parent (was it scaffolded \
+         before bot.toml landed? hand-write one with `name = \"{candidate}\"`, `lang = \"{lang}\"`, \
+         `parent = \"<old baseline>\"`)",
+    );
+    let candidate_manifest = BotManifest::read(&candidate_manifest_path)?;
+    let parent_name = candidate_manifest.parent.clone().ok_or_else(|| {
+        anyhow::anyhow!(
+            "{candidate}_{lang}'s bot.toml has `parent = null` — nothing to promote into. \
+             (Originally-authored baselines aren't promotable; clone-and-tweak workflow only.)",
+        )
+    })?;
+
+    let parent_dir = bots_dir.join(format!("{parent_name}_{lang}"));
+    anyhow::ensure!(
+        parent_dir.exists(),
+        "parent {parent_name}_{lang} doesn't exist at {} — \
+         was it already promoted away or hand-deleted?",
+        parent_dir.display(),
+    );
+    let parent_manifest_path = parent_dir.join("bot.toml");
+    let parent_manifest = if parent_manifest_path.exists() {
+        BotManifest::read(&parent_manifest_path)?
+    } else {
+        // Synthesize a minimal manifest so the promote can proceed
+        // even when the parent predates bot.toml landing.
+        BotManifest {
+            name: parent_name.clone(),
+            lang: lang.to_string(),
+            parent: None,
+            created_at: None,
+            description: format!("(no bot.toml — synthesized for promote of {candidate})"),
+            champion: false,
+            history: vec![],
+        }
+    };
+    let parent_was_champion = parent_manifest.champion;
+
+    // Compute sibling sweep set (if requested).
+    let mut to_retire: Vec<String> = Vec::new();
+    if cleanup_siblings {
+        let siblings = find_children(game, &parent_name, lang)?
+            .into_iter()
+            .filter_map(|s| s.strip_suffix(&format!("_{lang}")).map(str::to_string))
+            .filter(|stem| stem != candidate)
+            .collect::<Vec<_>>();
+        for sibling in &siblings {
+            // Descendants first (deepest), then the sibling itself —
+            // matches retire's "remove leaves first" ordering.
+            to_retire.extend(find_descendants(game, sibling, lang)?);
+            to_retire.push(sibling.clone());
+        }
+    }
+
+    let s = Style::new();
+    println!("{} Promote {} → {} ({}):", s.heading("→"), candidate, parent_name, lang);
+    if !to_retire.is_empty() {
+        println!(
+            "  • retire siblings + descendants: {}",
+            to_retire
+                .iter()
+                .map(|b| format!("{b}_{lang}"))
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+    }
+    if archive {
+        println!(
+            "  • archive old parent: {parent_name}_{lang} → <ts>_{lang}",
+        );
+    } else {
+        println!("  • retire old parent: {parent_name}_{lang}");
+    }
+    println!("  • rename {candidate}_{lang} → {parent_name}_{lang}");
+    if parent_was_champion {
+        println!("  • {} promoted bot becomes champion (parent had `champion = true`)", s.ok("✓"));
+    }
+
+    // -----------------------------------------------------------------
+    // 1. Sibling sweep (deepest-first; we collected them in that order).
+    for retiree in &to_retire {
+        force_retire_one(game, retiree, lang)?;
+    }
+
+    // -----------------------------------------------------------------
+    // 2. Archive or retire the old parent.
+    let archived_parent_stem: Option<String> = if archive {
+        let ts = archive_timestamp();
+        let archived_stem = format!("{parent_name}_archived_{ts}");
+        let archived_dir = bots_dir.join(format!("{archived_stem}_{lang}"));
+        fs::rename(&parent_dir, &archived_dir).with_context(|| {
+            format!(
+                "renaming {} → {} (parent archive)",
+                parent_dir.display(),
+                archived_dir.display(),
+            )
+        })?;
+        let old_crate = format!("{game}_{parent_name}_{lang}");
+        let new_crate = format!("{game}_{archived_stem}_{lang}");
+        rewrite_dir_contents(&archived_dir, &old_crate, &new_crate)?;
+        remove_workspace_member("Cargo.toml", &parent_dir.to_string_lossy())?;
+        add_workspace_member("Cargo.toml", &archived_dir.to_string_lossy())?;
+        let mut m = parent_manifest.clone();
+        m.name = archived_stem.clone();
+        m.champion = false;
+        m.write(&archived_dir.join("bot.toml"))?;
+        let _ = std::process::Command::new("cargo")
+            .args(["clean", "-p", &old_crate])
+            .output();
+        Some(archived_stem)
+    } else {
+        force_retire_one(game, &parent_name, lang)?;
+        None
+    };
+
+    // -----------------------------------------------------------------
+    // 3. Move candidate into the parent's slot.
+    let new_dir = bots_dir.join(format!("{parent_name}_{lang}"));
+    fs::rename(&candidate_dir, &new_dir).with_context(|| {
+        format!(
+            "renaming {} → {} (candidate → parent slot)",
+            candidate_dir.display(),
+            new_dir.display(),
+        )
+    })?;
+    let old_crate = format!("{game}_{candidate}_{lang}");
+    let new_crate = format!("{game}_{parent_name}_{lang}");
+    rewrite_dir_contents(&new_dir, &old_crate, &new_crate)?;
+    remove_workspace_member("Cargo.toml", &candidate_dir.to_string_lossy())?;
+    add_workspace_member("Cargo.toml", &new_dir.to_string_lossy())?;
+
+    // Update the promoted bot's manifest. Keep description + history;
+    // re-anchor name + parent + champion per the design.
+    let mut promoted_manifest = candidate_manifest.clone();
+    promoted_manifest.name = parent_name.clone();
+    promoted_manifest.parent = archived_parent_stem.clone();
+    promoted_manifest.champion = parent_was_champion;
+    promoted_manifest.write(&new_dir.join("bot.toml"))?;
+
+    let _ = std::process::Command::new("cargo")
+        .args(["clean", "-p", &old_crate])
+        .output();
+
+    println!(
+        "{} Promoted {} into {} ({})",
+        s.ok("✓"),
+        s.name(&format!("{candidate}_{lang}")),
+        s.name(&format!("{parent_name}_{lang}")),
+        s.code(&new_crate),
     );
     Ok(())
 }
@@ -988,6 +1550,28 @@ fn add_workspace_member(workspace_toml: &str, member_path: &str) -> Result<()> {
     Ok(())
 }
 
+/// Remove a member from [workspace.members]. Counterpart to
+/// `add_workspace_member` — needed by `retire` / `promote` so the
+/// workspace doesn't accumulate dangling entries pointing at deleted
+/// directories. Idempotent: missing entries are a no-op.
+fn remove_workspace_member(workspace_toml: &str, member_path: &str) -> Result<()> {
+    let content = fs::read_to_string(workspace_toml).context("reading workspace Cargo.toml")?;
+    let mut doc = content
+        .parse::<DocumentMut>()
+        .context("parsing workspace Cargo.toml")?;
+
+    let members = doc["workspace"]["members"]
+        .as_array_mut()
+        .context("[workspace.members] is not an array")?;
+
+    let idx = members.iter().position(|v| v.as_str() == Some(member_path));
+    if let Some(idx) = idx {
+        members.remove(idx);
+        fs::write(workspace_toml, doc.to_string())?;
+    }
+    Ok(())
+}
+
 /// Add a dependency to [workspace.dependencies]
 fn add_workspace_dependency(workspace_toml: &str, crate_name: &str, path: &str) -> Result<()> {
     let content = fs::read_to_string(workspace_toml)?;
@@ -1020,8 +1604,8 @@ fn add_workspace_dependency(workspace_toml: &str, crate_name: &str, path: &str) 
 /// Insert `<crate_name>.workspace = true` into `[dependencies]` of an
 /// arbitrary downstream Cargo.toml (runner, tournament, ...). Idempotent.
 fn add_cargo_dep(cargo_toml: &str, crate_name: &str) -> Result<()> {
-    let content = fs::read_to_string(cargo_toml)
-        .with_context(|| format!("reading {cargo_toml}"))?;
+    let content =
+        fs::read_to_string(cargo_toml).with_context(|| format!("reading {cargo_toml}"))?;
     let mut doc = content
         .parse::<DocumentMut>()
         .with_context(|| format!("parsing {cargo_toml}"))?;
@@ -1051,8 +1635,8 @@ fn add_cargo_dep(cargo_toml: &str, crate_name: &str) -> Result<()> {
 /// runner's structure (specifically the `match args.game.as_str()`
 /// block and its `// Keep this catch-all generic` marker comment).
 fn wire_runner_dispatch(main_rs_path: &str, name: &str, name_pascal: &str) -> Result<()> {
-    let src = fs::read_to_string(main_rs_path)
-        .with_context(|| format!("reading {main_rs_path}"))?;
+    let src =
+        fs::read_to_string(main_rs_path).with_context(|| format!("reading {main_rs_path}"))?;
     let arm_marker = format!("\"{name}\" =>");
     let use_line = format!("use {name}_game::{name_pascal}Game;");
     if src.contains(&use_line) && src.contains(&arm_marker) {
@@ -1110,8 +1694,7 @@ fn wire_runner_dispatch(main_rs_path: &str, name: &str, name_pascal: &str) -> Re
 /// Insert a `"<name>" => run_match_typed::<<name>_game::<NamePascal>Game>(...)`
 /// arm into the tournament's `run_match_named` match. Idempotent.
 fn wire_tournament_dispatch(lib_rs_path: &str, name: &str, name_pascal: &str) -> Result<()> {
-    let src = fs::read_to_string(lib_rs_path)
-        .with_context(|| format!("reading {lib_rs_path}"))?;
+    let src = fs::read_to_string(lib_rs_path).with_context(|| format!("reading {lib_rs_path}"))?;
     let arm_marker = format!("\"{name}\" =>");
     if src.contains(&arm_marker) {
         return Ok(());

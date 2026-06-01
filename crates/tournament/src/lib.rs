@@ -30,6 +30,8 @@ use codingame_runner::make_player;
 use common::engine::{FfiGame, MatchResult, Player, PlayerStats, RunConfig, run_match};
 use serde::{Deserialize, Serialize};
 
+pub mod pairwise_stats;
+
 // ============================================================
 //  Inputs
 // ============================================================
@@ -664,7 +666,6 @@ pub fn build_report(records: &[MatchRecord]) -> Report {
     }
 }
 
-
 // ============================================================
 //  Tests
 // ============================================================
@@ -1023,6 +1024,9 @@ mod tests {
             let s = &report.per_bot[name];
             assert_eq!((s.wins, s.losses, s.draws), (0, 0, 1));
         }
-        assert!(report.pair_wins.is_empty(), "ties should produce no pair_wins");
+        assert!(
+            report.pair_wins.is_empty(),
+            "ties should produce no pair_wins"
+        );
     }
 }

@@ -30,11 +30,11 @@ void set_counter_callback(void (*cb)(const char*, double)) {
 }
 
 void initialize(cgio::InitialInputFfi input) {
-    fantastic_bits_v1::on_init(cgio::as_ref(input));
+    fantastic_bits_v1_cpp::on_init(cgio::as_ref(input));
 }
 
 TurnResult<TurnOutput> take_turn(TurnInputFFI input) {
-    TurnOutput output = fantastic_bits_v1::decide(cgio::as_ref(input));
+    TurnOutput output = fantastic_bits_v1_cpp::decide(cgio::as_ref(input));
     return TurnResult<TurnOutput>{BotStatus::Ok, output};
 }
 

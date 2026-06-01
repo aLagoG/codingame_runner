@@ -34,11 +34,11 @@ int main()
 
     InitialInput init;
     if (!(std::cin >> init)) return 0;
-    fantastic_bits_v1::on_init(cgio::as_ref(init));
+    fantastic_bits_v1_cpp::on_init(cgio::as_ref(init));
 
     TurnInput input;
     while (std::cin >> input) {
-        std::cout << fantastic_bits_v1::decide(input.as_ref()) << std::endl;
+        std::cout << fantastic_bits_v1_cpp::decide(input.as_ref()) << std::endl;
     }
     return 0;
 }
