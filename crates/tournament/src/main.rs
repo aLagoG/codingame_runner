@@ -497,7 +497,7 @@ fn print_summary(report: &tournament::Report) {
         "losses",
         "draws",
         "win%",
-        "elo",
+        "pts",
         "avgpl",
         width = name_w,
     );
@@ -526,15 +526,18 @@ fn print_summary(report: &tournament::Report) {
     for (name, s) in &report.per_bot {
         let total = (s.wins + s.losses + s.draws).max(1);
         let win_pct = 100.0 * s.wins as f64 / total as f64;
+        // `s.pts` is pairwise-normalised in `build_report` — each
+        // match contributes at most 1, so the column is comparable
+        // across 2-player and 4-player matches. See `BotSummary.pts`.
         let mut row = format!(
-            "{:<width$}  {:>5}  {:>5}  {:>6}  {:>5}  {:>4.0}%  {:>+6.0}  {:>6.2}",
+            "{:<width$}  {:>5}  {:>5}  {:>6}  {:>5}  {:>4.0}%  {:>6.1}  {:>6.2}",
             name,
             s.games,
             s.wins,
             s.losses,
             s.draws,
             win_pct,
-            s.elo - 1500.0,
+            s.pts,
             s.avg_standing,
             width = name_w,
         );

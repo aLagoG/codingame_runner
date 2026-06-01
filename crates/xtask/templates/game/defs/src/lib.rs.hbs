@@ -11,7 +11,7 @@ use std::{
     str::FromStr,
 };
 
-use common::{
+use bot_common::{
     Defs, NoInitialInput, NoInitialInputFfi, ReadFrom, SingleLine, TurnResult, WireInput,
     WireInputFfi, WireOutput, WriteTo,
 };
@@ -21,7 +21,7 @@ use common::{
 /// refuses mismatches before any UB-prone call lands.
 pub const ABI_VERSION: u32 = 1;
 
-/// Marker type. Implementing [`common::Defs`] on it is the single line that
+/// Marker type. Implementing [`bot_common::Defs`] on it is the single line that
 /// ratifies this crate's FFI surface — all of `WireInput`, `WireInputFfi`,
 /// `WireOutput`, and `ABI_VERSION` are checked at this exact site.
 pub struct Ffi;
@@ -58,11 +58,14 @@ pub struct TurnInputFFI<'a> {
 
 // TODO: define your game's per-tick output fields.
 #[repr(C)]
-#[derive(Debug, Default, PartialEq, Eq, Copy, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Default, PartialEq, Eq, Copy, Clone)]
 pub struct TurnOutput {}
 
 /// Asserts `TurnOutput` satisfies the full bundled contract — see
-/// [`common::WireOutput`].
+/// [`bot_common::WireOutput`]. Per-game `TurnOutput` types deliberately
+/// don't derive `serde` (the runner serialises outputs as their
+/// wire-format text, not as serde objects), which keeps the defs free
+/// of `serde_derive` and therefore vendorable for CodinGame submission.
 impl WireOutput for TurnOutput {}
 
 // cbindgen reachability root — generates the `extern "C" { ... }` block in

@@ -682,9 +682,16 @@ fn new_game(name: &str) -> Result<()> {
         add_workspace_dependency("Cargo.toml", &crate_name, &crate_path)?;
     }
 
-    // Wire the `_game` crate into the runner so the manual checklist only
-    // needs to cover the `use` import and the dispatch arm.
-    add_runner_dep("crates/runner/Cargo.toml", &format!("{name}_game"))?;
+    // Wire the new `_game` crate into every downstream that dispatches
+    // by game name: runner (single-match CLI), tournament (multi-match
+    // harness). Each gets the Cargo dep + match arm (+ `use` import
+    // where needed). Idempotent — safe to re-run `new-game` on an
+    // existing scaffold without duplicating arms.
+    let game_crate = format!("{name}_game");
+    add_cargo_dep("crates/runner/Cargo.toml", &game_crate)?;
+    add_cargo_dep("crates/tournament/Cargo.toml", &game_crate)?;
+    wire_runner_dispatch("crates/runner/src/main.rs", name, &vars.name_pascal)?;
+    wire_tournament_dispatch("crates/tournament/src/lib.rs", name, &vars.name_pascal)?;
 
     print_next_steps(name, &vars.name_pascal);
     Ok(())
@@ -843,24 +850,9 @@ fn print_next_steps(name: &str, name_pascal: &str) {
         s.path(&format!("games/{name}/bots/baseline_rs/src/lib.rs")),
     );
     println!(
-        "  4. Wire the game into {} ({} dep already added):",
-        s.path("crates/runner/src/main.rs"),
-        s.path("crates/runner/Cargo.toml"),
-    );
-    println!(
-        "       - add {}",
-        s.code(&format!("use {name}_game::{name_pascal}Game;")),
-    );
-    println!(
-        "       - add {} to the dispatch match",
-        s.code(&format!(
-            "\"{name}\" => run_for_game::<{name_pascal}Game>(args.bots, args.save_replay),"
-        )),
-    );
-    println!(
-        "       - update the {} bail message to mention {}",
-        s.code("unknown game"),
-        s.name(name),
+        "  4. (auto-wired) Runner + tournament dispatch already updated — \
+         the new game is callable as {} from both.",
+        s.code(&format!("--game {name}")),
     );
     println!(
         "  5. Customise the visualiser in {}.",
@@ -882,6 +874,10 @@ fn print_next_steps(name: &str, name_pascal: &str) {
         )),
         s.code("--from-existing <other_bot>"),
     );
+    // `name_pascal` is no longer referenced in the printed checklist
+    // (step 4 used to mention `{name_pascal}Game`), but the parameter
+    // is kept so future steps can reference it without churn.
+    let _ = name_pascal;
     println!();
     println!(
         "Run {} to confirm the skeleton compiles.",
@@ -1021,15 +1017,18 @@ fn add_workspace_dependency(workspace_toml: &str, crate_name: &str, path: &str) 
 
 /// Add `<crate_name>.workspace = true` (dotted-key form) to the runner's
 /// `[dependencies]`. Matches the style of the other entries in that file.
-fn add_runner_dep(runner_toml: &str, crate_name: &str) -> Result<()> {
-    let content = fs::read_to_string(runner_toml).context("reading runner Cargo.toml")?;
+/// Insert `<crate_name>.workspace = true` into `[dependencies]` of an
+/// arbitrary downstream Cargo.toml (runner, tournament, ...). Idempotent.
+fn add_cargo_dep(cargo_toml: &str, crate_name: &str) -> Result<()> {
+    let content = fs::read_to_string(cargo_toml)
+        .with_context(|| format!("reading {cargo_toml}"))?;
     let mut doc = content
         .parse::<DocumentMut>()
-        .context("parsing runner Cargo.toml")?;
+        .with_context(|| format!("parsing {cargo_toml}"))?;
 
     let deps = doc["dependencies"]
         .as_table_mut()
-        .context("[dependencies] not found in runner/Cargo.toml")?;
+        .with_context(|| format!("[dependencies] not found in {cargo_toml}"))?;
 
     if !deps.contains_key(crate_name) {
         // `set_dotted(true)` on the inner Table tells toml_edit to render it
@@ -1040,6 +1039,99 @@ fn add_runner_dep(runner_toml: &str, crate_name: &str) -> Result<()> {
         deps.insert(crate_name, Item::Table(inner));
     }
 
-    fs::write(runner_toml, doc.to_string())?;
+    fs::write(cargo_toml, doc.to_string())?;
+    Ok(())
+}
+
+/// Insert a `use <name>_game::<NamePascal>Game;` import and a
+/// `"<name>" => run_for_game::<<NamePascal>Game>(args.bots, args.save_replay),`
+/// dispatch arm into the runner's `main.rs`. Idempotent: if the file
+/// already references this game, no edit happens. Surgical text
+/// insertion against landmark lines — must be kept in sync with the
+/// runner's structure (specifically the `match args.game.as_str()`
+/// block and its `// Keep this catch-all generic` marker comment).
+fn wire_runner_dispatch(main_rs_path: &str, name: &str, name_pascal: &str) -> Result<()> {
+    let src = fs::read_to_string(main_rs_path)
+        .with_context(|| format!("reading {main_rs_path}"))?;
+    let arm_marker = format!("\"{name}\" =>");
+    let use_line = format!("use {name}_game::{name_pascal}Game;");
+    if src.contains(&use_line) && src.contains(&arm_marker) {
+        return Ok(());
+    }
+
+    // Build the output by re-walking the source and inserting the new
+    // `use` after the LAST contiguous `use ..._game::...Game;` line and
+    // the new arm BEFORE the catch-all landmark. Two-pass to avoid
+    // greedy-insert-on-first-match bugs.
+    let is_game_use = |line: &str| -> bool {
+        line.starts_with("use ") && line.contains("_game::") && line.ends_with("Game;")
+    };
+    let lines: Vec<&str> = src.lines().collect();
+    let last_game_use_idx = lines.iter().rposition(|l| is_game_use(l));
+    let catchall_idx = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with("// Keep this catch-all generic"));
+
+    anyhow::ensure!(
+        last_game_use_idx.is_some(),
+        "no `use <game>_game::...Game;` lines found in {main_rs_path} — \
+         scaffolder landmark missing; wire the dispatch by hand",
+    );
+    anyhow::ensure!(
+        catchall_idx.is_some(),
+        "couldn't find `// Keep this catch-all generic` landmark in {main_rs_path} — \
+         scaffolder needs it to know where to insert the new dispatch arm",
+    );
+    let last_game_use_idx = last_game_use_idx.unwrap();
+    let catchall_idx = catchall_idx.unwrap();
+
+    let arm = format!(
+        "        \"{name}\" => run_for_game::<{name_pascal}Game>(args.bots, args.save_replay),"
+    );
+
+    let mut out = String::with_capacity(src.len() + use_line.len() + arm.len() + 2);
+    for (i, line) in lines.iter().enumerate() {
+        if i == catchall_idx && !src.contains(&arm_marker) {
+            out.push_str(&arm);
+            out.push('\n');
+        }
+        out.push_str(line);
+        out.push('\n');
+        if i == last_game_use_idx && !src.contains(&use_line) {
+            out.push_str(&use_line);
+            out.push('\n');
+        }
+    }
+
+    fs::write(main_rs_path, out)?;
+    Ok(())
+}
+
+/// Insert a `"<name>" => run_match_typed::<<name>_game::<NamePascal>Game>(...)`
+/// arm into the tournament's `run_match_named` match. Idempotent.
+fn wire_tournament_dispatch(lib_rs_path: &str, name: &str, name_pascal: &str) -> Result<()> {
+    let src = fs::read_to_string(lib_rs_path)
+        .with_context(|| format!("reading {lib_rs_path}"))?;
+    let arm_marker = format!("\"{name}\" =>");
+    if src.contains(&arm_marker) {
+        return Ok(());
+    }
+
+    // The tournament's catch-all has its own landmark: the single line
+    // `other => bail!("unknown game: {other}"),` immediately closes the
+    // `match game { ... }` in `run_match_named`. Insert before it.
+    let needle = "        other => bail!(\"unknown game: {other}\"),";
+    let pos = src.find(needle).context(
+        "tournament's `other => bail!(...)` landmark not found — wire by hand or update the scaffolder",
+    )?;
+    let arm = format!(
+        "        \"{name}\" => run_match_typed::<{name}_game::{name_pascal}Game>(\n            game,\n            bots,\n            seed,\n            enable_counters,\n        ),\n"
+    );
+    let mut out = String::with_capacity(src.len() + arm.len());
+    out.push_str(&src[..pos]);
+    out.push_str(&arm);
+    out.push_str(&src[pos..]);
+
+    fs::write(lib_rs_path, out)?;
     Ok(())
 }

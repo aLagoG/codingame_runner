@@ -35,9 +35,9 @@ fn main() -> Result<()> {
         "tron" => run_for_game::<TronGame>(args.bots, args.save_replay),
         "tictactoe" => run_for_game::<TicTacToeGame>(args.bots, args.save_replay),
         "fantastic_bits" => run_for_game::<FantasticBitsGame>(args.bots, args.save_replay),
-        other => {
-            bail!("unknown game: {other} (expected `tron`, `tictactoe`, or `fantastic_bits`)")
-        }
+        // Keep this catch-all generic — `xtask new-game` patches the
+        // arms above; no need to enumerate known games here.
+        other => bail!("unknown game: {other}"),
     }
 }
 

@@ -323,6 +323,12 @@ pub fn run_match_named(
             run_match_typed::<tictactoe_game::TicTacToeGame>(game, bots, seed, enable_counters)
         }
         "tron" => run_match_typed::<tron_game::TronGame>(game, bots, seed, enable_counters),
+        "fantastic_bits" => run_match_typed::<fantastic_bits_game::FantasticBitsGame>(
+            game,
+            bots,
+            seed,
+            enable_counters,
+        ),
         other => bail!("unknown game: {other}"),
     }
 }
@@ -411,7 +417,15 @@ pub struct BotSummary {
     /// log raw turn times into the record and re-derive at report
     /// time.
     pub time_summary: TimeSummary,
-    pub elo: f64,
+    /// Pairwise tournament points. For each match: per opponent, +1
+    /// if this bot strictly out-placed them, +0.5 if tied, 0
+    /// otherwise; the per-match sum is divided by `num_opponents`
+    /// so each match contributes at most 1 to `pts`. Reduces to
+    /// `wins + 0.5 * draws` for 2-player matches; in multiplayer it
+    /// rewards mid-pack finishes proportionally (2nd in a 4-player
+    /// match ≈ 0.67 pts, vs 4th = 0). Comparable across games of
+    /// different player counts because the per-match cap is always 1.
+    pub pts: f64,
 }
 
 impl BotSummary {
@@ -543,26 +557,12 @@ pub struct Report {
 
 /// Build a [`Report`] from a sequence of [`MatchRecord`]s. Pure: no
 /// I/O; the CLI is responsible for reading the JSONL stream.
-///
-/// Elo update model:
-///   * For every ordered pair of bots (a, b) in a match, compute
-///     their relative rank: a "beats" b if `standings[a] < standings[b]`,
-///     loses if greater, draws if equal.
-///   * Each pair contributes one standard Elo update — every bot's
-///     rating ends up shaped by where it placed relative to *every*
-///     other bot, not just whether anyone won.
-///   * This generalizes the original "winner beats each loser"
-///     scheme — at 2 players it reduces to it exactly; at 4 players
-///     it correctly rewards "consistently 2nd" over "consistently
-///     4th" even when both have zero wins.
 pub fn build_report(records: &[MatchRecord]) -> Report {
     use std::collections::BTreeMap;
 
     let mut per_bot: BTreeMap<String, BotSummary> = BTreeMap::new();
     let mut pair_wins: BTreeMap<(String, String), u32> = BTreeMap::new();
     let mut pair_games: BTreeMap<(String, String), u32> = BTreeMap::new();
-    let init_elo = 1500.0;
-    let k_factor = 24.0;
 
     for rec in records {
         let standings = rec.standings_or_derive();
@@ -573,9 +573,6 @@ pub fn build_report(records: &[MatchRecord]) -> Report {
         for name in &rec.bots {
             let s = per_bot.entry(name.clone()).or_default();
             s.games += 1;
-            if s.elo == 0.0 {
-                s.elo = init_elo;
-            }
         }
         for (i, name_i) in rec.bots.iter().enumerate() {
             let s = per_bot.get_mut(name_i).unwrap();
@@ -623,16 +620,23 @@ pub fn build_report(records: &[MatchRecord]) -> Report {
             }
         }
 
-        // Placement-pairwise pair_wins + Elo. For every ordered pair
-        // (i, j) with i ≠ j: better rank → +1 to pair_wins[(i, j)],
-        // equal rank → no pair_wins update but a draw Elo move,
-        // worse rank → handled by the symmetric (j, i) iteration.
-        for i in 0..rec.bots.len() {
-            for j in (i + 1)..rec.bots.len() {
+        // Placement-pairwise pair_wins + tournament points. For every
+        // ordered pair (i, j) with i < j: better rank → +1 to
+        // pair_wins[(i, j)]; the bot in the better-ranked seat also
+        // earns 1 pair-point, ties split 0.5/0.5. Per-match pair-
+        // points are divided by `n_opponents` at the end so each
+        // match contributes at most 1.0 to `pts` regardless of
+        // player count — comparable across 2-player and 4-player
+        // games. Ties contribute to neither side's pair_wins (they
+        // show up as the gap between pair_games and pair_wins in the
+        // matrix).
+        let n = rec.bots.len();
+        let denom = (n.saturating_sub(1)).max(1) as f64;
+        for i in 0..n {
+            for j in (i + 1)..n {
                 let (name_i, name_j) = (&rec.bots[i], &rec.bots[j]);
                 let (rank_i, rank_j) = (standings[i], standings[j]);
-
-                let (score_i, score_j) = match rank_i.cmp(&rank_j) {
+                let (s_i, s_j) = match rank_i.cmp(&rank_j) {
                     std::cmp::Ordering::Less => {
                         *pair_wins
                             .entry((name_i.clone(), name_j.clone()))
@@ -647,12 +651,8 @@ pub fn build_report(records: &[MatchRecord]) -> Report {
                     }
                     std::cmp::Ordering::Equal => (0.5, 0.5),
                 };
-
-                let elo_i = per_bot[name_i].elo;
-                let elo_j = per_bot[name_j].elo;
-                let (new_i, new_j) = elo_compute_score(elo_i, elo_j, score_i, score_j, k_factor);
-                per_bot.get_mut(name_i).unwrap().elo = new_i;
-                per_bot.get_mut(name_j).unwrap().elo = new_j;
+                per_bot.get_mut(name_i).unwrap().pts += s_i / denom;
+                per_bot.get_mut(name_j).unwrap().pts += s_j / denom;
             }
         }
     }
@@ -664,14 +664,6 @@ pub fn build_report(records: &[MatchRecord]) -> Report {
     }
 }
 
-/// Generalised Elo update — scores can be anything in `[0.0, 1.0]`
-/// summing to 1.0 (typical: 1/0 for a decisive outcome, 0.5/0.5 for
-/// a draw). Returns `(new_a, new_b)`.
-fn elo_compute_score(a: f64, b: f64, score_a: f64, score_b: f64, k: f64) -> (f64, f64) {
-    let ea = 1.0 / (1.0 + 10f64.powf((b - a) / 400.0));
-    let eb = 1.0 - ea;
-    (a + k * (score_a - ea), b + k * (score_b - eb))
-}
 
 // ============================================================
 //  Tests
@@ -840,8 +832,6 @@ mod tests {
         let b = &report.per_bot["b"];
         assert_eq!((a.games, a.wins, a.losses, a.draws), (4, 2, 1, 1));
         assert_eq!((b.games, b.wins, b.losses, b.draws), (4, 1, 2, 1));
-        // 'a' has higher Elo because they won the net.
-        assert!(a.elo > b.elo);
     }
 
     #[test]
@@ -889,9 +879,10 @@ mod tests {
     }
 
     #[test]
-    fn standings_pairwise_elo_separates_2nd_from_4th() {
+    fn standings_pairwise_separates_2nd_from_4th() {
         // The motivating case: a is always 2nd, b is always 4th.
-        // Both lose every match (rank > 1), but a should out-rate b.
+        // Both lose every match (rank > 1), but avg_standing +
+        // pair_wins + pts separate them.
         let records = vec![
             rec_standings(&["w", "a", "x", "b"], vec![1, 2, 3, 4]),
             rec_standings(&["w", "a", "x", "b"], vec![1, 2, 3, 4]),
@@ -902,29 +893,23 @@ mod tests {
         let b = &report.per_bot["b"];
         // Both have 0 wins, 3 losses — binary win-rate is a tie.
         assert_eq!((a.wins, a.losses, b.wins, b.losses), (0, 3, 0, 3));
-        // But avg standings and Elo separate them.
+        // But avg standings, the pair matrix, and pts all separate
+        // them: a out-placed b in every match (a was 2nd, b was 4th).
         assert!(a.avg_standing < b.avg_standing);
-        assert!(a.elo > b.elo);
+        assert_eq!(report.pair_wins[&("a".into(), "b".into())], 3);
+        assert_eq!(report.pair_wins.get(&("b".into(), "a".into())), None);
+        // Pairwise pts: per 4-player match, a (rank 2) beats 2 of 3
+        // opponents → 2/3 per match → 2.0 across 3 matches.
+        // b (rank 4) beats 0 of 3 → 0 per match → 0.0 total.
+        // w (rank 1) beats all 3 → 1.0 per match → 3.0 total.
+        let w = &report.per_bot["w"];
+        assert!((a.pts - 2.0).abs() < 1e-9, "a.pts = {}", a.pts);
+        assert!((b.pts - 0.0).abs() < 1e-9, "b.pts = {}", b.pts);
+        assert!((w.pts - 3.0).abs() < 1e-9, "w.pts = {}", w.pts);
         // a placed 2nd 3 times.
         assert_eq!(a.standing_counts[1], 3);
         // b placed 4th 3 times.
         assert_eq!(b.standing_counts[3], 3);
-    }
-
-    #[test]
-    fn standings_pairwise_elo_two_player_equals_winner_loser_form() {
-        // Sanity: with 2 players the standings-pairwise update has
-        // to coincide with the old winner/loser update — this is
-        // the invariant that keeps existing 2-player results stable.
-        let records = vec![
-            rec(&["a", "b"], Some(0)),
-            rec(&["a", "b"], Some(0)),
-            rec(&["a", "b"], Some(1)),
-        ];
-        let report = build_report(&records);
-        // After 2 wins for a, 1 win for b: a's Elo > 1500, b's < 1500.
-        assert!(report.per_bot["a"].elo > 1500.0);
-        assert!(report.per_bot["b"].elo < 1500.0);
     }
 
     #[test]
@@ -1031,13 +1016,13 @@ mod tests {
     #[test]
     fn standings_handle_tied_survivors() {
         // 4-player mutual death (everyone rank 1). Should count as
-        // a draw for everyone (no wins/losses), and no Elo movement.
+        // a draw for everyone (no wins/losses, no pair_wins).
         let records = vec![rec_standings(&["a", "b", "c", "d"], vec![1, 1, 1, 1])];
         let report = build_report(&records);
         for name in ["a", "b", "c", "d"] {
             let s = &report.per_bot[name];
             assert_eq!((s.wins, s.losses, s.draws), (0, 0, 1));
-            assert!((s.elo - 1500.0).abs() < 1e-9, "{name} elo drifted");
         }
+        assert!(report.pair_wins.is_empty(), "ties should produce no pair_wins");
     }
 }
