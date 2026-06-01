@@ -527,6 +527,7 @@ impl FantasticBitsGame {
     ///   * Accio → target must NOT be a wizard, and alive.
     ///   * Petrificus / Flipendo → target alive; if wizard, must not
     ///     be same-team as caster.
+    ///
     /// On invalid target the spell is silently dropped (referee
     /// throws; we drop, to keep the engine resilient to noisy bots).
     fn spell_target_valid(&self, caster_player: usize, kind: SpellKind, target_id: i32) -> bool {
@@ -596,9 +597,9 @@ impl FantasticBitsGame {
         // Mirror of the referee's `for (Pod p : pods) { ... }` block
         // in updateGame: thrust, release-held, accio-cancel-on-self,
         // accio-cancel-if-target-dead, cooldown.
-        for wiz_id in 0..self.wizards.len() {
+        for (wiz_id, intent) in intents.iter().enumerate() {
             // Apply thrust.
-            let thrust = intents[wiz_id].thrust;
+            let thrust = intent.thrust;
             self.wizards[wiz_id].disc.vel = self.wizards[wiz_id]
                 .disc
                 .vel
@@ -606,7 +607,7 @@ impl FantasticBitsGame {
 
             // Bump cooldown if we entered the tick holding (matches the
             // referee setting it during handlePlayerOutput).
-            if intents[wiz_id].was_holding {
+            if intent.was_holding {
                 self.wizards[wiz_id].cooldown = CAPTURE_COOLDOWN;
             }
 

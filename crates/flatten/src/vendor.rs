@@ -1237,13 +1237,12 @@ pub fn collect_proc_macro_export_names(src: &str) -> HashSet<String> {
                 use syn::punctuated::Punctuated;
                 if let Ok(items) =
                     attr.parse_args_with(Punctuated::<syn::Meta, Token![,]>::parse_terminated)
+                    && let Some(first) = items.first()
                 {
-                    if let Some(first) = items.first() {
-                        if let Some(id) = first.path().get_ident() {
-                            derive_name = Some(id.to_string());
-                        } else if let Some(seg) = first.path().segments.first() {
-                            derive_name = Some(seg.ident.to_string());
-                        }
+                    if let Some(id) = first.path().get_ident() {
+                        derive_name = Some(id.to_string());
+                    } else if let Some(seg) = first.path().segments.first() {
+                        derive_name = Some(seg.ident.to_string());
                     }
                 }
                 is_pm = true;
@@ -1383,10 +1382,10 @@ fn collect_exports_from_items(
                     // it transparently if so.
                     let saved = std::mem::take(path_so_far);
                     let mut next_tree = p.tree.as_ref();
-                    if let syn::UseTree::Path(p2) = next_tree {
-                        if p2.ident == self_ident {
-                            next_tree = p2.tree.as_ref();
-                        }
+                    if let syn::UseTree::Path(p2) = next_tree
+                        && p2.ident == self_ident
+                    {
+                        next_tree = p2.tree.as_ref();
                     }
                     walk_for_wildcards(
                         next_tree,
@@ -1415,10 +1414,10 @@ fn collect_exports_from_items(
                 let mut current_items = crate_root;
                 for seg in path_so_far.iter() {
                     let next = current_items.iter().find_map(|it| {
-                        if let syn::Item::Mod(m) = it {
-                            if m.ident == seg.as_str() {
-                                return m.content.as_ref().map(|(_, items)| items.as_slice());
-                            }
+                        if let syn::Item::Mod(m) = it
+                            && m.ident == seg.as_str()
+                        {
+                            return m.content.as_ref().map(|(_, items)| items.as_slice());
                         }
                         None
                     });

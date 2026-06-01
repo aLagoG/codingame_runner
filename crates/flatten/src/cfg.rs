@@ -349,8 +349,8 @@ pub(crate) fn is_compiler_set_predicate(name: &str) -> bool {
 
 pub(crate) fn eval_cfg(expr: &CfgExpr, features: &HashSet<String>) -> CfgEval {
     match expr {
-        CfgExpr::Literal(true) => return CfgEval::True,
-        CfgExpr::Literal(false) => return CfgEval::False,
+        CfgExpr::Literal(true) => CfgEval::True,
+        CfgExpr::Literal(false) => CfgEval::False,
         CfgExpr::Feature(f) => {
             if features.contains(f) {
                 CfgEval::True

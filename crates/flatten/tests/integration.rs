@@ -266,8 +266,7 @@ fn included_items_participate_in_mod_resolution() {
 #[test]
 fn include_macro_missing_file_errors() {
     let dir = make_crate(&[("src/lib.rs", "include!(\"does_not_exist.rs\");\n")]);
-    let pkg = parse_package(dir.path());
-    let err = pkg.err().expect("expected an error for missing include");
+    let err = parse_package(dir.path()).expect_err("expected an error for missing include");
     let msg = format!("{err}");
     assert!(
         msg.contains("does_not_exist") && msg.contains("include!"),
@@ -281,7 +280,7 @@ fn include_str_macro_missing_file_errors() {
         "src/lib.rs",
         "pub const S: &str = include_str!(\"missing.txt\");\n",
     )]);
-    let err = parse_package(dir.path()).err().expect("expected an error");
+    let err = parse_package(dir.path()).expect_err("expected an error");
     assert!(
         format!("{err}").contains("include_str!"),
         "expected include_str! mention in error: {err}"
@@ -298,9 +297,7 @@ fn include_cycle_errors_with_depth_limit() {
         ("src/a.rs", "include!(\"b.rs\");\n"),
         ("src/b.rs", "include!(\"a.rs\");\n"),
     ]);
-    let err = parse_package(dir.path())
-        .err()
-        .expect("expected cycle error, not stack overflow");
+    let err = parse_package(dir.path()).expect_err("expected cycle error, not stack overflow");
     let msg = format!("{err}");
     assert!(
         msg.contains("nesting depth") || msg.contains("cycle"),

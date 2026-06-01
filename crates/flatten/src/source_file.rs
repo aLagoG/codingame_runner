@@ -302,7 +302,7 @@ impl SourceFile {
                 resolve_path_attr_candidates(&decl, &containing_dir, &submod_search_dir);
             let cfg_attr_count = decl.path_attrs.iter().filter(|(p, _)| p.is_some()).count();
             if cfg_attr_count >= 1
-                && multi.len() >= 1
+                && !multi.is_empty()
                 && let Some(attrs_range) = decl.path_attrs_range.clone()
             {
                 let mut candidates: Vec<(Option<proc_macro2::TokenStream>, SourceFile, String)> =
@@ -1187,10 +1187,10 @@ fn inline_mods_inside_macros_inner(
                 //     declarations inside a cfg_if! body would put
                 //     full-file content inside a `$item` slot the
                 //     macro can't accept.
-                if !matches!(macro_name.as_str(), "cfg_if") {
-                    if let Some(TokenTree::Group(g)) = toks.get(i + 2) {
-                        walk(g.stream(), true, containing_dir, submod_search_dir, edits);
-                    }
+                if !matches!(macro_name.as_str(), "cfg_if")
+                    && let Some(TokenTree::Group(g)) = toks.get(i + 2)
+                {
+                    walk(g.stream(), true, containing_dir, submod_search_dir, edits);
                 }
                 i += 3;
                 continue;
@@ -1218,10 +1218,10 @@ fn inline_mods_inside_macros_inner(
                     TokenTree::Ident(id) => id.to_string(),
                     _ => unreachable!(),
                 };
-                if !matches!(last_seg.as_str(), "cfg_if") {
-                    if let Some(TokenTree::Group(g)) = toks.get(i + 5) {
-                        walk(g.stream(), true, containing_dir, submod_search_dir, edits);
-                    }
+                if !matches!(last_seg.as_str(), "cfg_if")
+                    && let Some(TokenTree::Group(g)) = toks.get(i + 5)
+                {
+                    walk(g.stream(), true, containing_dir, submod_search_dir, edits);
                 }
                 i += 6;
                 continue;
@@ -1511,62 +1511,58 @@ pub(crate) fn cfg_predicate_known_false(tokens: &proc_macro2::TokenStream) -> bo
     // Bare ident: `unix`, `windows`, `wasm32`, etc. (target_family /
     // target_arch shorthands). crossterm_winapi's `#![cfg(windows)]`
     // is the canonical case where this matters at vendor-skip time.
-    if toks.len() == 1 {
-        if let TokenTree::Ident(id) = &toks[0] {
-            return cfg_bare_ident_known_false(&id.to_string());
-        }
+    if toks.len() == 1
+        && let TokenTree::Ident(id) = &toks[0]
+    {
+        return cfg_bare_ident_known_false(&id.to_string());
     }
     // Single key=value: `target_os = "windows"`, `target_family = "unix"`, etc.
-    if toks.len() == 3 {
-        if let (TokenTree::Ident(k), TokenTree::Punct(p), TokenTree::Literal(v)) =
+    if toks.len() == 3
+        && let (TokenTree::Ident(k), TokenTree::Punct(p), TokenTree::Literal(v)) =
             (&toks[0], &toks[1], &toks[2])
-            && p.as_char() == '='
-        {
-            let key = k.to_string();
-            let raw = v.to_string();
-            let val = raw.trim_matches('"');
-            return cfg_keyvalue_known_false(&key, val);
-        }
+        && p.as_char() == '='
+    {
+        let key = k.to_string();
+        let raw = v.to_string();
+        let val = raw.trim_matches('"');
+        return cfg_keyvalue_known_false(&key, val);
     }
     // `not(...)`: known-false iff inner is known-true.
-    if toks.len() == 2 {
-        if let (TokenTree::Ident(name), TokenTree::Group(g)) = (&toks[0], &toks[1])
-            && name == "not"
-            && g.delimiter() == proc_macro2::Delimiter::Parenthesis
-        {
-            return cfg_predicate_known_true(&g.stream());
-        }
+    if toks.len() == 2
+        && let (TokenTree::Ident(name), TokenTree::Group(g)) = (&toks[0], &toks[1])
+        && name == "not"
+        && g.delimiter() == proc_macro2::Delimiter::Parenthesis
+    {
+        return cfg_predicate_known_true(&g.stream());
     }
     // `all(...)`: known-false iff any inner cfg is known-false.
-    if toks.len() == 2 {
-        if let (TokenTree::Ident(name), TokenTree::Group(g)) = (&toks[0], &toks[1])
-            && name == "all"
-            && g.delimiter() == proc_macro2::Delimiter::Parenthesis
-        {
-            for arg in split_top_level_commas(&g.stream()) {
-                if cfg_predicate_known_false(&arg) {
-                    return true;
-                }
+    if toks.len() == 2
+        && let (TokenTree::Ident(name), TokenTree::Group(g)) = (&toks[0], &toks[1])
+        && name == "all"
+        && g.delimiter() == proc_macro2::Delimiter::Parenthesis
+    {
+        for arg in split_top_level_commas(&g.stream()) {
+            if cfg_predicate_known_false(&arg) {
+                return true;
             }
-            return false;
         }
+        return false;
     }
     // `any(...)`: known-false iff EVERY inner cfg is known-false.
     // mio's `mod selector;` lists `any(target_os = "android",
     // target_os = "linux", ...)` candidates this pass needs to
     // recognise as fully-false on macOS so the wrong sibling file
     // isn't picked.
-    if toks.len() == 2 {
-        if let (TokenTree::Ident(name), TokenTree::Group(g)) = (&toks[0], &toks[1])
-            && name == "any"
-            && g.delimiter() == proc_macro2::Delimiter::Parenthesis
-        {
-            let args = split_top_level_commas(&g.stream());
-            if args.is_empty() {
-                return false;
-            }
-            return args.iter().all(cfg_predicate_known_false);
+    if toks.len() == 2
+        && let (TokenTree::Ident(name), TokenTree::Group(g)) = (&toks[0], &toks[1])
+        && name == "any"
+        && g.delimiter() == proc_macro2::Delimiter::Parenthesis
+    {
+        let args = split_top_level_commas(&g.stream());
+        if args.is_empty() {
+            return false;
         }
+        return args.iter().all(cfg_predicate_known_false);
     }
     false
 }
@@ -1576,54 +1572,50 @@ pub(crate) fn cfg_predicate_known_false(tokens: &proc_macro2::TokenStream) -> bo
 fn cfg_predicate_known_true(tokens: &proc_macro2::TokenStream) -> bool {
     use proc_macro2::TokenTree;
     let toks: Vec<TokenTree> = tokens.clone().into_iter().collect();
-    if toks.len() == 1 {
-        if let TokenTree::Ident(id) = &toks[0] {
-            return cfg_bare_ident_known_true(&id.to_string());
-        }
+    if toks.len() == 1
+        && let TokenTree::Ident(id) = &toks[0]
+    {
+        return cfg_bare_ident_known_true(&id.to_string());
     }
-    if toks.len() == 3 {
-        if let (TokenTree::Ident(k), TokenTree::Punct(p), TokenTree::Literal(v)) =
+    if toks.len() == 3
+        && let (TokenTree::Ident(k), TokenTree::Punct(p), TokenTree::Literal(v)) =
             (&toks[0], &toks[1], &toks[2])
-            && p.as_char() == '='
-        {
-            let key = k.to_string();
-            let raw = v.to_string();
-            let val = raw.trim_matches('"');
-            return cfg_keyvalue_known_true(&key, val);
-        }
+        && p.as_char() == '='
+    {
+        let key = k.to_string();
+        let raw = v.to_string();
+        let val = raw.trim_matches('"');
+        return cfg_keyvalue_known_true(&key, val);
     }
-    if toks.len() == 2 {
-        if let (TokenTree::Ident(name), TokenTree::Group(g)) = (&toks[0], &toks[1])
-            && name == "not"
-            && g.delimiter() == proc_macro2::Delimiter::Parenthesis
-        {
-            return cfg_predicate_known_false(&g.stream());
-        }
+    if toks.len() == 2
+        && let (TokenTree::Ident(name), TokenTree::Group(g)) = (&toks[0], &toks[1])
+        && name == "not"
+        && g.delimiter() == proc_macro2::Delimiter::Parenthesis
+    {
+        return cfg_predicate_known_false(&g.stream());
     }
-    if toks.len() == 2 {
-        if let (TokenTree::Ident(name), TokenTree::Group(g)) = (&toks[0], &toks[1])
-            && name == "all"
-            && g.delimiter() == proc_macro2::Delimiter::Parenthesis
-        {
-            let args = split_top_level_commas(&g.stream());
-            if args.is_empty() {
+    if toks.len() == 2
+        && let (TokenTree::Ident(name), TokenTree::Group(g)) = (&toks[0], &toks[1])
+        && name == "all"
+        && g.delimiter() == proc_macro2::Delimiter::Parenthesis
+    {
+        let args = split_top_level_commas(&g.stream());
+        if args.is_empty() {
+            return true;
+        }
+        return args.iter().all(cfg_predicate_known_true);
+    }
+    if toks.len() == 2
+        && let (TokenTree::Ident(name), TokenTree::Group(g)) = (&toks[0], &toks[1])
+        && name == "any"
+        && g.delimiter() == proc_macro2::Delimiter::Parenthesis
+    {
+        for arg in split_top_level_commas(&g.stream()) {
+            if cfg_predicate_known_true(&arg) {
                 return true;
             }
-            return args.iter().all(cfg_predicate_known_true);
         }
-    }
-    if toks.len() == 2 {
-        if let (TokenTree::Ident(name), TokenTree::Group(g)) = (&toks[0], &toks[1])
-            && name == "any"
-            && g.delimiter() == proc_macro2::Delimiter::Parenthesis
-        {
-            for arg in split_top_level_commas(&g.stream()) {
-                if cfg_predicate_known_true(&arg) {
-                    return true;
-                }
-            }
-            return false;
-        }
+        return false;
     }
     false
 }
