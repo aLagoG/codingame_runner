@@ -1,0 +1,40 @@
+// {{game}} bot strategy — {{bot}}.
+//
+// Single source of truth for the per-turn logic. Both `bot.cpp` (FFI
+// transport, used by the runner / tournament) and `main.cpp` (stdio
+// transport AND the file cpp_flatten bundles for CodinGame) include
+// this header and call `decide(turn)`. Edit the strategy here and
+// both transports — plus your next paste-ready bundle — pick it up.
+//
+// Including `..._defs_io.h` (not the raw cbindgen header) pulls in
+// `cgio::TurnRef`, the borrowed view both transports converge on.
+// `TurnRef` is built either from the owning `cgio::TurnInput` (stdio)
+// or from `::TurnInputFFI` (FFI), so this `decide` works in both.
+
+#pragma once
+
+#include "../../defs/include/{{game}}_defs_io.h"
+
+namespace {{crate_name}} {
+
+// Match-start hook. The default game shape uses `NoInitialInput` (the
+// FFI hands over an empty struct, the stdio transport reads nothing
+// before the per-turn loop), so this is a no-op. If your game's defs
+// declare a non-empty `InitialInput`:
+//   1. Add `cgio::InitialInput` + `cgio::InitialInputRef` types and
+//      `operator>>(istream&, InitialInput&)` + `as_ref(...)` overloads
+//      in `{{game}}_defs_io.h` (see fantastic_bits's `_defs_io.h` for
+//      a worked example).
+//   2. Change this signature to `on_init(const cgio::InitialInputRef&)`
+//      and stash whatever you need in a static.
+//   3. Update `bot.cpp::initialize` to forward `cgio::as_ref(input)`
+//      and `main.cpp` to read `cgio::InitialInput init; cin >> init;`
+//      before the per-turn loop.
+inline void on_init() {}
+
+// Per-turn entry point. Replace the body with the bot's logic.
+inline TurnOutput decide(const cgio::TurnRef& /*turn*/) {
+    return TurnOutput{};
+}
+
+}  // namespace {{crate_name}}

@@ -18,6 +18,9 @@ namespace cgio {
 
 // Per-turn input view handed to `decide(const TurnRef&)`. Add fields
 // as you flesh out the Rust `TurnRef` in `{{name}}_defs/src/lib.rs`.
+// Both transports converge here: the stdio loop owns a `TurnInput`
+// and calls `input.as_ref()`; the FFI bot has a `::TurnInputFFI` and
+// calls the free `cgio::as_ref(ffi)` overload below.
 struct TurnRef {
     // TODO: borrowed views of TurnInput's fields.
 };
@@ -32,6 +35,15 @@ struct TurnInput {
         return TurnRef{};
     }
 };
+
+// Borrowed view of the cbindgen FFI struct. Free function (not a
+// method) because `::TurnInputFFI` is regenerated and we can't add
+// members to it. The bot's `strategy.h::decide(const TurnRef&)` runs
+// against this view in the FFI transport.
+inline TurnRef as_ref(const ::TurnInputFFI& /*ffi*/) {
+    // TODO: borrow `ffi`'s fields into a `TurnRef`.
+    return TurnRef{};
+}
 
 inline std::istream& operator>>(std::istream& in, TurnInput& /*input*/) {
     // TODO: read TurnInput's fields from `in`. The skeleton sets

@@ -1,6 +1,7 @@
 // C++ subprocess bot for {{game}} ({{bot}} variant): reads `TurnInput`
-// from stdin and writes a `TurnOutput` line to stdout, looping until
-// EOF.
+// per tick from stdin and writes a `TurnOutput` to stdout, looping
+// until EOF. If the game has a non-empty `InitialInput`, read it once
+// before the per-turn loop (see comment below).
 //
 // Two ways this file gets compiled:
 //   * Local cargo build: `build.rs` (via `cgio_build`) defines
@@ -8,21 +9,17 @@
 //     cgio_main()`. The Rust binary in `src/main.rs` links the
 //     static lib and calls it.
 //   * CodinGame paste: no define, so the entry point is `int main()`
-//     — paste this file (plus the contents of the game's _defs
-//     headers, since CodinGame is single-file) and the submission
-//     compiles straight to a standalone binary.
-//
-// Strategy mirrors `bot.cpp` so both transports behave identically.
+//     — `cargo xtask bundle {{game}} {{bot}} --lang cpp` runs
+//     `cpp_flatten` on this file, inlining `strategy.h` and the
+//     transitive `..._defs_io.h` / `..._defs.h` headers into a single
+//     paste-ready source. Tune the strategy in `strategy.h`; both
+//     transports and the CG bundle pick it up.
 
-#include "../../defs/include/{{game}}_defs_io.h"
+#include "strategy.h"
 
 #include <iostream>
 
 using namespace cgio;
-
-static TurnOutput decide(const TurnRef& /*turn*/) {
-    return TurnOutput{};
-}
 
 #ifdef CGIO_RUST_SHIM
 extern "C" int cgio_main()
@@ -31,9 +28,19 @@ int main()
 #endif
 {
     std::ios_base::sync_with_stdio(false);
+
+    // The default game shape uses `NoInitialInput` (nothing to read
+    // before the per-turn loop). If your game's defs declare a real
+    // `InitialInput`, add `cgio::InitialInput` (+ `operator>>` and
+    // `InitialInputRef`) to `{{game}}_defs_io.h`, then:
+    //   cgio::InitialInput init;
+    //   if (!(std::cin >> init)) return 0;
+    //   {{crate_name}}::on_init(cgio::as_ref(init));
+    {{crate_name}}::on_init();
+
     TurnInput input;
     while (std::cin >> input) {
-        std::cout << decide(input.as_ref()) << std::endl;
+        std::cout << {{crate_name}}::decide(input.as_ref()) << std::endl;
     }
     return 0;
 }

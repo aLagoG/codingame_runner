@@ -8,8 +8,11 @@ edition.workspace = true
 #                 runner's `PluginPlayer`.
 #   * `[[bin]]` — `main.cpp` compiled with an `int main()`-style loop
 #                 reading from stdin / writing to stdout, spawned by the
-#                 runner's `SubprocessPlayer`.
-# Both compilations are driven by `cgio_build::build` in `build.rs`.
+#                 runner's `SubprocessPlayer`. Same file is the entry
+#                 point cpp_flatten bundles for CodinGame submission.
+# Both compilations share `strategy.h` (single source of truth for
+# the per-turn logic) and are driven by `cgio_build::build` in
+# `build.rs`.
 [lib]
 crate-type = ["cdylib"]
 

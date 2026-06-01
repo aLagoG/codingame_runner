@@ -3,14 +3,26 @@ name = "fantastic_bits_v1_cpp"
 version.workspace = true
 edition.workspace = true
 
-# Single artifact: a `cdylib` produced from `bot.cpp` for the runner's
-# `PluginPlayer` to dlopen. No stdio subprocess transport for this bot
-# variant — add a `main.cpp` and a `[[bin]]` entry if you want one;
-# `cgio_build` picks it up automatically.
+# Two artifacts share this crate:
+#   * `cdylib`  — `bot.cpp` compiled with FFI exports, loaded by the
+#                 runner's `PluginPlayer`.
+#   * `[[bin]]` — `main.cpp` compiled with an `int main()`-style loop
+#                 reading from stdin / writing to stdout, spawned by the
+#                 runner's `SubprocessPlayer`. Same file is the entry
+#                 point cpp_flatten bundles for CodinGame submission.
+# Both compilations share `strategy.h` (single source of truth for
+# the per-turn logic) and are driven by `cgio_build::build` in
+# `build.rs`.
 [lib]
 crate-type = ["cdylib"]
 
+[[bin]]
+name = "fantastic_bits_v1_cpp_stdio"
+path = "src/main.rs"
+
 [dependencies]
+# Pure ordering dep — ensures `fantastic_bits_defs/build.rs` regenerates
+# the C++ header before `build.rs` here tries to include it.
 fantastic_bits_defs.workspace = true
 
 [build-dependencies]

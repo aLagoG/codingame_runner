@@ -129,9 +129,12 @@ fn compile_stdio_bot(main_cpp: &Path, header_dir: &Path, crate_name: &str) {
         .compile(&inner_name);
 }
 
-/// Emit cargo `rerun-if-changed` directives for every cpp source file
-/// and every header file in the include dir. Header changes are rare
-/// but they do invalidate compiled objects, so we want cargo to notice.
+/// Emit cargo `rerun-if-changed` directives for every cpp source file,
+/// every header file in the include dir, and every header file next to
+/// `bot.cpp` (e.g. `strategy.h` — shared between `bot.cpp` and
+/// `main.cpp` so the FFI and stdio transports stay in lockstep).
+/// Header changes are rare but they do invalidate compiled objects, so
+/// we want cargo to notice.
 fn emit_rerun_directives(manifest_dir: &Path, header_dir: &Path) {
     println!(
         "cargo::rerun-if-changed={}",
@@ -140,12 +143,26 @@ fn emit_rerun_directives(manifest_dir: &Path, header_dir: &Path) {
     if let Some(main_cpp) = optional_main_cpp(manifest_dir) {
         println!("cargo::rerun-if-changed={}", main_cpp.display());
     }
-    if let Ok(entries) = std::fs::read_dir(header_dir) {
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if p.extension().and_then(|e| e.to_str()) == Some("h") {
-                println!("cargo::rerun-if-changed={}", p.display());
-            }
+    emit_header_rerun(header_dir);
+    emit_header_rerun(manifest_dir);
+}
+
+/// Emit `rerun-if-changed` for every C/C++ header file directly under
+/// `dir`. Non-recursive — that's enough for both the defs include dir
+/// (flat by convention) and bot dirs (a typical bot has at most a
+/// `strategy.h` next to the cpp files).
+fn emit_header_rerun(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        let is_header = p
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| matches!(e, "h" | "hpp" | "hh" | "hxx"));
+        if is_header {
+            println!("cargo::rerun-if-changed={}", p.display());
         }
     }
 }
