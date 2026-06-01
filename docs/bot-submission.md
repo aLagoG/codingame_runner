@@ -172,3 +172,47 @@ cargo run -p codingame_runner --release -- --game <game> \
 ```
 
 Or compete in the tournament harness — see `docs/tournament.md`.
+
+## C++ bots
+
+C++ bots ship the same way but use `cpp_flatten` (inlines `#include "..."` recursively) instead of the Rust flatten:
+
+```sh
+cargo xtask bundle <game> <bot> --lang cpp
+# → target/codingame/<game>_<bot>_bot.cpp
+```
+
+Layout:
+
+```
+games/<game>/bots/<bot>_cpp/
+  Cargo.toml          # [lib] cdylib + [[bin]]
+  build.rs            # cgio_build::build("<game>", "<crate_name>")
+  strategy.h          # canonical per-turn logic (on_init + decide)
+  bot.cpp             # FFI plumbing — forwards to strategy.h
+  main.cpp            # stdio + cpp_flatten entry — also forwards to strategy.h
+  src/lib.rs          # rust shim — empty cdylib body
+  src/main.rs         # rust shim — links static lib, calls cgio_main
+```
+
+**One file owns the strategy.** Both `bot.cpp` (FFI) and `main.cpp` (stdio) just `#include "strategy.h"` and call `on_init` / `decide`. Edit `strategy.h`; both transports plus the next paste-ready bundle pick up the change. Drift between local-play and CG-submission strategy is structurally impossible.
+
+**Invariant `InitialInput` shape.** Every game's `<game>_defs_io.h` declares `cgio::InitialInput`, `cgio::InitialInputRef`, and `cgio::InitialInputFfi` (a `using` alias to whatever cbindgen named the FFI struct). For games without per-player init (`NoInitialInput` on the Rust side), the structs are empty and `operator>>` is a no-op. Bot files always look like:
+
+```cpp
+// strategy.h
+inline void on_init(const cgio::InitialInputRef& /*init*/) {}
+inline TurnOutput decide(const cgio::TurnRef&) { return {}; }
+
+// bot.cpp
+void initialize(cgio::InitialInputFfi input) { bot::on_init(cgio::as_ref(input)); }
+
+// main.cpp
+cgio::InitialInput init;
+if (!(std::cin >> init)) return 0;
+bot::on_init(cgio::as_ref(init));
+```
+
+When a game grows a real `InitialInput`, **only `<game>_defs_io.h` + the Rust defs change** (give the structs real fields, update `operator>>`, point the typedef at the new cbindgen-emitted name). All three bot files stay untouched. If you forget to update the typedef, the compiler catches it immediately ("no type named `NoInitialInputFfi` in the global namespace; did you mean `InitialInputFFI`?") — no silent runtime ABI mismatch.
+
+**fantastic_bits's `v1_cpp` is the worked example with a non-empty init**; tron + tic-tac-toe baselines are the empty-init shape. `cargo xtask new-bot --lang cpp` scaffolds bots in the same shape as the existing baselines.

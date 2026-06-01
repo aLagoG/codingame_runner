@@ -29,8 +29,8 @@ void set_counter_callback(void (*cb)(const char*, double)) {
     g_emit_counter = cb;
 }
 
-void initialize(InitialInputFFI input) {
-    fantastic_bits_v1::on_init(input.my_team_id);
+void initialize(cgio::InitialInputFfi input) {
+    fantastic_bits_v1::on_init(cgio::as_ref(input));
 }
 
 TurnResult<TurnOutput> take_turn(TurnInputFFI input) {

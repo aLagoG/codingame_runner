@@ -33,10 +33,8 @@ int main()
     std::ios_base::sync_with_stdio(false);
 
     InitialInput init;
-    if (!(std::cin >> init)) {
-        return 0;
-    }
-    fantastic_bits_v1::on_init(init.my_team_id);
+    if (!(std::cin >> init)) return 0;
+    fantastic_bits_v1::on_init(cgio::as_ref(init));
 
     TurnInput input;
     while (std::cin >> input) {

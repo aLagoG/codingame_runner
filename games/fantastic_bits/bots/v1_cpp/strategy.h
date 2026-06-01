@@ -41,8 +41,8 @@ namespace fantastic_bits_v1 {
 inline int32_t g_my_team_id = 0;
 inline int g_petr = 0;  // two-tick Petrificus guard, preserved across turns.
 
-inline void on_init(int32_t my_team_id) {
-    g_my_team_id = my_team_id;
+inline void on_init(const cgio::InitialInputRef& init) {
+    g_my_team_id = init.my_team_id;
     g_petr = 0;
 }
 

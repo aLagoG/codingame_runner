@@ -16,6 +16,32 @@
 
 namespace cgio {
 
+// ---- InitialInput (empty by default; uses `NoInitialInput`) ----
+//
+// Three names every `_defs_io.h` exposes regardless of whether the
+// game has a real init:
+//   * `cgio::InitialInput`     — owning struct read by `main.cpp` from stdin.
+//   * `cgio::InitialInputRef`  — borrowed view passed to `strategy.h::on_init`.
+//   * `cgio::InitialInputFfi`  — alias to whatever cbindgen named the
+//                                 FFI struct, so `bot.cpp::initialize`
+//                                 stays game-agnostic.
+// Keeping these names stable means the bot template's `bot.cpp` /
+// `main.cpp` / `strategy.h` are invariant across the NoInitialInput→
+// real-init upgrade — when you grow a real init, edit ONLY this file
+// (and the Rust defs). See `fantastic_bits/defs/include/...` for a
+// worked example with a non-empty init.
+
+using InitialInputFfi = ::NoInitialInputFfi;
+
+struct InitialInput {};
+struct InitialInputRef {};
+
+inline InitialInputRef as_ref(const InitialInput&)    { return {}; }
+inline InitialInputRef as_ref(const InitialInputFfi&) { return {}; }
+inline std::istream& operator>>(std::istream& in, InitialInput&) { return in; }
+
+// ---- TurnInput / TurnOutput ----
+
 // Per-turn input view handed to `decide(const TurnRef&)`. Add fields
 // as you flesh out the Rust `TurnRef` in `{{name}}_defs/src/lib.rs`.
 // Both transports converge here: the stdio loop owns a `TurnInput`

@@ -28,6 +28,32 @@
 
 namespace cgio {
 
+// ---- InitialInput (empty for tron — uses `NoInitialInput`) ----
+//
+// Three names every `_defs_io.h` exposes regardless of whether the
+// game has a real init:
+//   * `cgio::InitialInput`     — owning struct read by `main.cpp` from stdin.
+//   * `cgio::InitialInputRef`  — borrowed view passed to `strategy.h::on_init`.
+//   * `cgio::InitialInputFfi`  — alias to whatever cbindgen named the
+//                                 FFI struct, so `bot.cpp::initialize`
+//                                 stays game-agnostic.
+// Tron doesn't ship per-player init data, so the structs are empty and
+// `operator>>` is a no-op (the stream isn't touched, so an unconsumed
+// init line — there shouldn't be one anyway — stays available for the
+// per-turn loop). When you grow a real `InitialInput`, mirror
+// fantastic_bits's `_defs_io.h` and update the typedef.
+
+using InitialInputFfi = ::NoInitialInputFfi;
+
+struct InitialInput {};
+struct InitialInputRef {};
+
+inline InitialInputRef as_ref(const InitialInput&)    { return {}; }
+inline InitialInputRef as_ref(const InitialInputFfi&) { return {}; }
+inline std::istream& operator>>(std::istream& in, InitialInput&) { return in; }
+
+// ---- TurnInput / TurnOutput ----
+
 inline std::istream& operator>>(std::istream& in, Pos& p) {
     return in >> p.x >> p.y;
 }

@@ -43,6 +43,18 @@
 namespace cgio {
 
 // ---- InitialInput ----
+//
+// Three names every `_defs_io.h` exposes regardless of whether the
+// game has a real init:
+//   * `cgio::InitialInput`     — owning struct read by `main.cpp` from stdin.
+//   * `cgio::InitialInputRef`  — borrowed view passed to `strategy.h::on_init`.
+//   * `cgio::InitialInputFfi`  — alias to whatever cbindgen named the
+//                                 FFI struct, so `bot.cpp::initialize`
+//                                 stays game-agnostic.
+// For NoInitialInput games the structs are empty and `operator>>` is
+// a no-op; bot files don't need to know the difference.
+
+using InitialInputFfi = ::InitialInputFFI;
 
 struct InitialInput {
     int32_t my_team_id;
@@ -56,7 +68,7 @@ inline InitialInputRef as_ref(const InitialInput& v) {
     return InitialInputRef{v.my_team_id};
 }
 
-inline InitialInputRef as_ref(const ::InitialInputFFI& ffi) {
+inline InitialInputRef as_ref(const InitialInputFfi& ffi) {
     return InitialInputRef{ffi.my_team_id};
 }
 

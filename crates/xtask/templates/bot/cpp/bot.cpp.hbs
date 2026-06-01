@@ -8,10 +8,11 @@
 //
 // Strategy lives in `strategy.h` — shared with `main.cpp` (the stdio
 // transport, and the file cpp_flatten bundles for CodinGame). This
-// file is *only* the FFI plumbing: borrow `TurnInputFFI` as a
-// `cgio::TurnRef`, hand it to `strategy.h::decide`, wrap the answer
-// in `TurnResult<TurnOutput>`. Tune the strategy in `strategy.h`;
-// both the FFI build and the CG bundle pick it up.
+// file is *only* the FFI plumbing: borrow `cgio::InitialInputFfi` /
+// `TurnInputFFI` via `cgio::as_ref`, hand the result to `strategy.h`,
+// wrap the answer in `TurnResult<TurnOutput>`. The FFI parameter type
+// for `initialize` is the typedef in `{{game}}_defs_io.h`, so this
+// file is invariant when the game grows a real `InitialInput`.
 
 #include "strategy.h"
 
@@ -30,24 +31,15 @@ void set_counter_callback(void (*cb)(const char*, double)) {
     g_emit_counter = cb;
 }
 
-// Called once per player at match start. The default game shape uses
-// `NoInitialInputFfi` (no per-player data); when the game's defs
-// declares a real `InitialInput`, change the param type to its FFI
-// mirror (e.g. `InitialInputFFI`) and forward the borrowed view to
-// `strategy.h::on_init` via `cgio::as_ref(input)`.
-void initialize(NoInitialInputFfi /*input*/) {
-    {{crate_name}}::on_init();
+void initialize(cgio::InitialInputFfi input) {
+    {{crate_name}}::on_init(cgio::as_ref(input));
 }
 
-// Called once per tick — the FFI runner hands over `TurnInputFFI`;
-// borrow it as `cgio::TurnRef` and forward to the shared strategy.
 TurnResult<TurnOutput> take_turn(TurnInputFFI input) {
     TurnOutput output = {{crate_name}}::decide(cgio::as_ref(input));
     return TurnResult<TurnOutput>{BotStatus::Ok, output};
 }
 
-// Must return the ABI version the bot was built against — the runner
-// checks this on load and refuses mismatched plugins.
 uint32_t abi_version() { return ABI_VERSION; }
 
 }  // extern "C"
