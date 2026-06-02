@@ -80,7 +80,7 @@ fn main() -> anyhow::Result<()> {
 }
 ```
 
-(The three existing baselines — `games/tron/bots/baseline_rs`, `tictactoe`, `fantastic_bits` — are working templates.)
+(The two existing baselines — `games/tron/bots/baseline_rs` and `games/fantastic_bits/bots/baseline_rs` — are working templates.)
 
 ### Dep rules for bot crates
 
@@ -138,10 +138,6 @@ Round-trip with real wire input:
 # tron — 2 players, you're player 0, both at (0,0)→(5,5)
 printf '2 0\n0 0 5 5\n10 10 15 15\n' | /tmp/bot
 # → DOWN
-
-# tictactoe — empty board, you're player 0
-printf '0\n...\n...\n...\n' | /tmp/bot
-# → 1 1
 
 # fantastic_bits — team 0, 2 wizards, no snaffles
 printf '0\n0 0\n0 0\n2\n0 WIZARD 1000 3750 0 0 0\n1 WIZARD 2000 3750 0 0 0\n' | /tmp/bot

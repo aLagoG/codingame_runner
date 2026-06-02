@@ -249,9 +249,8 @@ enum Command {
     ///     command prints a prompt and waits
     ///     for Ctrl-D to terminate the input.
     Statement {
-        /// Game name (e.g. `tron`, `tictactoe`). The output goes to
-        /// `<game>/game/instructions.html` unless `--output`
-        /// is set.
+        /// Game name (e.g. `tron`, `fantastic_bits`). The output goes
+        /// to `<game>/game/instructions.html` unless `--output` is set.
         game: String,
         /// Read paste from this file instead of stdin.
         #[arg(short, long)]
@@ -389,7 +388,14 @@ fn main() -> Result<()> {
             output,
             vendor,
             external,
-        } => bundle(&game, bot.as_deref(), lang, output.as_deref(), vendor, &external)?,
+        } => bundle(
+            &game,
+            bot.as_deref(),
+            lang,
+            output.as_deref(),
+            vendor,
+            &external,
+        )?,
         Command::Statement {
             game,
             input,
@@ -1068,7 +1074,11 @@ fn find_children_in(bots_dir: &Path, parent: &str, lang: &str) -> Result<Vec<Str
 /// `find_children_in` keyed by game name. Resolves the bots dir
 /// from the cwd-relative `games/<game>/bots/` path.
 fn find_children(game: &str, parent: &str, lang: &str) -> Result<Vec<String>> {
-    find_children_in(&PathBuf::from("games").join(game).join("bots"), parent, lang)
+    find_children_in(
+        &PathBuf::from("games").join(game).join("bots"),
+        parent,
+        lang,
+    )
 }
 
 /// Walk `bots_dir/*/bot.toml` and collect every manifest with
@@ -1230,7 +1240,9 @@ fn doctor(game: &str) -> Result<()> {
     // BTreeMap for stable iteration → deterministic doctor output.
     let mut bots: BTreeMap<(String, String), Option<BotManifest>> = BTreeMap::new();
     let mut findings: Vec<String> = Vec::new();
-    for entry in fs::read_dir(&bots_dir).with_context(|| format!("reading {}", bots_dir.display()))? {
+    for entry in
+        fs::read_dir(&bots_dir).with_context(|| format!("reading {}", bots_dir.display()))?
+    {
         let entry = entry?;
         let path = entry.path();
         if !path.is_dir() {
@@ -1404,8 +1416,10 @@ fn history(game: &str, bot: &str, lang_override: Option<BotLang>) -> Result<()> 
             }
         }
         if manifest.history.is_empty() {
-            println!("    (no tournament history recorded yet — run \
-                      `tournament compare --record-history`)");
+            println!(
+                "    (no tournament history recorded yet — run \
+                      `tournament compare --record-history`)"
+            );
             continue;
         }
         for entry in &manifest.history {
@@ -1515,11 +1529,9 @@ fn resolve_bot_langs<'a>(
             (true, true) => anyhow::bail!(
                 "`{bot}` has both rs and cpp variants — pass `--lang rust|cpp|both` to pick"
             ),
-            (false, false) => anyhow::bail!(
-                "no bot at {} or {}",
-                rs_dir.display(),
-                cpp_dir.display(),
-            ),
+            (false, false) => {
+                anyhow::bail!("no bot at {} or {}", rs_dir.display(), cpp_dir.display(),)
+            }
         },
     };
     Ok(langs)
@@ -1537,8 +1549,8 @@ fn rewrite_dir_contents(dir: &Path, from: &str, to: &str) -> Result<()> {
         if path.is_dir() {
             rewrite_dir_contents(&path, from, to)?;
         } else if is_text_file(&path) {
-            let content = fs::read_to_string(&path)
-                .with_context(|| format!("reading {}", path.display()))?;
+            let content =
+                fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
             let rewritten = content.replace(from, to);
             if rewritten != content {
                 fs::write(&path, rewritten)
@@ -1588,7 +1600,11 @@ fn find_descendants_in(bots_dir: &Path, ancestor: &str, lang: &str) -> Result<Ve
 
 /// `find_descendants_in` keyed by game name.
 fn find_descendants(game: &str, ancestor: &str, lang: &str) -> Result<Vec<String>> {
-    find_descendants_in(&PathBuf::from("games").join(game).join("bots"), ancestor, lang)
+    find_descendants_in(
+        &PathBuf::from("games").join(game).join("bots"),
+        ancestor,
+        lang,
+    )
 }
 
 /// Run the retire path on a single bot+lang variant, bypassing the
@@ -1728,7 +1744,13 @@ fn promote_one_lang(
     }
 
     let s = Style::new();
-    println!("{} Promote {} → {} ({}):", s.heading("→"), candidate, parent_name, lang);
+    println!(
+        "{} Promote {} → {} ({}):",
+        s.heading("→"),
+        candidate,
+        parent_name,
+        lang
+    );
     if !to_retire.is_empty() {
         println!(
             "  • retire siblings + descendants: {}",
@@ -1740,15 +1762,16 @@ fn promote_one_lang(
         );
     }
     if archive {
-        println!(
-            "  • archive old parent: {parent_name}_{lang} → <ts>_{lang}",
-        );
+        println!("  • archive old parent: {parent_name}_{lang} → <ts>_{lang}",);
     } else {
         println!("  • retire old parent: {parent_name}_{lang}");
     }
     println!("  • rename {candidate}_{lang} → {parent_name}_{lang}");
     if parent_was_champion {
-        println!("  • {} promoted bot becomes champion (parent had `champion = true`)", s.ok("✓"));
+        println!(
+            "  • {} promoted bot becomes champion (parent had `champion = true`)",
+            s.ok("✓")
+        );
     }
 
     // -----------------------------------------------------------------
@@ -2277,7 +2300,10 @@ mod tests {
         let t = fixture(&[
             ("v1_cpp", &manifest("v1", "cpp", None, true)),
             ("v1_5_cpp", &manifest("v1_5", "cpp", Some("v1"), false)),
-            ("v1_some_algo_cpp", &manifest("v1_some_algo", "cpp", Some("v1"), false)),
+            (
+                "v1_some_algo_cpp",
+                &manifest("v1_some_algo", "cpp", Some("v1"), false),
+            ),
             // Different lang — shouldn't appear in cpp children of v1.
             ("v1_rs", &manifest("v1", "rs", None, false)),
             ("v1_5_rs", &manifest("v1_5", "rs", Some("v1"), false)),
@@ -2294,7 +2320,8 @@ mod tests {
         std::fs::write(
             t.path().join("v1_cpp/bot.toml"),
             manifest("v1", "cpp", None, true),
-        ).unwrap();
+        )
+        .unwrap();
         // A directory matching the naming convention but with no bot.toml
         // — should be silently skipped, not error.
         std::fs::create_dir_all(t.path().join("orphan_cpp")).unwrap();
@@ -2312,14 +2339,20 @@ mod tests {
         let t = fixture(&[
             ("v1_cpp", &manifest("v1", "cpp", None, true)),
             ("v1_a_cpp", &manifest("v1_a", "cpp", Some("v1"), false)),
-            ("v1_a_smaller_cpp", &manifest("v1_a_smaller", "cpp", Some("v1_a"), false)),
+            (
+                "v1_a_smaller_cpp",
+                &manifest("v1_a_smaller", "cpp", Some("v1_a"), false),
+            ),
             ("v1_b_cpp", &manifest("v1_b", "cpp", Some("v1"), false)),
         ]);
         let descs = find_descendants_in(t.path(), "v1", "cpp").unwrap();
         // Deepest-first ordering: v1_a_smaller must come before v1_a.
         let smaller = descs.iter().position(|s| s == "v1_a_smaller").unwrap();
         let a = descs.iter().position(|s| s == "v1_a").unwrap();
-        assert!(smaller < a, "deepest-first ordering: smaller={smaller} a={a}");
+        assert!(
+            smaller < a,
+            "deepest-first ordering: smaller={smaller} a={a}"
+        );
         // All three direct + indirect descendants present.
         let set: std::collections::BTreeSet<&str> = descs.iter().map(String::as_str).collect();
         assert!(set.contains("v1_a"));
@@ -2361,7 +2394,11 @@ mod tests {
         let t = TempDir::new().unwrap();
         let src = t.path().join("src");
         std::fs::create_dir_all(&src).unwrap();
-        std::fs::write(src.join("lib.rs"), "use fb_v1_cpp::decide;\n// fb_v1_cpp::on_init\n").unwrap();
+        std::fs::write(
+            src.join("lib.rs"),
+            "use fb_v1_cpp::decide;\n// fb_v1_cpp::on_init\n",
+        )
+        .unwrap();
         std::fs::write(src.join("config.toml"), "name = \"fb_v1_cpp\"\n").unwrap();
         // A non-text file — bytes that aren't valid UTF-8.
         std::fs::write(src.join("blob.bin"), [0xff_u8, 0x00, 0xff]).unwrap();

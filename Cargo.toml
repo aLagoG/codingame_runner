@@ -22,11 +22,6 @@ members = [
     "games/tron/viz",
     "games/tron/bots/baseline_rs",
     "games/tron/bots/baseline_cpp",
-    "games/tictactoe/defs",
-    "games/tictactoe/game",
-    "games/tictactoe/viz",
-    "games/tictactoe/bots/baseline_rs",
-    "games/tictactoe/bots/baseline_cpp",
     "games/fantastic_bits/defs",
     "games/fantastic_bits/game",
     "games/fantastic_bits/viz",
@@ -76,7 +71,5 @@ bot_manifest = { path = "crates/bot_manifest" }
 
 tron_defs = { path = "games/tron/defs" }
 tron_game = { path = "games/tron/game" }
-tictactoe_defs = { path = "games/tictactoe/defs" }
-tictactoe_game = { path = "games/tictactoe/game" }
 fantastic_bits_defs = { path = "games/fantastic_bits/defs" }
 fantastic_bits_game = { path = "games/fantastic_bits/game" }

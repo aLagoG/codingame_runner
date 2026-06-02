@@ -54,7 +54,7 @@ Bot names are stems (e.g. `v1`, `baseline`) — `compare` reads each bot's `bot.
 figure out which language variant exists and resolves the dylib path under `target/release/`. \
 Re-runs `cargo build --release -p <crate>` for every bot (incremental, so a no-op when up-to-date). \
 For N=2 prints a single verdict line + a \"need ≈ X more games\" epilogue when inconclusive; \
-for N≥3 prints a ranked table + pairwise verdict block.",
+for N≥3 prints a ranked table + pairwise verdict block."
 )]
 struct CompareArgs {
     /// Game to play.
@@ -94,7 +94,7 @@ struct CompareArgs {
 #[derive(Parser)]
 #[command(about = "Schedule and play matches; stream a JSONL result log.")]
 struct RunArgs {
-    /// Game to play (`tictactoe`, `tron`).
+    /// Game to play (`tron`, `fantastic_bits`).
     #[arg(long)]
     game: String,
 
@@ -411,9 +411,7 @@ fn run_adaptive(
     let total = schedule.len();
     let max_waves = total.div_ceil(wave_size).max(1);
     let per_look_alpha = alpha / max_waves as f64;
-    eprintln!(
-        "  Bonferroni-corrected per-wave α = {alpha:.4} / {max_waves} = {per_look_alpha:.6}"
-    );
+    eprintln!("  Bonferroni-corrected per-wave α = {alpha:.4} / {max_waves} = {per_look_alpha:.6}");
 
     let mut records: Vec<MatchRecord> = Vec::with_capacity(total);
     let mut played = 0usize;
@@ -431,7 +429,9 @@ fn run_adaptive(
                 names.join(" vs ")
             );
             let rec = tournament::run_match_named(game, &entries, m.seed, enable_counters)
-                .with_context(|| format!("match in wave {} ({})", wave_idx + 1, names.join(" vs ")))?;
+                .with_context(|| {
+                    format!("match in wave {} ({})", wave_idx + 1, names.join(" vs "))
+                })?;
             serde_json::to_writer(&mut out, &rec)?;
             writeln!(out)?;
             out.flush()?;
@@ -778,7 +778,11 @@ fn print_pairwise_verdicts(report: &tournament::Report) {
         y.2.a_win_rate
             .partial_cmp(&x.2.a_win_rate)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then(x.2.p_value.partial_cmp(&y.2.p_value).unwrap_or(std::cmp::Ordering::Equal))
+            .then(
+                x.2.p_value
+                    .partial_cmp(&y.2.p_value)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
     });
 
     println!("Pairwise verdicts (95% CI, no Elo):");
@@ -1232,17 +1236,13 @@ fn resolve_bot_for_compare(game: &str, spec: &str) -> Result<ResolvedBot> {
     let lang: &str = match (explicit_lang, rs_dir.exists(), cpp_dir.exists()) {
         (Some("rs"), true, _) => "rs",
         (Some("cpp"), _, true) => "cpp",
-        (Some(want), _, _) => bail!(
-            "{bot}:{want} not found at games/{game}/bots/{bot}_{want}/",
-        ),
+        (Some(want), _, _) => bail!("{bot}:{want} not found at games/{game}/bots/{bot}_{want}/",),
         (None, true, false) => "rs",
         (None, false, true) => "cpp",
-        (None, true, true) => bail!(
-            "{bot} has both rs and cpp variants — qualify as `{bot}:rs` or `{bot}:cpp`",
-        ),
-        (None, false, false) => bail!(
-            "no bot at games/{game}/bots/{bot}_rs/ or _cpp/",
-        ),
+        (None, true, true) => {
+            bail!("{bot} has both rs and cpp variants — qualify as `{bot}:rs` or `{bot}:cpp`",)
+        }
+        (None, false, false) => bail!("no bot at games/{game}/bots/{bot}_rs/ or _cpp/",),
     };
 
     let crate_name = format!("{game}_{bot}_{lang}");

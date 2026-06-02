@@ -15,7 +15,6 @@ anyhow.workspace = true
 clap.workspace = true
 common.workspace = true
 codingame_runner = { path = "../runner" }
-tictactoe_game.workspace = true
 tron_game.workspace = true
 fantastic_bits_game.workspace = true
 bot_manifest.workspace = true

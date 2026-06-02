@@ -1,4 +1,0 @@
-name = "baseline"
-lang = "cpp"
-description = "trivial C++ baseline — first empty cell, row-major"
-champion = true

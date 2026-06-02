@@ -195,8 +195,8 @@ pub fn generate(schema_path: &str, crate_name: &str) {
 ## Migration plan from B (hand-port today)
 
 1. Build `wire_codegen` and exercise it on a brand-new throwaway game (say, "rps" — rock-paper-scissors). Iterate on the DSL until the four primitives feel right.
-2. Port **tic-tac-toe** first — smallest format, easiest to validate. Delete the manual `tictactoe_defs_io.h` and the hand-written Rust impls. Verify both transports round-trip identically.
-3. Port **tron** — adds the `header_then_repeated` primitive. Delete the manual `tron_defs_io.h` and corresponding Rust impls. Verify.
+2. Port **tron** first — small format, easy to validate. Adds the `header_then_repeated` primitive. Delete the manual `tron_defs_io.h` and the hand-written Rust impls. Verify both transports round-trip identically.
+3. Port **fantastic_bits** — adds the per-tick entity list (kind-tagged rows + a state column). Delete the manual `fantastic_bits_defs_io.h` and corresponding Rust impls. Verify.
 4. From game #3 onward, schema-first. Manual impls stay only behind the `io = "custom"` escape hatch.
 
 ## Known limitations / open questions

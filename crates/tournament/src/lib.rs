@@ -321,9 +321,6 @@ pub fn run_match_named(
     enable_counters: bool,
 ) -> Result<MatchRecord> {
     match game {
-        "tictactoe" => {
-            run_match_typed::<tictactoe_game::TicTacToeGame>(game, bots, seed, enable_counters)
-        }
         "tron" => run_match_typed::<tron_game::TronGame>(game, bots, seed, enable_counters),
         "fantastic_bits" => run_match_typed::<fantastic_bits_game::FantasticBitsGame>(
             game,
@@ -762,7 +759,7 @@ mod tests {
             None => vec![1u32; bots.len()],
         };
         MatchRecord {
-            game: "tictactoe".into(),
+            game: "tron".into(),
             bots: bots.iter().map(|s| s.to_string()).collect(),
             seed: 0,
             winner,

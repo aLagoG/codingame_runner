@@ -36,8 +36,8 @@ pub struct Replay<O> {
 /// One game's bridge into the playback engine.
 ///
 /// Implement on a marker type local to the per-game viz crate so the orphan
-/// rules let you reference a foreign `Game` type (e.g. `TicTacToeGame` from
-/// `tictactoe_game`).
+/// rules let you reference a foreign `Game` type (e.g. `TronGame` from
+/// `tron_game`).
 pub trait Visualize {
     /// The game whose live state this visualizer renders. `viz::run` steps an
     /// instance of this type forward through the replay; render methods

@@ -1,4 +1,0 @@
-name = "baseline"
-lang = "rs"
-description = "trivial baseline — first empty cell, row-major"
-champion = true

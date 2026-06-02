@@ -5,7 +5,6 @@ use clap::Parser;
 use codingame_runner::make_player;
 use common::engine::{FfiGame, MatchResult, Player, RunConfig, run_match, write_replay};
 use fantastic_bits_game::FantasticBitsGame;
-use tictactoe_game::TicTacToeGame;
 use tron_game::TronGame;
 
 #[derive(Parser)]
@@ -33,7 +32,6 @@ fn main() -> Result<()> {
     let args = Args::parse();
     match args.game.as_str() {
         "tron" => run_for_game::<TronGame>(args.bots, args.save_replay),
-        "tictactoe" => run_for_game::<TicTacToeGame>(args.bots, args.save_replay),
         "fantastic_bits" => run_for_game::<FantasticBitsGame>(args.bots, args.save_replay),
         // Keep this catch-all generic — `xtask new-game` patches the
         // arms above; no need to enumerate known games here.

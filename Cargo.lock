@@ -443,7 +443,6 @@ dependencies = [
  "common",
  "fantastic_bits_game",
  "serde",
- "tictactoe_game",
  "tron_game",
 ]
 
@@ -2036,52 +2035,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tictactoe_baseline_cpp"
-version = "0.1.0"
-dependencies = [
- "cgio_build",
- "tictactoe_defs",
-]
-
-[[package]]
-name = "tictactoe_baseline_rs"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bot_common",
- "tictactoe_defs",
-]
-
-[[package]]
-name = "tictactoe_defs"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bot_common",
- "cbindgen",
-]
-
-[[package]]
-name = "tictactoe_game"
-version = "0.1.0"
-dependencies = [
- "common",
- "tictactoe_defs",
-]
-
-[[package]]
-name = "tictactoe_viz"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "common",
- "macroquad",
- "tictactoe_defs",
- "tictactoe_game",
- "viz",
-]
-
-[[package]]
 name = "toml"
 version = "0.8.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2175,7 +2128,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "tictactoe_game",
  "tron_game",
 ]
 

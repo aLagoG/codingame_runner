@@ -38,8 +38,7 @@ pub fn wilson_ci(wins: f64, n: u32, z: f64) -> (f64, f64) {
     let z2 = z * z;
     let denom = 1.0 + z2 / n_f;
     let center = (p + z2 / (2.0 * n_f)) / denom;
-    let margin =
-        (z / denom) * (p * (1.0 - p) / n_f + z2 / (4.0 * n_f * n_f)).sqrt();
+    let margin = (z / denom) * (p * (1.0 - p) / n_f + z2 / (4.0 * n_f * n_f)).sqrt();
     ((center - margin).max(0.0), (center + margin).min(1.0))
 }
 

@@ -1,6 +1,7 @@
-//! End-to-end smoke tests for tron — mirror of the tic-tac-toe
-//! integration suite. See `tictactoe_integration.rs` for the rationale
-//! behind the build/spawn structure.
+//! End-to-end smoke tests for tron: build the baselines (Rust + C++,
+//! both stdio and FFI), spawn each in turn against a fixed seed, and
+//! assert on the wire-format outputs to confirm the runner's
+//! plugin/subprocess plumbing still works.
 
 use std::path::PathBuf;
 use std::process::Command;

@@ -1,8 +1,0 @@
-[package]
-name = "tictactoe_game"
-version.workspace = true
-edition.workspace = true
-
-[dependencies]
-tictactoe_defs.workspace = true
-common.workspace = true
