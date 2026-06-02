@@ -10,7 +10,7 @@
 use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command as ProcCommand, Stdio};
 use std::sync::mpsc;
 use std::thread;
@@ -89,21 +89,45 @@ struct CompareArgs {
     /// churn from fast iteration loops.
     #[arg(long)]
     record_history: bool,
+
+    /// Number of matches to run in parallel. Defaults to the number
+    /// of available logical cores. Pass `--parallel 1` for clean
+    /// per-turn timing baselines (the printed verdict ignores
+    /// timing, but `record_history` carries it forward). Mirrors
+    /// `run --parallel`: workers are separate processes so FFI
+    /// plugins' C++ globals stay isolated per match.
+    #[arg(long, default_value_t = default_parallel())]
+    parallel: usize,
 }
 
 #[derive(Parser)]
-#[command(about = "Schedule and play matches; stream a JSONL result log.")]
+#[command(
+    about = "Schedule and play matches; stream a JSONL result log.",
+    long_about = "\
+Schedule N bots through a round-robin, play it, stream JSONL records to --output. \
+Bot names are stems (e.g. `v1`, `baseline`) — resolved via `bot.toml` to \
+`games/<game>/bots/<bot>_<lang>/` and built incrementally (`cargo build --release -p <crate>`). \
+Qualify as `<bot>:rs` or `<bot>:cpp` when both variants exist. \
+For a focused \"is X better than Y\" answer instead of a log, use `compare` — same \
+resolver, same scheduler, prints a verdict instead of writing JSONL."
+)]
 struct RunArgs {
     /// Game to play (`tron`, `fantastic_bits`).
     #[arg(long)]
     game: String,
 
-    /// Entrant in the form `name=path/to/bot`. Pass `--bot` multiple
-    /// times; names must be unique. Plugins are loaded via FFI
-    /// (`.so` / `.dylib` / `.dll`); everything else is spawned as a
-    /// subprocess.
-    #[arg(long = "bot", value_parser = parse_bot_spec, required = true)]
-    bots: Vec<BotSpec>,
+    /// Bot stems to enter (≥ 2). Each is auto-resolved to
+    /// `games/<game>/bots/<bot>_<lang>/` via `bot.toml`. If both rs
+    /// and cpp variants exist for the same stem, qualify the name
+    /// with `<bot>:rs` or `<bot>:cpp` to pick one. Stems must be
+    /// unique (they double as the bot's identifier in the JSONL log).
+    #[arg(required = true, num_args = 2..)]
+    bots: Vec<String>,
+
+    /// Skip `cargo build --release` and trust whatever's already in
+    /// `target/release/`. Mirrors `compare --no-build`.
+    #[arg(long)]
+    no_build: bool,
 
     /// Players per match. 2 by default. Must be in `[2, num_bots]`.
     #[arg(long, default_value_t = 2)]
@@ -160,10 +184,8 @@ struct RunArgs {
     counters: bool,
 
     /// After the run completes, append a `[[history]]` entry to every
-    /// participant's `bot.toml` (resolved via `--bot name=` matching
-    /// `games/<game>/bots/<name>_{cpp,rs}/`). Mirrors `compare
-    /// --record-history`. Bots whose name doesn't resolve to a real
-    /// crate dir are skipped with a warning.
+    /// participant's `bot.toml` capturing this run's pairwise outcomes
+    /// (pts vs each opponent, verdict). Mirrors `compare --record-history`.
     #[arg(long)]
     record_history: bool,
 
@@ -228,12 +250,8 @@ fn main() -> Result<()> {
 // ============================================================
 
 fn cmd_run(args: RunArgs) -> Result<()> {
-    let mut seen = BTreeSet::new();
-    for b in &args.bots {
-        if !seen.insert(b.name.clone()) {
-            bail!("duplicate bot name: {}", b.name);
-        }
-    }
+    let resolved = resolve_and_build(&args.game, &args.bots, args.no_build)?;
+    let bot_specs: Vec<BotSpec> = resolved.iter().map(ResolvedBot::to_spec).collect();
 
     let seeds = assemble_seeds(&args.seeds, args.rounds as usize, args.random_seeds);
     let cfg = ScheduleConfig {
@@ -241,7 +259,7 @@ fn cmd_run(args: RunArgs) -> Result<()> {
         seeds,
         rotate_seats: !args.no_rotate_seats,
     };
-    let schedule = build_schedule(args.bots.len(), &cfg)?;
+    let schedule = build_schedule(bot_specs.len(), &cfg)?;
     let total = schedule.len();
     if total == 0 {
         bail!("schedule is empty — check --bots-per-match / --seeds / --rounds");
@@ -291,7 +309,7 @@ fn cmd_run(args: RunArgs) -> Result<()> {
         );
         run_adaptive(
             &args.game,
-            &args.bots,
+            &bot_specs,
             &schedule,
             args.counters,
             args.wave_size,
@@ -304,11 +322,11 @@ fn cmd_run(args: RunArgs) -> Result<()> {
             args.game
         );
         if parallel == 1 {
-            run_sequential(&args.game, &args.bots, &schedule, args.counters, out, total)?;
+            run_sequential(&args.game, &bot_specs, &schedule, args.counters, out, total)?;
         } else {
             run_parallel(
                 &args.game,
-                &args.bots,
+                &bot_specs,
                 schedule,
                 args.counters,
                 out,
@@ -338,22 +356,10 @@ fn cmd_run(args: RunArgs) -> Result<()> {
             records.push(rec);
         }
         let report = build_report(&records);
-        let participants: Vec<(String, String)> = args
-            .bots
+        let participants: Vec<(String, String)> = resolved
             .iter()
-            .filter_map(|b| {
-                lang_for_bot_in_game(&args.game, &b.name).map(|lang| (b.name.clone(), lang))
-            })
+            .map(|r| (r.name.clone(), r.lang.clone()))
             .collect();
-        if participants.len() < args.bots.len() {
-            eprintln!(
-                "⚠ {} of {} --bot names didn't resolve to crates under games/{}/bots/ — \
-                 history records will be skipped for those.",
-                args.bots.len() - participants.len(),
-                args.bots.len(),
-                args.game,
-            );
-        }
         record_history(&args.game, &participants, &report)?;
     }
     Ok(())
@@ -508,6 +514,33 @@ fn run_parallel(
     mut out: BufWriter<File>,
     parallel: usize,
 ) -> Result<()> {
+    play_schedule_parallel(game, bots, schedule, enable_counters, parallel, |line| {
+        writeln!(out, "{line}")?;
+        out.flush()?;
+        Ok(())
+    })
+}
+
+/// Spawn `parallel` worker processes, partition the schedule round-
+/// robin across them, and invoke `on_line` for each JSONL record they
+/// stream back. Used by both `run --parallel N` (callback writes to
+/// the output file) and `compare --parallel N` (callback deserialises
+/// into an in-memory `Vec<MatchRecord>`). Worker-per-process is what
+/// makes FFI plugins safe: a single process loading the same dylib
+/// twice in two threads would share C++ globals, which the runner's
+/// per-match `Library::new`/drop dance only resets across separate
+/// loads in the *same* thread.
+fn play_schedule_parallel<F>(
+    game: &str,
+    bots: &[BotSpec],
+    schedule: Vec<ScheduledMatch>,
+    enable_counters: bool,
+    parallel: usize,
+    mut on_line: F,
+) -> Result<()>
+where
+    F: FnMut(String) -> Result<()>,
+{
     let total = schedule.len();
     let exe = std::env::current_exe().context("locating tournament binary")?;
 
@@ -577,14 +610,11 @@ fn run_parallel(
         }));
     }
 
-    // Stream records to the output file as they arrive. Order is
-    // by completion time, not by schedule index — the report
-    // doesn't care, and each record carries enough metadata
-    // (bots, seed) to be self-identifying.
+    // Stream records to the caller as they arrive. Order is by
+    // completion time, not by schedule index — neither caller cares.
     let mut done = 0usize;
     for line in rx {
-        writeln!(out, "{line}")?;
-        out.flush()?;
+        on_line(line)?;
         done += 1;
         eprintln!("  [{done:>4}/{total}] match completed");
     }
@@ -989,54 +1019,20 @@ struct ResolvedBot {
     dylib_path: PathBuf,
 }
 
+impl ResolvedBot {
+    fn to_spec(&self) -> BotSpec {
+        BotSpec {
+            name: self.name.clone(),
+            path: self.dylib_path.clone(),
+        }
+    }
+}
+
 fn cmd_compare(args: CompareArgs) -> Result<()> {
     anyhow::ensure!(args.bots.len() >= 2, "compare needs at least 2 bots");
-    let mut seen = BTreeSet::new();
-    for b in &args.bots {
-        if !seen.insert(b.clone()) {
-            bail!("duplicate bot: {b}");
-        }
-    }
 
-    // Resolve each bot name → ResolvedBot.
-    let resolved: Vec<ResolvedBot> = args
-        .bots
-        .iter()
-        .map(|spec| resolve_bot_for_compare(&args.game, spec))
-        .collect::<Result<_>>()?;
-
-    // Build (incremental; cargo no-ops when up-to-date).
-    if !args.no_build {
-        let crates: Vec<&str> = resolved.iter().map(|r| r.crate_name.as_str()).collect();
-        eprintln!("Building: {} (release)…", crates.join(", "));
-        let mut cmd = ProcCommand::new("cargo");
-        cmd.arg("build").arg("--release");
-        for c in &crates {
-            cmd.arg("-p").arg(c);
-        }
-        let status = cmd
-            .status()
-            .with_context(|| "spawning cargo build for compare")?;
-        anyhow::ensure!(status.success(), "cargo build failed (exit {status})");
-    }
-    // Verify every dylib actually exists post-build.
-    for r in &resolved {
-        anyhow::ensure!(
-            r.dylib_path.exists(),
-            "expected dylib not found: {} (pass --no-build to skip the build step \
-             only when you know the artifact is somewhere else)",
-            r.dylib_path.display(),
-        );
-    }
-
-    // Convert to BotSpec (the tournament's player handle).
-    let bot_specs: Vec<BotSpec> = resolved
-        .iter()
-        .map(|r| BotSpec {
-            name: r.name.clone(),
-            path: r.dylib_path.clone(),
-        })
-        .collect();
+    let resolved = resolve_and_build(&args.game, &args.bots, args.no_build)?;
+    let bot_specs: Vec<BotSpec> = resolved.iter().map(ResolvedBot::to_spec).collect();
 
     // Build the schedule. Reuse the `tournament run` logic — same
     // seeds-and-rotations rules so `compare --rounds N` matches what
@@ -1063,22 +1059,35 @@ fn cmd_compare(args: CompareArgs) -> Result<()> {
         args.bots_per_match,
     );
 
-    // Play in-memory — no JSONL output, no temp file. Compare is a
-    // one-shot answer machine.
+    let parallel = args.parallel.clamp(1, schedule.len()).max(1);
+    eprintln!("  (--parallel {parallel})");
     let mut records: Vec<MatchRecord> = Vec::with_capacity(schedule.len());
-    for (i, m) in schedule.iter().enumerate() {
-        let entries: Vec<BotSpec> = m.bot_idx.iter().map(|&j| bot_specs[j].clone()).collect();
-        let names: Vec<&str> = entries.iter().map(|b| b.name.as_str()).collect();
-        eprintln!(
-            "  [{:>4}/{}] seed={} {}",
-            i + 1,
-            schedule.len(),
-            m.seed,
-            names.join(" vs "),
-        );
-        let rec = tournament::run_match_named(&args.game, &entries, m.seed, false)
-            .with_context(|| format!("match {} ({})", i + 1, names.join(" vs ")))?;
-        records.push(rec);
+    if parallel == 1 {
+        // Sequential path keeps the per-match "[i/N] seed=... a vs b"
+        // breadcrumb line on stderr — handy for watching short
+        // compares scroll by. The parallel path's by-completion-time
+        // ordering would scramble it.
+        for (i, m) in schedule.iter().enumerate() {
+            let entries: Vec<BotSpec> = m.bot_idx.iter().map(|&j| bot_specs[j].clone()).collect();
+            let names: Vec<&str> = entries.iter().map(|b| b.name.as_str()).collect();
+            eprintln!(
+                "  [{:>4}/{}] seed={} {}",
+                i + 1,
+                schedule.len(),
+                m.seed,
+                names.join(" vs "),
+            );
+            let rec = tournament::run_match_named(&args.game, &entries, m.seed, false)
+                .with_context(|| format!("match {} ({})", i + 1, names.join(" vs ")))?;
+            records.push(rec);
+        }
+    } else {
+        play_schedule_parallel(&args.game, &bot_specs, schedule, false, parallel, |line| {
+            let rec: MatchRecord = serde_json::from_str(&line)
+                .with_context(|| format!("parsing worker record `{line}`"))?;
+            records.push(rec);
+            Ok(())
+        })?;
     }
     let report = build_report(&records);
 
@@ -1187,35 +1196,53 @@ fn record_history(
     Ok(())
 }
 
-/// Best-effort resolver from a `--bot name=` to its lang suffix by
-/// looking for `<bots_dir>/<name>_{rs,cpp}/`. Returns `None` when
-/// neither variant exists (caller skips the bot for history recording
-/// with a warning). When both exist, prefers `cpp` — could be wrong,
-/// but `tournament run` doesn't expose the lang and the user can edit
-/// by hand after if it matters.
-///
-/// Takes `bots_dir` directly so tests can point it at a tempdir.
-fn lang_for_bot_in_dir(bots_dir: &Path, name: &str) -> Option<String> {
-    let cpp = bots_dir.join(format!("{name}_cpp"));
-    let rs = bots_dir.join(format!("{name}_rs"));
-    if cpp.exists() {
-        Some("cpp".to_string())
-    } else if rs.exists() {
-        Some("rs".to_string())
-    } else {
-        None
+/// Resolve a list of bot stems (each optionally `<bot>:<lang>` qualified)
+/// to fully-resolved `ResolvedBot` entries, optionally running
+/// `cargo build --release` to make sure the cdylibs exist. Shared by
+/// `run` and `compare`. Bails on duplicate stems, missing crate dirs,
+/// build failure, and post-build missing dylibs — all the same checks
+/// both verbs used to do inline.
+fn resolve_and_build(game: &str, stems: &[String], no_build: bool) -> Result<Vec<ResolvedBot>> {
+    let mut seen = BTreeSet::new();
+    for b in stems {
+        if !seen.insert(b.clone()) {
+            bail!("duplicate bot: {b}");
+        }
     }
-}
 
-/// `lang_for_bot_in_dir` keyed by game name.
-fn lang_for_bot_in_game(game: &str, name: &str) -> Option<String> {
-    lang_for_bot_in_dir(&PathBuf::from("games").join(game).join("bots"), name)
+    let resolved: Vec<ResolvedBot> = stems
+        .iter()
+        .map(|spec| resolve_bot(game, spec))
+        .collect::<Result<_>>()?;
+
+    if !no_build {
+        let crates: Vec<&str> = resolved.iter().map(|r| r.crate_name.as_str()).collect();
+        eprintln!("Building: {} (release)…", crates.join(", "));
+        let mut cmd = ProcCommand::new("cargo");
+        cmd.arg("build").arg("--release");
+        for c in &crates {
+            cmd.arg("-p").arg(c);
+        }
+        let status = cmd
+            .status()
+            .with_context(|| "spawning cargo build for tournament bots")?;
+        anyhow::ensure!(status.success(), "cargo build failed (exit {status})");
+    }
+    for r in &resolved {
+        anyhow::ensure!(
+            r.dylib_path.exists(),
+            "expected dylib not found: {} (pass --no-build to skip the build step \
+             only when you know the artifact is somewhere else)",
+            r.dylib_path.display(),
+        );
+    }
+    Ok(resolved)
 }
 
 /// Find the cdylib for `<game>/<bot>[:<lang>]` and read its `bot.toml`
 /// to recover the language. Accepts `<bot>:rs` or `<bot>:cpp` as an
 /// explicit qualifier when both variants exist.
-fn resolve_bot_for_compare(game: &str, spec: &str) -> Result<ResolvedBot> {
+fn resolve_bot(game: &str, spec: &str) -> Result<ResolvedBot> {
     let bots_dir = PathBuf::from("games").join(game).join("bots");
     anyhow::ensure!(
         bots_dir.exists(),
@@ -1349,32 +1376,3 @@ fn print_compare_ranking(report: &tournament::Report, bot_specs: &[BotSpec]) {
     print_pairwise_verdicts(report);
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::TempDir;
-
-    #[test]
-    fn lang_resolves_when_only_one_variant_exists() {
-        let dir = TempDir::new().unwrap();
-        std::fs::create_dir_all(dir.path().join("v1_cpp")).unwrap();
-        assert_eq!(
-            lang_for_bot_in_dir(dir.path(), "v1"),
-            Some("cpp".to_string()),
-        );
-        assert_eq!(lang_for_bot_in_dir(dir.path(), "absent"), None);
-    }
-
-    #[test]
-    fn lang_prefers_cpp_when_both_exist() {
-        // tournament run doesn't expose a --lang flag, so when both
-        // variants exist the resolver picks cpp by convention.
-        let dir = TempDir::new().unwrap();
-        std::fs::create_dir_all(dir.path().join("v1_cpp")).unwrap();
-        std::fs::create_dir_all(dir.path().join("v1_rs")).unwrap();
-        assert_eq!(
-            lang_for_bot_in_dir(dir.path(), "v1"),
-            Some("cpp".to_string()),
-        );
-    }
-}
