@@ -1,0 +1,21 @@
+name = "v1"
+lang = "cpp"
+parent = "baseline"
+description = "paranoid alpha-beta minimax (fixed depth 5) + connectivity voronoi heuristic — port of baseline_cpp/v1/tron.cpp"
+champion = false
+
+[[history]]
+ran_at = "2026-06-02T21:59:01Z"
+opponent = "v2"
+rounds = 60
+pts = 39.0
+opponent_pts = 21.0
+verdict = "significant"
+
+[[history]]
+ran_at = "2026-06-02T22:02:32Z"
+opponent = "v2"
+rounds = 60
+pts = 40.0
+opponent_pts = 20.0
+verdict = "significant"

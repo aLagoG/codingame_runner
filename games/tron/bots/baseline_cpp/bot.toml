@@ -1,4 +1,3 @@
 name = "baseline"
 lang = "cpp"
 description = "trivial C++ baseline — TurnOutput::default()"
-champion = true

@@ -22,6 +22,8 @@ members = [
     "games/tron/viz",
     "games/tron/bots/baseline_rs",
     "games/tron/bots/baseline_cpp",
+    "games/tron/bots/v1_cpp",
+    "games/tron/bots/v2_cpp",
     "games/fantastic_bits/defs",
     "games/fantastic_bits/game",
     "games/fantastic_bits/viz",

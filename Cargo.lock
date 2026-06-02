@@ -2229,6 +2229,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tron_v1_cpp"
+version = "0.1.0"
+dependencies = [
+ "cgio_build",
+ "tron_defs",
+]
+
+[[package]]
+name = "tron_v2_cpp"
+version = "0.1.0"
+dependencies = [
+ "cgio_build",
+ "tron_defs",
+]
+
+[[package]]
 name = "tron_viz"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,21 @@
+name = "v2"
+lang = "cpp"
+parent = "v1"
+description = "iterative-deepening AB with zobrist TT, move ordering, isolation detection — port of baseline_cpp/v2/tron.cpp"
+champion = true
+
+[[history]]
+ran_at = "2026-06-02T21:59:01Z"
+opponent = "v1"
+rounds = 60
+pts = 21.0
+opponent_pts = 39.0
+verdict = "worse"
+
+[[history]]
+ran_at = "2026-06-02T22:02:32Z"
+opponent = "v1"
+rounds = 60
+pts = 20.0
+opponent_pts = 40.0
+verdict = "worse"
