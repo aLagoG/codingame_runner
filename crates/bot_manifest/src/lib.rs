@@ -42,6 +42,16 @@ pub struct BotManifest {
     /// `--from-existing` clones, defaults to "clone of <parent>". The
     /// user is meant to overwrite it with something meaningful.
     pub description: String,
+    /// CodinGame league the bot reached when last submitted, e.g.
+    /// `"Wood 2"`, `"Bronze"`, `"Silver"`, `"Gold"`, `"Legend"`. Free-
+    /// form to track CG's evolving league naming. `None` until the
+    /// user submits the bot and fills it in by hand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codingame_league: Option<String>,
+    /// CodinGame standing (rank) within `codingame_league` at last
+    /// submission. `None` until the user submits and fills it in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codingame_standing: Option<u32>,
     /// At most one bot per (game, lang) should have `champion = true`
     /// — the bot `bundle` / runner default to when no name is given.
     /// `promote` flips this bit; backfills set it on the currently-
@@ -151,17 +161,44 @@ mod tests {
             parent: Some("v1".into()),
             created_at: None,
             description: "post-aware Flipendo".into(),
+            codingame_league: None,
+            codingame_standing: None,
             champion: false,
             history: vec![],
         };
         let s = toml::to_string_pretty(&m).unwrap();
         // Optional fields are omitted from the rendered form.
         assert!(!s.contains("created_at"));
+        assert!(!s.contains("codingame_league"));
+        assert!(!s.contains("codingame_standing"));
         assert!(!s.contains("history"));
         let back: BotManifest = toml::from_str(&s).unwrap();
         assert_eq!(back.name, "v1_5");
         assert_eq!(back.parent.as_deref(), Some("v1"));
+        assert!(back.codingame_league.is_none());
+        assert!(back.codingame_standing.is_none());
         assert!(!back.champion);
+    }
+
+    #[test]
+    fn round_trip_with_codingame_submission_info() {
+        let m = BotManifest {
+            name: "v1".into(),
+            lang: "cpp".into(),
+            parent: None,
+            created_at: None,
+            description: "post-aware Flipendo".into(),
+            codingame_league: Some("Bronze".into()),
+            codingame_standing: Some(412),
+            champion: true,
+            history: vec![],
+        };
+        let s = toml::to_string_pretty(&m).unwrap();
+        assert!(s.contains("codingame_league = \"Bronze\""));
+        assert!(s.contains("codingame_standing = 412"));
+        let back: BotManifest = toml::from_str(&s).unwrap();
+        assert_eq!(back.codingame_league.as_deref(), Some("Bronze"));
+        assert_eq!(back.codingame_standing, Some(412));
     }
 
     #[test]

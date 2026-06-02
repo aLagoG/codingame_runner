@@ -82,6 +82,13 @@ struct CompareArgs {
     /// are already built and you want the fastest possible iteration.
     #[arg(long)]
     no_build: bool,
+
+    /// After the tournament, append a `[[history]]` entry to every
+    /// participant's `bot.toml` capturing this matchup's outcome
+    /// (pts vs each opponent, verdict). Opt-in to avoid noisy git
+    /// churn from fast iteration loops.
+    #[arg(long)]
+    record_history: bool,
 }
 
 #[derive(Parser)]
@@ -873,6 +880,91 @@ fn cmd_compare(args: CompareArgs) -> Result<()> {
     } else {
         print_compare_ranking(&report, &bot_specs);
     }
+
+    if args.record_history {
+        record_history(&args.game, &resolved, &report)?;
+    }
+    Ok(())
+}
+
+/// Append a `[[history]]` entry to every participant's `bot.toml`
+/// summarising this run's pairwise outcomes against each opponent.
+/// One entry per (bot, opponent) pair — so a 3-bot run writes 2
+/// entries to each bot's manifest (its 2 opponents). Skips bots
+/// whose bot.toml is missing rather than fabricating one.
+fn record_history(
+    game: &str,
+    resolved: &[ResolvedBot],
+    report: &tournament::Report,
+) -> Result<()> {
+    use bot_manifest::{BotManifest, HistoryEntry, now_rfc3339};
+    use tournament::pairwise_stats::{PairStats, Verdict};
+
+    let ran_at = now_rfc3339();
+    let mut wrote = 0usize;
+    for r in resolved {
+        let manifest_path = PathBuf::from("games")
+            .join(game)
+            .join("bots")
+            .join(format!("{}_{}", r.name, r.lang))
+            .join("bot.toml");
+        if !manifest_path.exists() {
+            eprintln!(
+                "⚠ skipping history record for {}_{} — no bot.toml at {}",
+                r.name,
+                r.lang,
+                manifest_path.display(),
+            );
+            continue;
+        }
+        let mut manifest = BotManifest::read(&manifest_path)?;
+        for other in resolved {
+            if other.name == r.name {
+                continue;
+            }
+            let games = report
+                .pair_games
+                .get(&(r.name.clone(), other.name.clone()))
+                .copied()
+                .unwrap_or(0);
+            if games == 0 {
+                continue;
+            }
+            let wins_me = report
+                .pair_wins
+                .get(&(r.name.clone(), other.name.clone()))
+                .copied()
+                .unwrap_or(0);
+            let wins_them = report
+                .pair_wins
+                .get(&(other.name.clone(), r.name.clone()))
+                .copied()
+                .unwrap_or(0);
+            let draws = games.saturating_sub(wins_me + wins_them);
+            let stats = PairStats::compute(wins_me, wins_them, draws);
+            // The HistoryEntry's pts is from THIS bot's perspective
+            // (effective wins, draws split 0.5/0.5), to match the
+            // user's mental model from the printed verdict line.
+            let pts = wins_me as f64 + 0.5 * draws as f64;
+            let opp_pts = wins_them as f64 + 0.5 * draws as f64;
+            let verdict = match stats.verdict {
+                Verdict::Better => "significant",
+                Verdict::Worse => "worse",
+                Verdict::Inconclusive => "inconclusive",
+            };
+            manifest.history.push(HistoryEntry {
+                ran_at: ran_at.clone(),
+                opponent: other.name.clone(),
+                rounds: games,
+                pts,
+                opponent_pts: opp_pts,
+                verdict: verdict.to_string(),
+            });
+        }
+        manifest.write(&manifest_path)?;
+        wrote += 1;
+    }
+    eprintln!("Recorded history to {wrote} bot.toml file(s).");
     Ok(())
 }
 

@@ -211,6 +211,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bot_manifest"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "toml 0.8.23",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2157,6 +2166,7 @@ name = "tournament"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bot_manifest",
  "clap",
  "codingame_runner",
  "common",
@@ -2802,10 +2812,10 @@ name = "xtask"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "bot_manifest",
  "clap",
  "handlebars",
  "serde",
- "toml 0.8.23",
  "toml_edit",
 ]
 

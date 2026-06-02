@@ -1,0 +1,10 @@
+[package]
+name = "bot_manifest"
+version.workspace = true
+edition.workspace = true
+description = "Shared on-disk schema for per-bot `bot.toml` lineage manifests. Used by xtask (clone/retire/promote/champion) and tournament (compare --record-history)."
+
+[dependencies]
+anyhow.workspace = true
+serde = { workspace = true, features = ["derive"] }
+toml = "0.8"

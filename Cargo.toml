@@ -11,6 +11,7 @@ members = [
     "crates/cpp_flatten",
     "crates/flatten",
     "crates/tournament",
+    "crates/bot_manifest",
     # Shared bot infrastructure (deliberately tiny dep footprint so
     # bundled bots stay vendor-clean for CodinGame submission).
     "bots/common",
@@ -71,6 +72,7 @@ common = { path = "crates/common" }
 viz = { path = "crates/viz" }
 cgio_build = { path = "crates/cgio_build" }
 bot_common = { path = "bots/common" }
+bot_manifest = { path = "crates/bot_manifest" }
 
 tron_defs = { path = "games/tron/defs" }
 tron_game = { path = "games/tron/game" }

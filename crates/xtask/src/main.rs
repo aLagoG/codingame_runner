@@ -7,7 +7,6 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use toml_edit::{DocumentMut, InlineTable, Item, Table};
 
-mod bot_manifest;
 use bot_manifest::{BotManifest, now_rfc3339};
 
 /// Minimal ANSI helper for the scaffolder's printed instructions. Respects
@@ -146,6 +145,32 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Print the current champion bot(s) per (game, lang). Reads
+    /// `champion = true` from each `bot.toml` under
+    /// `games/<game>/bots/*/`. Useful as a sanity-check for the
+    /// state `bundle`/`promote` rely on.
+    Champion {
+        /// Game name.
+        game: String,
+        /// Filter to one language. When omitted, lists champions for
+        /// every lang that has one.
+        #[arg(long, value_enum)]
+        lang: Option<BotLang>,
+    },
+    /// Print a bot's `[[history]]` chronologically — the tournament
+    /// outcomes recorded by `tournament compare --record-history`.
+    History {
+        /// Game the bot belongs to.
+        #[arg(long)]
+        game: String,
+        /// Bot stem (e.g. `v1`, `baseline`).
+        #[arg(long)]
+        name: String,
+        /// Which language variant. Auto-detected when only one
+        /// exists; required when both rs and cpp variants exist.
+        #[arg(long, value_enum)]
+        lang: Option<BotLang>,
+    },
     /// Bundle a bot into a single self-contained source file ready to
     /// paste into CodinGame's web editor.
     ///
@@ -160,9 +185,13 @@ enum Command {
         /// Game name (e.g. `tron`).
         game: String,
         /// Bot name (e.g. `baseline`, `v1`). Resolved to
-        /// `<game>/bots/<bot>_<lang>/`.
-        bot: String,
-        /// Force a specific language when both variants exist.
+        /// `<game>/bots/<bot>_<lang>/`. When omitted, resolves to the
+        /// (game, lang) champion — the bot whose `bot.toml` has
+        /// `champion = true`. Errors if no champion exists for the
+        /// resolved lang.
+        bot: Option<String>,
+        /// Force a specific language when both variants exist (or
+        /// when both langs have champions in the omit-bot mode).
         #[arg(long, value_enum)]
         lang: Option<BotLang>,
         /// Override the output path. Defaults to
@@ -315,6 +344,8 @@ fn main() -> Result<()> {
             archive,
             cleanup_siblings,
         } => promote(&game, &name, lang, archive, cleanup_siblings)?,
+        Command::Champion { game, lang } => champion(&game, lang)?,
+        Command::History { game, name, lang } => history(&game, &name, lang)?,
         Command::Bundle {
             game,
             bot,
@@ -322,7 +353,7 @@ fn main() -> Result<()> {
             output,
             vendor,
             external,
-        } => bundle(&game, &bot, lang, output.as_deref(), vendor, &external)?,
+        } => bundle(&game, bot.as_deref(), lang, output.as_deref(), vendor, &external)?,
         Command::Statement {
             game,
             input,
@@ -585,13 +616,23 @@ fn profile(
 /// respective crates so they're independently testable and usable.
 fn bundle(
     game: &str,
-    bot: &str,
+    bot: Option<&str>,
     lang_override: Option<BotLang>,
     output_override: Option<&Path>,
     vendor: bool,
     external: &[String],
 ) -> Result<()> {
     let bots_dir = PathBuf::from("games").join(game).join("bots");
+
+    // When no bot was named, resolve to the current champion(s) per
+    // bot.toml. `--lang` filters which champion to pick when both langs
+    // have one.
+    let bot: String = match bot {
+        Some(b) => b.to_string(),
+        None => find_champion(game, lang_override)?,
+    };
+    let bot = bot.as_str();
+
     let rs_dir = bots_dir.join(format!("{bot}_rs"));
     let cpp_dir = bots_dir.join(format!("{bot}_cpp"));
     let lang = resolve_bundle_lang(lang_override, &rs_dir, &cpp_dir, game, bot)?;
@@ -824,6 +865,10 @@ fn new_bot(game: &str, bot: &str, lang: BotLang, from_existing: Option<&str>) ->
             parent,
             created_at: Some(now_rfc3339()),
             description,
+            // CodinGame submission info gets filled in by hand after
+            // the user actually submits the bot.
+            codingame_league: None,
+            codingame_standing: None,
             // Champion bit is never set on creation — promote flips it.
             // A freshly-scaffolded bot has no tournament history yet.
             champion: false,
@@ -980,6 +1025,191 @@ fn find_children(game: &str, parent: &str, lang: &str) -> Result<Vec<String>> {
     }
     children.sort();
     Ok(children)
+}
+
+/// Walk `games/<game>/bots/*/bot.toml` and collect every manifest with
+/// `champion = true`. Returns `(name, lang)` pairs. Used by
+/// `find_champion` and the `champion` print verb.
+fn list_champions(game: &str) -> Result<Vec<(String, String)>> {
+    let bots_dir = PathBuf::from("games").join(game).join("bots");
+    let mut out = Vec::new();
+    let Ok(entries) = fs::read_dir(&bots_dir) else {
+        return Ok(out);
+    };
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let manifest_path = dir.join("bot.toml");
+        if !manifest_path.exists() {
+            continue;
+        }
+        if let Ok(m) = BotManifest::read(&manifest_path)
+            && m.champion
+        {
+            out.push((m.name, m.lang));
+        }
+    }
+    // Stable sort: by lang then name, so output is reproducible.
+    out.sort();
+    Ok(out)
+}
+
+/// Resolve the bot name to bundle when none was passed. `--lang` filter
+/// disambiguates when more than one lang has a champion.
+fn find_champion(game: &str, lang_filter: Option<BotLang>) -> Result<String> {
+    let champions = list_champions(game)?;
+    anyhow::ensure!(
+        !champions.is_empty(),
+        "no bot in `{game}` has `champion = true` in its bot.toml — \
+         pass the bot name explicitly, or set the bit on one bot first.",
+    );
+    let lang_str: Option<&str> = match lang_filter {
+        Some(BotLang::Rust) => Some("rs"),
+        Some(BotLang::Cpp) => Some("cpp"),
+        Some(BotLang::Both) | None => None,
+    };
+    let filtered: Vec<&(String, String)> = champions
+        .iter()
+        .filter(|(_, l)| lang_str.is_none_or(|w| l == w))
+        .collect();
+    match filtered.as_slice() {
+        [] => anyhow::bail!(
+            "no champion in `{game}` for lang={:?}; champions found: {}",
+            lang_str.unwrap_or("(any)"),
+            champions
+                .iter()
+                .map(|(n, l)| format!("{n}_{l}"))
+                .collect::<Vec<_>>()
+                .join(", "),
+        ),
+        [only] => Ok(only.0.clone()),
+        many => anyhow::bail!(
+            "multiple champions in `{game}` ({}) — pass --lang to pick",
+            many.iter()
+                .map(|(n, l)| format!("{n}_{l}"))
+                .collect::<Vec<_>>()
+                .join(", "),
+        ),
+    }
+}
+
+/// `cargo xtask champion <game> [--lang L]` — read-only print of the
+/// current champion(s) per (game, lang). Renders the bot's
+/// description + last `[[history]]` entry inline so the user can see
+/// what they'd be shipping at a glance.
+fn champion(game: &str, lang_filter: Option<BotLang>) -> Result<()> {
+    let bots_dir = PathBuf::from("games").join(game).join("bots");
+    anyhow::ensure!(
+        bots_dir.exists(),
+        "no game at {} — is `{game}` the right name?",
+        bots_dir.display(),
+    );
+    let champions = list_champions(game)?;
+    let lang_str: Option<&str> = match lang_filter {
+        Some(BotLang::Rust) => Some("rs"),
+        Some(BotLang::Cpp) => Some("cpp"),
+        Some(BotLang::Both) | None => None,
+    };
+    let filtered: Vec<&(String, String)> = champions
+        .iter()
+        .filter(|(_, l)| lang_str.is_none_or(|w| l == w))
+        .collect();
+    if filtered.is_empty() {
+        if let Some(want) = lang_str {
+            println!("No champion in {game} for lang={want}.");
+        } else {
+            println!("No champion in {game}. (No bot.toml has `champion = true`.)");
+        }
+        return Ok(());
+    }
+    let s = Style::new();
+    for (name, lang) in &filtered {
+        let dir = bots_dir.join(format!("{name}_{lang}"));
+        let manifest = BotManifest::read(&dir.join("bot.toml"))?;
+        println!(
+            "{} {}_{}  {}",
+            s.heading("★"),
+            s.name(name),
+            lang,
+            s.code(&format!("({game}_{name}_{lang})")),
+        );
+        println!("    description: {}", manifest.description);
+        if let Some(parent) = &manifest.parent {
+            println!("    parent:      {parent}_{lang}");
+        }
+        if manifest.codingame_league.is_some() || manifest.codingame_standing.is_some() {
+            let league = manifest.codingame_league.as_deref().unwrap_or("—");
+            match manifest.codingame_standing {
+                Some(rank) => println!("    submitted:   {league} (rank #{rank})"),
+                None => println!("    submitted:   {league}"),
+            }
+        }
+        if let Some(last) = manifest.history.last() {
+            println!(
+                "    last match:  vs {} @ {} — {} pts (vs {}), verdict={}",
+                last.opponent, last.ran_at, last.pts, last.opponent_pts, last.verdict,
+            );
+        }
+    }
+    Ok(())
+}
+
+/// `cargo xtask history --game G --name N [--lang L]` — render a
+/// bot's `[[history]]` block chronologically. Each row is one
+/// previous tournament outcome appended by `tournament compare
+/// --record-history`. Empty history is a clean "no runs recorded
+/// yet" message.
+fn history(game: &str, bot: &str, lang_override: Option<BotLang>) -> Result<()> {
+    let bots_dir = PathBuf::from("games").join(game).join("bots");
+    anyhow::ensure!(
+        bots_dir.exists(),
+        "no game at {} — is `{game}` the right name?",
+        bots_dir.display(),
+    );
+    let langs = resolve_bot_langs(&bots_dir, bot, lang_override)?;
+    let s = Style::new();
+    for lang in &langs {
+        let manifest_path = bots_dir.join(format!("{bot}_{lang}")).join("bot.toml");
+        anyhow::ensure!(
+            manifest_path.exists(),
+            "no bot.toml at {} — was this bot scaffolded before bot.toml landed?",
+            manifest_path.display(),
+        );
+        let manifest = BotManifest::read(&manifest_path)?;
+        println!(
+            "{} {}_{}  {}",
+            s.heading("⏱"),
+            s.name(bot),
+            lang,
+            s.code(&format!("({game}_{bot}_{lang})")),
+        );
+        if manifest.codingame_league.is_some() || manifest.codingame_standing.is_some() {
+            let league = manifest.codingame_league.as_deref().unwrap_or("—");
+            match manifest.codingame_standing {
+                Some(rank) => println!("    submitted:   {league} (rank #{rank})"),
+                None => println!("    submitted:   {league}"),
+            }
+        }
+        if manifest.history.is_empty() {
+            println!("    (no tournament history recorded yet — run \
+                      `tournament compare --record-history`)");
+            continue;
+        }
+        for entry in &manifest.history {
+            println!(
+                "    {at}  vs {opp:<10}  {pts:>5.1} pts  (opp {opp_pts:>5.1})  {rounds:>4} rounds  → {verdict}",
+                at = entry.ran_at,
+                opp = entry.opponent,
+                pts = entry.pts,
+                opp_pts = entry.opponent_pts,
+                rounds = entry.rounds,
+                verdict = entry.verdict,
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Shared `--lang rust|cpp|both|(none)` → `Vec<lang_suffix>` resolver
@@ -1206,6 +1436,8 @@ fn promote_one_lang(
             parent: None,
             created_at: None,
             description: format!("(no bot.toml — synthesized for promote of {candidate})"),
+            codingame_league: None,
+            codingame_standing: None,
             champion: false,
             history: vec![],
         }
