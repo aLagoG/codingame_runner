@@ -2174,6 +2174,7 @@ dependencies = [
  "rand",
  "serde",
  "serde_json",
+ "tempfile",
  "tictactoe_game",
  "tron_game",
 ]
@@ -2816,6 +2817,7 @@ dependencies = [
  "clap",
  "handlebars",
  "serde",
+ "tempfile",
  "toml_edit",
 ]
 

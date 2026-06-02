@@ -10,7 +10,7 @@
 use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command as ProcCommand, Stdio};
 use std::sync::mpsc;
 use std::thread;
@@ -158,6 +158,35 @@ struct RunArgs {
     /// are aggregated into the JSONL log + report.
     #[arg(long)]
     counters: bool,
+
+    /// After the run completes, append a `[[history]]` entry to every
+    /// participant's `bot.toml` (resolved via `--bot name=` matching
+    /// `games/<game>/bots/<name>_{cpp,rs}/`). Mirrors `compare
+    /// --record-history`. Bots whose name doesn't resolve to a real
+    /// crate dir are skipped with a warning.
+    #[arg(long)]
+    record_history: bool,
+
+    /// Stop early once every bot-pair's two-sided p-value drops
+    /// below `--alpha`. `--rounds` becomes the cap (max matches to
+    /// play if confidence is never reached). Forces `--parallel 1`
+    /// because the wave-by-wave check needs deterministic ordering;
+    /// document this if you need fast adaptive runs.
+    #[arg(long)]
+    until_confident: bool,
+
+    /// Family-wise significance threshold used by `--until-confident`.
+    /// The per-wave check applies a Bonferroni correction
+    /// (`alpha / max_waves`) so peeking after every wave doesn't
+    /// inflate the false-positive rate to nominal alpha.
+    #[arg(long, default_value_t = 0.05)]
+    alpha: f64,
+
+    /// `--until-confident` plays matches in waves of this size and
+    /// re-checks pairwise CIs after each wave. Larger waves = fewer
+    /// stat checks (cheaper) but coarser early-stop granularity.
+    #[arg(long, default_value_t = 50)]
+    wave_size: usize,
 }
 
 #[derive(Parser)]
@@ -231,7 +260,7 @@ fn cmd_run(args: RunArgs) -> Result<()> {
     // Clamp `--parallel` to something useful: at most one worker
     // per match, and at least 1.
     let parallel = args.parallel.clamp(1, total).max(1);
-    if parallel > 1 {
+    if parallel > 1 && !args.until_confident {
         eprintln!(
             "⚠ Running with --parallel {parallel}. Per-turn decision-time \
              numbers will be affected by CPU contention; use --parallel 1 \
@@ -239,24 +268,94 @@ fn cmd_run(args: RunArgs) -> Result<()> {
         );
     }
 
-    eprintln!(
-        "Running {total} matches of {} (--parallel {parallel})…",
-        args.game
-    );
-    if parallel == 1 {
-        run_sequential(&args.game, &args.bots, &schedule, args.counters, out, total)?;
-    } else {
-        run_parallel(
+    let actually_played: usize = if args.until_confident {
+        if parallel > 1 {
+            eprintln!(
+                "⚠ --until-confident currently runs sequentially (parallel mode \
+                 doesn't compose with wave-by-wave checks); ignoring --parallel {parallel}."
+            );
+        }
+        anyhow::ensure!(
+            args.wave_size >= 1,
+            "--wave-size must be ≥ 1 (got {})",
+            args.wave_size
+        );
+        anyhow::ensure!(
+            args.alpha > 0.0 && args.alpha < 1.0,
+            "--alpha must be in (0, 1) (got {})",
+            args.alpha
+        );
+        eprintln!(
+            "Running up to {total} matches of {} (adaptive: wave_size={}, α={})…",
+            args.game, args.wave_size, args.alpha,
+        );
+        run_adaptive(
             &args.game,
             &args.bots,
-            schedule,
+            &schedule,
             args.counters,
+            args.wave_size,
+            args.alpha,
             out,
-            parallel,
-        )?;
-    }
+        )?
+    } else {
+        eprintln!(
+            "Running {total} matches of {} (--parallel {parallel})…",
+            args.game
+        );
+        if parallel == 1 {
+            run_sequential(&args.game, &args.bots, &schedule, args.counters, out, total)?;
+        } else {
+            run_parallel(
+                &args.game,
+                &args.bots,
+                schedule,
+                args.counters,
+                out,
+                parallel,
+            )?;
+        }
+        total
+    };
 
-    eprintln!("Wrote {} → {}", total, args.output.display());
+    eprintln!("Wrote {} → {}", actually_played, args.output.display());
+
+    if args.record_history {
+        // Re-read the JSONL we just wrote — avoids forking the sequential
+        // and parallel code paths just to thread records through. Cheap
+        // (file just flushed; pages still hot in cache).
+        let file = File::open(&args.output)
+            .with_context(|| format!("reopening {} for record-history", args.output.display()))?;
+        let mut records: Vec<MatchRecord> = Vec::with_capacity(actually_played);
+        for (lineno, line) in BufReader::new(file).lines().enumerate() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let rec: MatchRecord = serde_json::from_str(&line).with_context(|| {
+                format!("parsing line {} of {}", lineno + 1, args.output.display())
+            })?;
+            records.push(rec);
+        }
+        let report = build_report(&records);
+        let participants: Vec<(String, String)> = args
+            .bots
+            .iter()
+            .filter_map(|b| {
+                lang_for_bot_in_game(&args.game, &b.name).map(|lang| (b.name.clone(), lang))
+            })
+            .collect();
+        if participants.len() < args.bots.len() {
+            eprintln!(
+                "⚠ {} of {} --bot names didn't resolve to crates under games/{}/bots/ — \
+                 history records will be skipped for those.",
+                args.bots.len() - participants.len(),
+                args.bots.len(),
+                args.game,
+            );
+        }
+        record_history(&args.game, &participants, &report)?;
+    }
     Ok(())
 }
 
@@ -285,6 +384,111 @@ fn run_sequential(
         out.flush()?;
     }
     Ok(())
+}
+
+/// `--until-confident` driver: play in waves of `wave_size`, after
+/// each wave check that every bot-pair's two-sided p-value drops
+/// below a Bonferroni-corrected per-look alpha
+/// (`alpha / max_waves`). Returns the number of matches actually
+/// played (≤ schedule.len()) so the caller can report it accurately.
+///
+/// Bonferroni is the simplest peeking correction — strict but
+/// honest. Tighter alpha-spending boundaries (Pocock,
+/// O'Brien-Fleming) would let us stop a touch earlier but add
+/// real complexity; the user can opt into `gauntlet --sprt` later
+/// for proper SPRT semantics.
+fn run_adaptive(
+    game: &str,
+    bots: &[BotSpec],
+    schedule: &[ScheduledMatch],
+    enable_counters: bool,
+    wave_size: usize,
+    alpha: f64,
+    mut out: BufWriter<File>,
+) -> Result<usize> {
+    use tournament::pairwise_stats::PairStats;
+
+    let total = schedule.len();
+    let max_waves = total.div_ceil(wave_size).max(1);
+    let per_look_alpha = alpha / max_waves as f64;
+    eprintln!(
+        "  Bonferroni-corrected per-wave α = {alpha:.4} / {max_waves} = {per_look_alpha:.6}"
+    );
+
+    let mut records: Vec<MatchRecord> = Vec::with_capacity(total);
+    let mut played = 0usize;
+
+    for (wave_idx, wave) in schedule.chunks(wave_size).enumerate() {
+        for (j, m) in wave.iter().enumerate() {
+            let entries: Vec<BotSpec> = m.bot_idx.iter().map(|&k| bots[k].clone()).collect();
+            let names: Vec<&str> = entries.iter().map(|b| b.name.as_str()).collect();
+            eprintln!(
+                "  [w{:>2} {:>3}/{}] seed={} {}",
+                wave_idx + 1,
+                j + 1,
+                wave.len(),
+                m.seed,
+                names.join(" vs ")
+            );
+            let rec = tournament::run_match_named(game, &entries, m.seed, enable_counters)
+                .with_context(|| format!("match in wave {} ({})", wave_idx + 1, names.join(" vs ")))?;
+            serde_json::to_writer(&mut out, &rec)?;
+            writeln!(out)?;
+            out.flush()?;
+            records.push(rec);
+            played += 1;
+        }
+        // End-of-wave check.
+        let report = build_report(&records);
+        let bot_names: Vec<&str> = bots.iter().map(|b| b.name.as_str()).collect();
+        let mut all_significant = true;
+        for i in 0..bot_names.len() {
+            for j in (i + 1)..bot_names.len() {
+                let (a, b) = (bot_names[i], bot_names[j]);
+                let games = report
+                    .pair_games
+                    .get(&(a.to_string(), b.to_string()))
+                    .copied()
+                    .unwrap_or(0);
+                if games == 0 {
+                    all_significant = false;
+                    break;
+                }
+                let wins_a = report
+                    .pair_wins
+                    .get(&(a.to_string(), b.to_string()))
+                    .copied()
+                    .unwrap_or(0);
+                let wins_b = report
+                    .pair_wins
+                    .get(&(b.to_string(), a.to_string()))
+                    .copied()
+                    .unwrap_or(0);
+                let draws = games.saturating_sub(wins_a + wins_b);
+                let s = PairStats::compute(wins_a, wins_b, draws);
+                if s.p_value >= per_look_alpha {
+                    all_significant = false;
+                    break;
+                }
+            }
+            if !all_significant {
+                break;
+            }
+        }
+        if all_significant {
+            eprintln!(
+                "  ✓ all pairs significant at p<{per_look_alpha:.6} after wave {} ({} matches); stopping early.",
+                wave_idx + 1,
+                played,
+            );
+            return Ok(played);
+        }
+    }
+    eprintln!(
+        "  ⚠ ran out of scheduled matches before reaching significance ({} played, cap was {}).",
+        played, total,
+    );
+    Ok(played)
 }
 
 /// Spawn `parallel` copies of the tournament binary in `worker`
@@ -882,7 +1086,11 @@ fn cmd_compare(args: CompareArgs) -> Result<()> {
     }
 
     if args.record_history {
-        record_history(&args.game, &resolved, &report)?;
+        let participants: Vec<(String, String)> = resolved
+            .iter()
+            .map(|r| (r.name.clone(), r.lang.clone()))
+            .collect();
+        record_history(&args.game, &participants, &report)?;
     }
     Ok(())
 }
@@ -892,9 +1100,16 @@ fn cmd_compare(args: CompareArgs) -> Result<()> {
 /// One entry per (bot, opponent) pair — so a 3-bot run writes 2
 /// entries to each bot's manifest (its 2 opponents). Skips bots
 /// whose bot.toml is missing rather than fabricating one.
+/// Append a `[[history]]` entry to every participant's bot.toml
+/// summarising this run's pairwise outcomes against each opponent.
+/// `participants` is `(stem, lang)` pairs; we resolve `bot.toml`
+/// per `games/<game>/bots/<stem>_<lang>/`. Skips (with warning)
+/// any participant whose bot.toml is missing — happens when
+/// `tournament run`'s `--bot name=path` names don't match a real
+/// crate in the workspace.
 fn record_history(
     game: &str,
-    resolved: &[ResolvedBot],
+    participants: &[(String, String)],
     report: &tournament::Report,
 ) -> Result<()> {
     use bot_manifest::{BotManifest, HistoryEntry, now_rfc3339};
@@ -902,29 +1117,29 @@ fn record_history(
 
     let ran_at = now_rfc3339();
     let mut wrote = 0usize;
-    for r in resolved {
+    for (name, lang) in participants {
         let manifest_path = PathBuf::from("games")
             .join(game)
             .join("bots")
-            .join(format!("{}_{}", r.name, r.lang))
+            .join(format!("{name}_{lang}"))
             .join("bot.toml");
         if !manifest_path.exists() {
             eprintln!(
                 "⚠ skipping history record for {}_{} — no bot.toml at {}",
-                r.name,
-                r.lang,
+                name,
+                lang,
                 manifest_path.display(),
             );
             continue;
         }
         let mut manifest = BotManifest::read(&manifest_path)?;
-        for other in resolved {
-            if other.name == r.name {
+        for (other_name, _) in participants {
+            if other_name == name {
                 continue;
             }
             let games = report
                 .pair_games
-                .get(&(r.name.clone(), other.name.clone()))
+                .get(&(name.clone(), other_name.clone()))
                 .copied()
                 .unwrap_or(0);
             if games == 0 {
@@ -932,12 +1147,12 @@ fn record_history(
             }
             let wins_me = report
                 .pair_wins
-                .get(&(r.name.clone(), other.name.clone()))
+                .get(&(name.clone(), other_name.clone()))
                 .copied()
                 .unwrap_or(0);
             let wins_them = report
                 .pair_wins
-                .get(&(other.name.clone(), r.name.clone()))
+                .get(&(other_name.clone(), name.clone()))
                 .copied()
                 .unwrap_or(0);
             let draws = games.saturating_sub(wins_me + wins_them);
@@ -954,7 +1169,7 @@ fn record_history(
             };
             manifest.history.push(HistoryEntry {
                 ran_at: ran_at.clone(),
-                opponent: other.name.clone(),
+                opponent: other_name.clone(),
                 rounds: games,
                 pts,
                 opponent_pts: opp_pts,
@@ -966,6 +1181,31 @@ fn record_history(
     }
     eprintln!("Recorded history to {wrote} bot.toml file(s).");
     Ok(())
+}
+
+/// Best-effort resolver from a `--bot name=` to its lang suffix by
+/// looking for `<bots_dir>/<name>_{rs,cpp}/`. Returns `None` when
+/// neither variant exists (caller skips the bot for history recording
+/// with a warning). When both exist, prefers `cpp` — could be wrong,
+/// but `tournament run` doesn't expose the lang and the user can edit
+/// by hand after if it matters.
+///
+/// Takes `bots_dir` directly so tests can point it at a tempdir.
+fn lang_for_bot_in_dir(bots_dir: &Path, name: &str) -> Option<String> {
+    let cpp = bots_dir.join(format!("{name}_cpp"));
+    let rs = bots_dir.join(format!("{name}_rs"));
+    if cpp.exists() {
+        Some("cpp".to_string())
+    } else if rs.exists() {
+        Some("rs".to_string())
+    } else {
+        None
+    }
+}
+
+/// `lang_for_bot_in_dir` keyed by game name.
+fn lang_for_bot_in_game(game: &str, name: &str) -> Option<String> {
+    lang_for_bot_in_dir(&PathBuf::from("games").join(game).join("bots"), name)
 }
 
 /// Find the cdylib for `<game>/<bot>[:<lang>]` and read its `bot.toml`
@@ -1107,4 +1347,34 @@ fn print_compare_ranking(report: &tournament::Report, bot_specs: &[BotSpec]) {
     }
     println!();
     print_pairwise_verdicts(report);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn lang_resolves_when_only_one_variant_exists() {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("v1_cpp")).unwrap();
+        assert_eq!(
+            lang_for_bot_in_dir(dir.path(), "v1"),
+            Some("cpp".to_string()),
+        );
+        assert_eq!(lang_for_bot_in_dir(dir.path(), "absent"), None);
+    }
+
+    #[test]
+    fn lang_prefers_cpp_when_both_exist() {
+        // tournament run doesn't expose a --lang flag, so when both
+        // variants exist the resolver picks cpp by convention.
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("v1_cpp")).unwrap();
+        std::fs::create_dir_all(dir.path().join("v1_rs")).unwrap();
+        assert_eq!(
+            lang_for_bot_in_dir(dir.path(), "v1"),
+            Some("cpp".to_string()),
+        );
+    }
 }

@@ -171,6 +171,35 @@ enum Command {
         #[arg(long, value_enum)]
         lang: Option<BotLang>,
     },
+    /// Health-check every bot in a game and flag inconsistencies:
+    /// multiple champions per lang, orphan parent refs, history
+    /// entries pointing at deleted opponents, workspace members
+    /// missing their directory (or vice versa), and bot dirs that
+    /// forgot to write a `bot.toml`. Read-only; exit 1 if any
+    /// findings, 0 if clean.
+    Doctor {
+        /// Game name to audit.
+        game: String,
+    },
+    /// Truncate a bot's `[[history]]` to the most recent `--keep-last`
+    /// entries. Use when bot.toml grows uncomfortably long after lots
+    /// of iteration. Older entries are dropped silently — no undo, so
+    /// commit first if you might want them back.
+    CompactHistory {
+        /// Game the bot belongs to.
+        #[arg(long)]
+        game: String,
+        /// Bot stem.
+        #[arg(long)]
+        name: String,
+        /// Which language variant. Auto-detected when only one
+        /// exists; required when both rs and cpp variants exist.
+        #[arg(long, value_enum)]
+        lang: Option<BotLang>,
+        /// Keep only the most recent K history entries; drop older.
+        #[arg(long, default_value_t = 10)]
+        keep_last: usize,
+    },
     /// Bundle a bot into a single self-contained source file ready to
     /// paste into CodinGame's web editor.
     ///
@@ -346,6 +375,13 @@ fn main() -> Result<()> {
         } => promote(&game, &name, lang, archive, cleanup_siblings)?,
         Command::Champion { game, lang } => champion(&game, lang)?,
         Command::History { game, name, lang } => history(&game, &name, lang)?,
+        Command::CompactHistory {
+            game,
+            name,
+            lang,
+            keep_last,
+        } => compact_history(&game, &name, lang, keep_last)?,
+        Command::Doctor { game } => doctor(&game)?,
         Command::Bundle {
             game,
             bot,
@@ -987,14 +1023,16 @@ fn retire(game: &str, bot: &str, lang_override: Option<BotLang>, force: bool) ->
     Ok(())
 }
 
-/// Find every bot in `games/<game>/bots/*_<lang>/` whose `bot.toml`
-/// declares `parent = <parent>`. Used by `retire`'s safety check to
-/// flag orphans before they happen. Returns bare bot stems (e.g.
-/// `["v1_5", "v1_some_algo"]`).
-fn find_children(game: &str, parent: &str, lang: &str) -> Result<Vec<String>> {
-    let bots_dir = PathBuf::from("games").join(game).join("bots");
+/// Find every bot under `bots_dir/*_<lang>/` whose `bot.toml` declares
+/// `parent = <parent>`. Used by `retire`'s safety check to flag
+/// orphans before they happen. Returns bare bot stems with their
+/// lang suffix (e.g. `["v1_5_cpp", "v1_some_algo_cpp"]`).
+///
+/// Takes `bots_dir` directly (rather than deriving from `game`) so
+/// tests can point it at a tempdir.
+fn find_children_in(bots_dir: &Path, parent: &str, lang: &str) -> Result<Vec<String>> {
     let mut children = Vec::new();
-    let Ok(entries) = fs::read_dir(&bots_dir) else {
+    let Ok(entries) = fs::read_dir(bots_dir) else {
         return Ok(children);
     };
     for entry in entries.flatten() {
@@ -1027,13 +1065,20 @@ fn find_children(game: &str, parent: &str, lang: &str) -> Result<Vec<String>> {
     Ok(children)
 }
 
-/// Walk `games/<game>/bots/*/bot.toml` and collect every manifest with
+/// `find_children_in` keyed by game name. Resolves the bots dir
+/// from the cwd-relative `games/<game>/bots/` path.
+fn find_children(game: &str, parent: &str, lang: &str) -> Result<Vec<String>> {
+    find_children_in(&PathBuf::from("games").join(game).join("bots"), parent, lang)
+}
+
+/// Walk `bots_dir/*/bot.toml` and collect every manifest with
 /// `champion = true`. Returns `(name, lang)` pairs. Used by
 /// `find_champion` and the `champion` print verb.
-fn list_champions(game: &str) -> Result<Vec<(String, String)>> {
-    let bots_dir = PathBuf::from("games").join(game).join("bots");
+///
+/// Takes `bots_dir` directly so tests can point it at a tempdir.
+fn list_champions_in(bots_dir: &Path) -> Result<Vec<(String, String)>> {
     let mut out = Vec::new();
-    let Ok(entries) = fs::read_dir(&bots_dir) else {
+    let Ok(entries) = fs::read_dir(bots_dir) else {
         return Ok(out);
     };
     for entry in entries.flatten() {
@@ -1054,6 +1099,11 @@ fn list_champions(game: &str) -> Result<Vec<(String, String)>> {
     // Stable sort: by lang then name, so output is reproducible.
     out.sort();
     Ok(out)
+}
+
+/// `list_champions_in` keyed by game name.
+fn list_champions(game: &str) -> Result<Vec<(String, String)>> {
+    list_champions_in(&PathBuf::from("games").join(game).join("bots"))
 }
 
 /// Resolve the bot name to bundle when none was passed. `--lang` filter
@@ -1156,6 +1206,167 @@ fn champion(game: &str, lang_filter: Option<BotLang>) -> Result<()> {
     Ok(())
 }
 
+/// `cargo xtask doctor <game>` — walk every bot under
+/// `games/<game>/bots/` and flag inconsistencies. No --fix mode
+/// (yet); print all findings, exit 1 if any, 0 if clean.
+///
+/// Checks:
+///   1. Multiple `champion = true` per (game, lang).
+///   2. `parent = X` where `X_<lang>` doesn't exist.
+///   3. History entries referencing a now-deleted opponent.
+///   4. [workspace.members] entries pointing at non-existent dirs.
+///   5. Bot dirs missing a `bot.toml`.
+///   6. Bot dirs not registered in [workspace.members].
+fn doctor(game: &str) -> Result<()> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let bots_dir = PathBuf::from("games").join(game).join("bots");
+    anyhow::ensure!(
+        bots_dir.exists(),
+        "no game at {} — is `{game}` the right name?",
+        bots_dir.display(),
+    );
+
+    // --- 1. Discover every (name, lang) bot dir + its manifest (if any).
+    // BTreeMap for stable iteration → deterministic doctor output.
+    let mut bots: BTreeMap<(String, String), Option<BotManifest>> = BTreeMap::new();
+    let mut findings: Vec<String> = Vec::new();
+    for entry in fs::read_dir(&bots_dir).with_context(|| format!("reading {}", bots_dir.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let dir_name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n,
+            None => continue,
+        };
+        // Match `<stem>_(rs|cpp)`; skip dirs that don't follow the convention.
+        let (stem, lang) = if let Some(s) = dir_name.strip_suffix("_rs") {
+            (s, "rs")
+        } else if let Some(s) = dir_name.strip_suffix("_cpp") {
+            (s, "cpp")
+        } else {
+            continue;
+        };
+        let manifest_path = path.join("bot.toml");
+        let manifest = if manifest_path.exists() {
+            Some(BotManifest::read(&manifest_path)?)
+        } else {
+            findings.push(format!(
+                "bot dir {dir_name} has no bot.toml (run a fresh `new-bot` or backfill by hand)",
+            ));
+            None
+        };
+        bots.insert((stem.to_string(), lang.to_string()), manifest);
+    }
+
+    // --- 2. Multiple champions per (lang).
+    let mut champions_by_lang: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for ((name, lang), m) in &bots {
+        if let Some(m) = m
+            && m.champion
+        {
+            champions_by_lang
+                .entry(lang.clone())
+                .or_default()
+                .push(name.clone());
+        }
+    }
+    for (lang, names) in &champions_by_lang {
+        if names.len() > 1 {
+            findings.push(format!(
+                "multiple champions in lang={lang}: {} (only one should have `champion = true`)",
+                names.join(", "),
+            ));
+        }
+    }
+
+    // --- 3. parent points to a bot that doesn't exist in the same lang lane.
+    for ((name, lang), m) in &bots {
+        if let Some(m) = m
+            && let Some(parent) = &m.parent
+            && !bots.contains_key(&(parent.clone(), lang.clone()))
+        {
+            findings.push(format!(
+                "{name}_{lang}: parent = \"{parent}\" but no {parent}_{lang} exists \
+                 (was the parent retired without promote? edit bot.toml to repair)",
+            ));
+        }
+    }
+
+    // --- 4. History entries referencing a now-deleted opponent (in same lang).
+    for ((name, lang), m) in &bots {
+        if let Some(m) = m {
+            let known: BTreeSet<&String> = bots
+                .keys()
+                .filter(|(_, l)| l == lang)
+                .map(|(n, _)| n)
+                .collect();
+            let mut dangling: BTreeSet<&String> = BTreeSet::new();
+            for h in &m.history {
+                if !known.contains(&h.opponent) {
+                    dangling.insert(&h.opponent);
+                }
+            }
+            for opp in dangling {
+                findings.push(format!(
+                    "{name}_{lang} has history vs {opp} but no {opp}_{lang} exists \
+                     (cleaned up with `xtask retire`; history is preserved as a record)",
+                ));
+            }
+        }
+    }
+
+    // --- 5 + 6. Cross-check against root Cargo.toml [workspace.members].
+    let root_cargo = fs::read_to_string("Cargo.toml").context("reading workspace Cargo.toml")?;
+    let doc = root_cargo
+        .parse::<DocumentMut>()
+        .context("parsing workspace Cargo.toml")?;
+    let prefix = format!("games/{game}/bots/");
+    let mut ws_entries: BTreeSet<String> = BTreeSet::new();
+    if let Some(members) = doc["workspace"]["members"].as_array() {
+        for m in members.iter() {
+            if let Some(s) = m.as_str() {
+                ws_entries.insert(s.to_string());
+                if s.starts_with(&prefix) {
+                    let p = PathBuf::from(s);
+                    if !p.exists() {
+                        findings.push(format!(
+                            "[workspace.members] has {s} but the directory is missing",
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    for ((name, lang), _) in &bots {
+        let expected = format!("games/{game}/bots/{name}_{lang}");
+        if !ws_entries.contains(&expected) {
+            findings.push(format!(
+                "bot dir {name}_{lang} exists but isn't in [workspace.members] (cargo will ignore it)",
+            ));
+        }
+    }
+
+    // --- Print.
+    let s = Style::new();
+    if findings.is_empty() {
+        println!(
+            "{} doctor: no issues in {game} ({} bot{} checked).",
+            s.ok("✓"),
+            bots.len(),
+            if bots.len() == 1 { "" } else { "s" },
+        );
+        Ok(())
+    } else {
+        println!("doctor: found {} issue(s) in {game}:", findings.len());
+        for f in &findings {
+            println!("  • {f}");
+        }
+        std::process::exit(1);
+    }
+}
+
 /// `cargo xtask history --game G --name N [--lang L]` — render a
 /// bot's `[[history]]` block chronologically. Each row is one
 /// previous tournament outcome appended by `tournament compare
@@ -1208,6 +1419,57 @@ fn history(game: &str, bot: &str, lang_override: Option<BotLang>) -> Result<()> 
                 verdict = entry.verdict,
             );
         }
+    }
+    Ok(())
+}
+
+/// `cargo xtask compact-history` — drop all but the most recent
+/// `keep_last` `[[history]]` entries from the bot's `bot.toml`.
+/// Idempotent: a bot with ≤ keep_last entries is a no-op + a
+/// one-line report.
+fn compact_history(
+    game: &str,
+    bot: &str,
+    lang_override: Option<BotLang>,
+    keep_last: usize,
+) -> Result<()> {
+    let bots_dir = PathBuf::from("games").join(game).join("bots");
+    anyhow::ensure!(
+        bots_dir.exists(),
+        "no game at {} — is `{game}` the right name?",
+        bots_dir.display(),
+    );
+    let langs = resolve_bot_langs(&bots_dir, bot, lang_override)?;
+    let s = Style::new();
+    for lang in &langs {
+        let manifest_path = bots_dir.join(format!("{bot}_{lang}")).join("bot.toml");
+        anyhow::ensure!(
+            manifest_path.exists(),
+            "no bot.toml at {}",
+            manifest_path.display(),
+        );
+        let mut manifest = BotManifest::read(&manifest_path)?;
+        let before = manifest.history.len();
+        if before <= keep_last {
+            println!(
+                "{}_{}: {} entries (≤ keep_last {}); nothing to compact.",
+                bot, lang, before, keep_last,
+            );
+            continue;
+        }
+        let dropped = before - keep_last;
+        // Keep the tail — most recent entries are at the end of the
+        // vector since `record_history` only appends.
+        manifest.history = manifest.history.split_off(dropped);
+        manifest.write(&manifest_path)?;
+        println!(
+            "{} {}_{}: dropped {} older entries, kept the last {}.",
+            s.ok("✓"),
+            bot,
+            lang,
+            dropped,
+            manifest.history.len(),
+        );
     }
     Ok(())
 }
@@ -1295,7 +1557,7 @@ fn rewrite_dir_contents(dir: &Path, from: &str, to: &str) -> Result<()> {
 /// legitimate state, but we guard regardless). Returns the bot stems
 /// in topological order: deepest first, so retire-by-iteration safely
 /// removes children before parents.
-fn find_descendants(game: &str, ancestor: &str, lang: &str) -> Result<Vec<String>> {
+fn find_descendants_in(bots_dir: &Path, ancestor: &str, lang: &str) -> Result<Vec<String>> {
     const MAX_DEPTH: usize = 32;
     let mut out: Vec<String> = Vec::new();
     let mut frontier: Vec<(String, usize)> = vec![(ancestor.to_string(), 0)];
@@ -1306,7 +1568,7 @@ fn find_descendants(game: &str, ancestor: &str, lang: &str) -> Result<Vec<String
                  cycle in bot.toml parent fields?",
             );
         }
-        let children = find_children(game, &cur, lang)?;
+        let children = find_children_in(bots_dir, &cur, lang)?;
         for child in children {
             // child is "v1_5_cpp" form; strip the suffix to get the stem
             let stem = child
@@ -1322,6 +1584,11 @@ fn find_descendants(game: &str, ancestor: &str, lang: &str) -> Result<Vec<String
     // --force, but still) doesn't complain.
     out.reverse();
     Ok(out)
+}
+
+/// `find_descendants_in` keyed by game name.
+fn find_descendants(game: &str, ancestor: &str, lang: &str) -> Result<Vec<String>> {
+    find_descendants_in(&PathBuf::from("games").join(game).join("bots"), ancestor, lang)
 }
 
 /// Run the retire path on a single bot+lang variant, bypassing the
@@ -1949,4 +2216,194 @@ fn wire_tournament_dispatch(lib_rs_path: &str, name: &str, name_pascal: &str) ->
 
     fs::write(lib_rs_path, out)?;
     Ok(())
+}
+
+// ============================================================
+//  Tests
+// ============================================================
+//
+// Tests target the read-only lineage helpers (`find_children_in`,
+// `find_descendants_in`, `list_champions_in`, `find_champion`) and
+// the content-rewriting helper (`rewrite_dir_contents`). The verb
+// orchestrators themselves (retire/promote/compare) shell out to
+// `cargo clean` and mutate workspace files, which is awkward to
+// reproduce in a unit test — but those orchestrators are mostly
+// glue over these helpers, so testing the helpers covers the
+// load-bearing logic.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// Build a bots-dir layout in a tempdir from a list of
+    /// `(dir_name, bot.toml contents)` tuples. Returns the
+    /// owning TempDir so the caller controls cleanup.
+    fn fixture(bots: &[(&str, &str)]) -> TempDir {
+        let dir = TempDir::new().unwrap();
+        for (name, body) in bots {
+            let d = dir.path().join(name);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("bot.toml"), body).unwrap();
+        }
+        dir
+    }
+
+    fn manifest(name: &str, lang: &str, parent: Option<&str>, champion: bool) -> String {
+        let mut s = format!("name = \"{name}\"\nlang = \"{lang}\"\n");
+        if let Some(p) = parent {
+            s.push_str(&format!("parent = \"{p}\"\n"));
+        }
+        s.push_str(&format!(
+            "description = \"\"\nchampion = {}\n",
+            if champion { "true" } else { "false" },
+        ));
+        s
+    }
+
+    // ---- find_children_in -----------------------------------------
+
+    #[test]
+    fn find_children_empty() {
+        let t = fixture(&[("baseline_cpp", &manifest("baseline", "cpp", None, true))]);
+        let kids = find_children_in(t.path(), "baseline", "cpp").unwrap();
+        assert!(kids.is_empty());
+    }
+
+    #[test]
+    fn find_children_one_lang_lane_only() {
+        // v1_cpp has two cpp children + one rs "sibling" that should
+        // be ignored (different lang lane).
+        let t = fixture(&[
+            ("v1_cpp", &manifest("v1", "cpp", None, true)),
+            ("v1_5_cpp", &manifest("v1_5", "cpp", Some("v1"), false)),
+            ("v1_some_algo_cpp", &manifest("v1_some_algo", "cpp", Some("v1"), false)),
+            // Different lang — shouldn't appear in cpp children of v1.
+            ("v1_rs", &manifest("v1", "rs", None, false)),
+            ("v1_5_rs", &manifest("v1_5", "rs", Some("v1"), false)),
+        ]);
+        let mut kids = find_children_in(t.path(), "v1", "cpp").unwrap();
+        kids.sort();
+        assert_eq!(kids, vec!["v1_5_cpp", "v1_some_algo_cpp"]);
+    }
+
+    #[test]
+    fn find_children_skips_dirs_without_manifest() {
+        let t = TempDir::new().unwrap();
+        std::fs::create_dir_all(t.path().join("v1_cpp")).unwrap();
+        std::fs::write(
+            t.path().join("v1_cpp/bot.toml"),
+            manifest("v1", "cpp", None, true),
+        ).unwrap();
+        // A directory matching the naming convention but with no bot.toml
+        // — should be silently skipped, not error.
+        std::fs::create_dir_all(t.path().join("orphan_cpp")).unwrap();
+        let kids = find_children_in(t.path(), "v1", "cpp").unwrap();
+        assert!(kids.is_empty());
+    }
+
+    // ---- find_descendants_in --------------------------------------
+
+    #[test]
+    fn find_descendants_transitive_deepest_first() {
+        // Tree:
+        //   v1 — v1_a — v1_a_smaller
+        //      \ v1_b
+        let t = fixture(&[
+            ("v1_cpp", &manifest("v1", "cpp", None, true)),
+            ("v1_a_cpp", &manifest("v1_a", "cpp", Some("v1"), false)),
+            ("v1_a_smaller_cpp", &manifest("v1_a_smaller", "cpp", Some("v1_a"), false)),
+            ("v1_b_cpp", &manifest("v1_b", "cpp", Some("v1"), false)),
+        ]);
+        let descs = find_descendants_in(t.path(), "v1", "cpp").unwrap();
+        // Deepest-first ordering: v1_a_smaller must come before v1_a.
+        let smaller = descs.iter().position(|s| s == "v1_a_smaller").unwrap();
+        let a = descs.iter().position(|s| s == "v1_a").unwrap();
+        assert!(smaller < a, "deepest-first ordering: smaller={smaller} a={a}");
+        // All three direct + indirect descendants present.
+        let set: std::collections::BTreeSet<&str> = descs.iter().map(String::as_str).collect();
+        assert!(set.contains("v1_a"));
+        assert!(set.contains("v1_a_smaller"));
+        assert!(set.contains("v1_b"));
+    }
+
+    // ---- list_champions_in ----------------------------------------
+
+    #[test]
+    fn list_champions_one_per_lang() {
+        let t = fixture(&[
+            ("baseline_rs", &manifest("baseline", "rs", None, true)),
+            ("v1_cpp", &manifest("v1", "cpp", None, true)),
+            ("v1_5_cpp", &manifest("v1_5", "cpp", Some("v1"), false)),
+        ]);
+        let champs = list_champions_in(t.path()).unwrap();
+        // Sorted lexicographically on (name, lang) — "baseline" < "v1".
+        assert_eq!(
+            champs,
+            vec![
+                ("baseline".to_string(), "rs".to_string()),
+                ("v1".to_string(), "cpp".to_string()),
+            ],
+        );
+    }
+
+    #[test]
+    fn list_champions_none() {
+        let t = fixture(&[("v1_cpp", &manifest("v1", "cpp", None, false))]);
+        let champs = list_champions_in(t.path()).unwrap();
+        assert!(champs.is_empty());
+    }
+
+    // ---- rewrite_dir_contents -------------------------------------
+
+    #[test]
+    fn rewrite_dir_contents_text_files_only() {
+        let t = TempDir::new().unwrap();
+        let src = t.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("lib.rs"), "use fb_v1_cpp::decide;\n// fb_v1_cpp::on_init\n").unwrap();
+        std::fs::write(src.join("config.toml"), "name = \"fb_v1_cpp\"\n").unwrap();
+        // A non-text file — bytes that aren't valid UTF-8.
+        std::fs::write(src.join("blob.bin"), [0xff_u8, 0x00, 0xff]).unwrap();
+
+        rewrite_dir_contents(&src, "fb_v1_cpp", "fb_v2_cpp").unwrap();
+
+        let lib = std::fs::read_to_string(src.join("lib.rs")).unwrap();
+        assert_eq!(lib, "use fb_v2_cpp::decide;\n// fb_v2_cpp::on_init\n");
+        let toml = std::fs::read_to_string(src.join("config.toml")).unwrap();
+        assert_eq!(toml, "name = \"fb_v2_cpp\"\n");
+        // Binary blob untouched (skipped by is_text_file).
+        let blob = std::fs::read(src.join("blob.bin")).unwrap();
+        assert_eq!(blob, vec![0xff, 0x00, 0xff]);
+    }
+
+    #[test]
+    fn rewrite_dir_contents_noop_when_no_match() {
+        let t = TempDir::new().unwrap();
+        let src = t.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("x.txt"), "unrelated content\n").unwrap();
+        rewrite_dir_contents(&src, "absent", "other").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(src.join("x.txt")).unwrap(),
+            "unrelated content\n",
+        );
+    }
+
+    // ---- archive_timestamp ----------------------------------------
+
+    #[test]
+    fn archive_timestamp_shape() {
+        let ts = archive_timestamp();
+        // YYYYMMDD_HHMMSS — 15 chars exactly, with an underscore at index 8.
+        assert_eq!(ts.len(), 15, "ts = {ts}");
+        assert_eq!(ts.chars().nth(8), Some('_'));
+        // All non-underscore positions are digits.
+        for (i, c) in ts.chars().enumerate() {
+            if i == 8 {
+                continue;
+            }
+            assert!(c.is_ascii_digit(), "non-digit at {i}: {c}");
+        }
+    }
 }
