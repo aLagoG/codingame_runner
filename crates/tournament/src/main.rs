@@ -338,24 +338,28 @@ fn cmd_run(args: RunArgs) -> Result<()> {
 
     eprintln!("Wrote {} → {}", actually_played, args.output.display());
 
-    if args.record_history {
-        // Re-read the JSONL we just wrote — avoids forking the sequential
-        // and parallel code paths just to thread records through. Cheap
-        // (file just flushed; pages still hot in cache).
-        let file = File::open(&args.output)
-            .with_context(|| format!("reopening {} for record-history", args.output.display()))?;
-        let mut records: Vec<MatchRecord> = Vec::with_capacity(actually_played);
-        for (lineno, line) in BufReader::new(file).lines().enumerate() {
-            let line = line?;
-            if line.trim().is_empty() {
-                continue;
-            }
-            let rec: MatchRecord = serde_json::from_str(&line).with_context(|| {
-                format!("parsing line {} of {}", lineno + 1, args.output.display())
-            })?;
-            records.push(rec);
+    // Re-read the JSONL we just wrote so we can print the report (and
+    // record history, when requested). Cheap — the file was just
+    // flushed and its pages are hot in the page cache. Avoids forking
+    // the sequential/parallel/adaptive code paths just to thread
+    // records back through.
+    let file = File::open(&args.output)
+        .with_context(|| format!("reopening {} to summarise", args.output.display()))?;
+    let mut records: Vec<MatchRecord> = Vec::with_capacity(actually_played);
+    for (lineno, line) in BufReader::new(file).lines().enumerate() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
         }
-        let report = build_report(&records);
+        let rec: MatchRecord = serde_json::from_str(&line)
+            .with_context(|| format!("parsing line {} of {}", lineno + 1, args.output.display()))?;
+        records.push(rec);
+    }
+    let report = build_report(&records);
+    println!();
+    print_report(&report);
+
+    if args.record_history {
         let participants: Vec<(String, String)> = resolved
             .iter()
             .map(|r| (r.name.clone(), r.lang.clone()))
@@ -745,12 +749,19 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
     }
 
     let report = build_report(&records);
-    print_summary(&report);
-    println!();
-    print_matrix(&report);
-    println!();
-    print_pairwise_verdicts(&report);
+    print_report(&report);
     Ok(())
+}
+
+/// Per-bot summary table + win-rate matrix + pairwise verdicts.
+/// Shared between `report`, `run` (post-play), and `compare`
+/// (post-play, before the focused verdict line).
+fn print_report(report: &tournament::Report) {
+    print_summary(report);
+    println!();
+    print_matrix(report);
+    println!();
+    print_pairwise_verdicts(report);
 }
 
 /// Print a "Pairwise verdicts" block — one row per unordered bot
@@ -1092,6 +1103,13 @@ fn cmd_compare(args: CompareArgs) -> Result<()> {
     let report = build_report(&records);
 
     println!();
+    print_report(&report);
+    // Focused verdict goes last so it's the last thing on screen
+    // when the tables push the per-pair line off-frame. For N≥3
+    // `print_pairwise_verdicts` already covered every pair inside
+    // `print_report`; the ranking adds the pts-sorted leaderboard
+    // on top.
+    println!();
     if bot_specs.len() == 2 {
         print_compare_focused(&report, &bot_specs);
     } else {
@@ -1372,7 +1390,5 @@ fn print_compare_ranking(report: &tournament::Report, bot_specs: &[BotSpec]) {
             wp = win_pct,
         );
     }
-    println!();
-    print_pairwise_verdicts(report);
 }
 

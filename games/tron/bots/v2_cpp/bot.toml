@@ -19,3 +19,11 @@ rounds = 60
 pts = 20.0
 opponent_pts = 40.0
 verdict = "worse"
+
+[[history]]
+ran_at = "2026-06-02T22:52:08Z"
+opponent = "v1"
+rounds = 60
+pts = 22.0
+opponent_pts = 38.0
+verdict = "worse"
