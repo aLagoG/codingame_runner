@@ -502,11 +502,37 @@ where
     _marker: PhantomData<G>,
 }
 
+/// Time `SubprocessPlayer::spawn` waits after `fork+exec` before
+/// returning. Absorbs dynamic-linker / libc / C++ static-init time
+/// so it isn't billed against the bot's first `take_turn` call. The
+/// alternative (a `READY` handshake on stdout) would be cleaner but
+/// requires per-bot cooperation; a fixed sleep works for any bot and
+/// is the right default until we know we need finer control.
+///
+/// 100 ms is enough for our tron/fantastic_bits bots' startup on
+/// macOS/Linux even with a cold filesystem cache (50 ms left rare
+/// first-of-day outliers in the per-turn max). If a heavier bot ever
+/// shows tick-1 outliers in its stats, override via
+/// `CGR_SUBPROCESS_WARMUP_MS=<n>`.
+const SUBPROCESS_WARMUP_DEFAULT: Duration = Duration::from_millis(100);
+
+fn subprocess_warmup() -> Duration {
+    std::env::var("CGR_SUBPROCESS_WARMUP_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(SUBPROCESS_WARMUP_DEFAULT)
+}
+
 impl<G: Game> SubprocessPlayer<G> {
     pub fn spawn(cmd: &mut Command) -> io::Result<Self> {
         let mut child = cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).spawn()?;
         let stdin = child.stdin.take().expect("piped stdin missing");
         let stdout = BufReader::new(child.stdout.take().expect("piped stdout missing"));
+        // Wait out the bot's process-startup cost so it doesn't
+        // contaminate the first `take_turn` measurement. See
+        // `SUBPROCESS_WARMUP_DEFAULT` for the rationale.
+        std::thread::sleep(subprocess_warmup());
         Ok(Self {
             stdin,
             stdout,

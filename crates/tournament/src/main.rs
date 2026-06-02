@@ -7,7 +7,6 @@
 //! aggregation) lives in the `tournament` library; this file is just
 //! arg parsing and I/O.
 
-use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::PathBuf;
@@ -16,7 +15,7 @@ use std::sync::mpsc;
 use std::thread;
 
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use tournament::{
     BotSpec, MatchRecord, ScheduleConfig, ScheduledMatch, build_report, build_schedule,
     play_schedule,
@@ -98,6 +97,10 @@ struct CompareArgs {
     /// plugins' C++ globals stay isolated per match.
     #[arg(long, default_value_t = default_parallel())]
     parallel: usize,
+
+    /// Bot transport. See `run --transport` — same semantics here.
+    #[arg(long, value_enum, default_value_t = Transport::Ffi)]
+    transport: Transport,
 }
 
 #[derive(Parser)]
@@ -209,6 +212,14 @@ struct RunArgs {
     /// stat checks (cheaper) but coarser early-stop granularity.
     #[arg(long, default_value_t = 50)]
     wave_size: usize,
+
+    /// Bot transport. `ffi` (default) loads each bot as a cdylib via
+    /// `dlopen` and calls `take_turn` in-process — ~10× faster per
+    /// turn for sub-millisecond decisions. `subprocess` spawns each
+    /// bot as a child process and talks wire format over stdin/stdout
+    /// — matches what CodinGame runs at submission time.
+    #[arg(long, value_enum, default_value_t = Transport::Ffi)]
+    transport: Transport,
 }
 
 #[derive(Parser)]
@@ -250,8 +261,8 @@ fn main() -> Result<()> {
 // ============================================================
 
 fn cmd_run(args: RunArgs) -> Result<()> {
-    let resolved = resolve_and_build(&args.game, &args.bots, args.no_build)?;
-    let bot_specs: Vec<BotSpec> = resolved.iter().map(ResolvedBot::to_spec).collect();
+    let resolved = resolve_and_build(&args.game, &args.bots, args.no_build, args.transport)?;
+    let bot_specs: Vec<BotSpec> = resolved.iter().map(|r| r.to_spec(args.transport)).collect();
 
     let seeds = assemble_seeds(&args.seeds, args.rounds as usize, args.random_seeds);
     let cfg = ScheduleConfig {
@@ -1019,22 +1030,71 @@ fn print_matrix(report: &tournament::Report) {
 // ============================================================
 
 /// One resolved bot — what its `bot.toml` says + where its dylib lives.
+/// Transport selector for `run` / `compare`. The runner discriminates
+/// by file extension (`runner::is_plugin`), so this is purely a path
+/// chooser: `Ffi` → `.dylib`/`.so`/`.dll` and `Subprocess` → the bin
+/// produced by the crate's `[[bin]]` target.
+#[derive(Copy, Clone, Debug, ValueEnum)]
+#[clap(rename_all = "lower")]
+enum Transport {
+    /// Load the cdylib via `dlopen` and call `take_turn` directly.
+    /// ~10× faster per turn for sub-millisecond decisions (no I/O,
+    /// no process spawn), but bot panics share the runner's address
+    /// space — they're caught by a `catch_unwind` shim, but a UB
+    /// (use-after-free, OOB write) crashes the whole tournament.
+    Ffi,
+    /// Spawn the bot as a child process and exchange the wire format
+    /// over stdin/stdout. Matches what CodinGame runs at submission
+    /// time — useful when measuring CG-mode strength, or when the
+    /// FFI surface is under test and you don't trust shared-address
+    /// safety yet.
+    Subprocess,
+}
+
+impl Transport {
+    fn label(self) -> &'static str {
+        match self {
+            Transport::Ffi => "ffi",
+            Transport::Subprocess => "subprocess",
+        }
+    }
+}
+
 struct ResolvedBot {
-    /// Short name used in the report (the bot stem, e.g. `v1_5`).
+    /// Stem the user passed (e.g. `v1`), used to look up the crate +
+    /// bot.toml. Note: when the same stem appears multiple times in
+    /// one invocation (a self-vs-self comparison), `display_name`
+    /// gets a `#N` suffix while `name` keeps the bare stem.
     name: String,
+    /// What to call this bot in the schedule + report. Equal to `name`
+    /// unless disambiguation kicked in.
+    display_name: String,
     /// `rs` or `cpp`.
     lang: String,
     /// Cargo crate name, e.g. `fantastic_bits_v1_5_cpp`.
     crate_name: String,
     /// Where the cdylib lives after `cargo build --release`.
     dylib_path: PathBuf,
+    /// Where the stdio bin lives after `cargo build --release`.
+    /// Naming differs by lang because the convention does: Rust bots
+    /// auto-discover `src/main.rs` as `<crate>`, C++ bots declare an
+    /// explicit `[[bin]] name = "<crate>_stdio"` to keep it separate
+    /// from the `[lib]` cdylib of the same crate.
+    bin_path: PathBuf,
 }
 
 impl ResolvedBot {
-    fn to_spec(&self) -> BotSpec {
+    fn path_for(&self, transport: Transport) -> &PathBuf {
+        match transport {
+            Transport::Ffi => &self.dylib_path,
+            Transport::Subprocess => &self.bin_path,
+        }
+    }
+
+    fn to_spec(&self, transport: Transport) -> BotSpec {
         BotSpec {
-            name: self.name.clone(),
-            path: self.dylib_path.clone(),
+            name: self.display_name.clone(),
+            path: self.path_for(transport).clone(),
         }
     }
 }
@@ -1042,8 +1102,8 @@ impl ResolvedBot {
 fn cmd_compare(args: CompareArgs) -> Result<()> {
     anyhow::ensure!(args.bots.len() >= 2, "compare needs at least 2 bots");
 
-    let resolved = resolve_and_build(&args.game, &args.bots, args.no_build)?;
-    let bot_specs: Vec<BotSpec> = resolved.iter().map(ResolvedBot::to_spec).collect();
+    let resolved = resolve_and_build(&args.game, &args.bots, args.no_build, args.transport)?;
+    let bot_specs: Vec<BotSpec> = resolved.iter().map(|r| r.to_spec(args.transport)).collect();
 
     // Build the schedule. Reuse the `tournament run` logic — same
     // seeds-and-rotations rules so `compare --rounds N` matches what
@@ -1216,22 +1276,43 @@ fn record_history(
 
 /// Resolve a list of bot stems (each optionally `<bot>:<lang>` qualified)
 /// to fully-resolved `ResolvedBot` entries, optionally running
-/// `cargo build --release` to make sure the cdylibs exist. Shared by
+/// `cargo build --release` to make sure the binaries exist. Shared by
 /// `run` and `compare`. Bails on duplicate stems, missing crate dirs,
-/// build failure, and post-build missing dylibs — all the same checks
-/// both verbs used to do inline.
-fn resolve_and_build(game: &str, stems: &[String], no_build: bool) -> Result<Vec<ResolvedBot>> {
-    let mut seen = BTreeSet::new();
-    for b in stems {
-        if !seen.insert(b.clone()) {
-            bail!("duplicate bot: {b}");
-        }
-    }
-
-    let resolved: Vec<ResolvedBot> = stems
+/// build failure, and post-build missing artifacts for the chosen
+/// transport — all the same checks both verbs used to do inline.
+fn resolve_and_build(
+    game: &str,
+    stems: &[String],
+    no_build: bool,
+    transport: Transport,
+) -> Result<Vec<ResolvedBot>> {
+    let mut resolved: Vec<ResolvedBot> = stems
         .iter()
         .map(|spec| resolve_bot(game, spec))
         .collect::<Result<_>>()?;
+
+    // Allow duplicate stems (self-vs-self comparison) but
+    // disambiguate their display names so the report's per-bot
+    // table doesn't collapse them into one row. First occurrence
+    // keeps the bare stem; subsequent ones get `#2`, `#3`, ...
+    // Sequence is preserved by walking once with running counters.
+    use std::collections::HashMap;
+    let total: HashMap<&str, usize> =
+        stems
+            .iter()
+            .map(String::as_str)
+            .fold(HashMap::new(), |mut m, s| {
+                *m.entry(s).or_insert(0) += 1;
+                m
+            });
+    let mut seen: HashMap<&str, usize> = HashMap::new();
+    for (stem, r) in stems.iter().zip(resolved.iter_mut()) {
+        if total.get(stem.as_str()).copied().unwrap_or(0) > 1 {
+            let n = seen.entry(stem.as_str()).or_insert(0);
+            *n += 1;
+            r.display_name = format!("{}#{}", r.name, *n);
+        }
+    }
 
     if !no_build {
         let crates: Vec<&str> = resolved.iter().map(|r| r.crate_name.as_str()).collect();
@@ -1247,11 +1328,13 @@ fn resolve_and_build(game: &str, stems: &[String], no_build: bool) -> Result<Vec
         anyhow::ensure!(status.success(), "cargo build failed (exit {status})");
     }
     for r in &resolved {
+        let path = r.path_for(transport);
         anyhow::ensure!(
-            r.dylib_path.exists(),
-            "expected dylib not found: {} (pass --no-build to skip the build step \
+            path.exists(),
+            "expected {} artifact not found: {} (pass --no-build to skip the build step \
              only when you know the artifact is somewhere else)",
-            r.dylib_path.display(),
+            transport.label(),
+            path.display(),
         );
     }
     Ok(resolved)
@@ -1291,17 +1374,27 @@ fn resolve_bot(game: &str, spec: &str) -> Result<ResolvedBot> {
     };
 
     let crate_name = format!("{game}_{bot}_{lang}");
-    let dylib_path = PathBuf::from("target").join("release").join(format!(
+    let release_dir = PathBuf::from("target").join("release");
+    let dylib_path = release_dir.join(format!(
         "{}{}.{}",
         std::env::consts::DLL_PREFIX,
         crate_name,
         std::env::consts::DLL_EXTENSION,
     ));
+    // Bin naming differs by lang convention (see `ResolvedBot::bin_path`).
+    let bin_stem = match lang {
+        "cpp" => format!("{crate_name}_stdio"),
+        "rs" => crate_name.clone(),
+        _ => unreachable!("lang matched only `rs`/`cpp` above"),
+    };
+    let bin_path = release_dir.join(format!("{bin_stem}{}", std::env::consts::EXE_SUFFIX));
     Ok(ResolvedBot {
         name: bot.to_string(),
+        display_name: bot.to_string(),
         lang: lang.to_string(),
         crate_name,
         dylib_path,
+        bin_path,
     })
 }
 
