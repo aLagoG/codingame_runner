@@ -30,7 +30,6 @@ The runner already captures subprocess stderr (it gets logged); for FFI bots we'
 
 **Cons**
 - String parsing is fragile; a runaway `eprintln!` from debug code drowns the counters.
-- FFI plugins don't have a natural "end-of-tick" hook; we'd add an optional `extern "C" void emit_counters(...)`.
 - No timing breakdown *within* a decision (e.g. "30ms in BFS, 40ms in AB") without lots of counters.
 
 **Effort**: ~half a day. The parser is ~30 lines of Rust; bot side is one line per counter.
@@ -170,11 +169,11 @@ A pragmatic combination, picked for low cost-to-first-signal:
 ### Concrete first PR
 
 ```
-common/src/counters.rs      — Counter struct, stderr parser
-runner/src/main.rs          — wire parser into subprocess transport, attach to PlayerStats
-tron/tron_rs/src/lib.rs     — bump counters around decide()
-tron/tron_cpp/v2/tron.cpp   — write `@CGR cnt …` on stderr at end of each turn
-docs/perf-analysis.md       — mark Design A as implemented
+common/src/counters.rs                          — Counter struct, stderr parser
+runner/src/main.rs                              — wire parser into subprocess transport, attach to PlayerStats
+games/tron/bots/baseline_rs/src/lib.rs          — bump counters around decide()
+games/tron/bots/v2_cpp/strategy.h               — write `@CGR cnt …` on stderr at end of each turn
+docs/perf-analysis.md                           — mark Design A as implemented
 ```
 
 Once that lands, v1 vs v2 head-to-head with counters is a one-command experiment.

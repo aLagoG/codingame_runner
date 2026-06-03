@@ -1,15 +1,6 @@
-// One-line Rust shim for the C++ stdio bot. The real work lives in
-// `main.cpp` (compiled by `build.rs` via cc-rs); cargo just needs a
-// Rust entry point for its `[[bin]]` target.
-//
-// `#[link(...)]` is here (not in `build.rs`) because cargo's
-// `cargo::rustc-link-lib` from a build script applies only to the
-// package's `[lib]` target — the binary wouldn't otherwise link the
-// stdio object. The search path (`-L`) does flow through globally, so
-// we only need to name the lib.
+// See games/tron/bots/baseline_cpp/src/main.rs for the rationale.
 
-#[link(name = "fantastic_bits_v1_cpp_stdio_inner", kind = "static")]
-#[link(name = "c++", kind = "dylib")]
+#[link(name = "fantastic_bits_v1_cpp_inner", kind = "static")]
 unsafe extern "C" {
     fn cgio_main() -> i32;
 }

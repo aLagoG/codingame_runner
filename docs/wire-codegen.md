@@ -1,11 +1,13 @@
 # Wire-Format Codegen (Design Note)
 
-**Status**: deferred. Today we hand-port the wire format to C++ per game ("option B"). This doc records why a schema-driven codegen ("option E") is the right move once the count of games grows, and exactly what it would look like, so future-us doesn't re-derive it.
+**Status**: deferred. Today we hand-port the wire format to both Rust (`_defs/src/lib.rs`) and C++ (`_defs/include/<name>_defs.h` + `_defs/include/<name>_defs_io.h`) per game ("option B"). All three files are hand-written and kept in sync by hand. This doc records why a schema-driven codegen ("option E") is the right move once the count of games grows, and exactly what it would look like, so future-us doesn't re-derive it.
 
 **Trigger to build**: when game count exceeds ~5–8 and any of the following starts hurting:
-- Editing the wire format in two places (Rust `_defs/src/lib.rs` *and* C++ `_defs/include/<name>_defs_io.h`) feels like the source of a real bug, not just busywork.
+- Editing the wire format in three places (Rust `_defs/src/lib.rs` + C++ `_defs.h` + `_defs_io.h`) feels like the source of a real bug, not just busywork.
 - A wire-format change ships in Rust but the C++ port is forgotten (drift).
 - Adding a third language (Python, Go) for CodinGame deployment becomes interesting.
+
+**Historical note**: at one point `_defs.h` was cbindgen-generated from the Rust `_defs/src/lib.rs` while `_defs_io.h` was hand-written. cbindgen was dropped along with FFI removal — both headers are now hand-written. The "three sources of truth" cost below counts each header separately as a result.
 
 ## Why not off-the-shelf (option D)
 
@@ -18,27 +20,26 @@ So a custom DSL is structurally the only viable path.
 ## Architecture
 
 ```
-tron/tron_defs/
+games/tron/defs/
 ├── Cargo.toml
 ├── wire.toml             ← single source of truth for fields + I/O format
 ├── build.rs              ← thin wrapper over the wire_codegen crate
 ├── include/
-│   ├── tron_defs.h       ← types (cbindgen, unchanged)
+│   ├── tron_defs.h       ← codegen output: type declarations
 │   └── tron_defs_io.h    ← codegen output: parse/format helpers
 └── src/
-    └── lib.rs            ← include!(generated.rs) + hand-written FFI / impls
+    └── lib.rs            ← include!(generated.rs) + hand-written impls
 ```
 
-One new workspace crate, `wire_codegen`, contains all the heavy lifting. Each `_defs/build.rs` becomes ~10 lines:
+One new workspace crate, `wire_codegen`, contains all the heavy lifting. Each `_defs/build.rs` becomes:
 
 ```rust
 fn main() {
     wire_codegen::generate("wire.toml", "tron_defs");
-    // …existing cbindgen invocation…
 }
 ```
 
-The build-script ordering trick we already use (`links = "tron_defs"` on the `_defs` package) guarantees `tron_cpp/build.rs` runs after both headers are written.
+To guarantee C++ bot crates can `#include` the generated headers before their own build script runs, the `_defs` Cargo.toml would re-add `links = "<name>_defs"` (dropped when cbindgen left). C++ bot crates already depend on `_defs` implicitly via cgio_build's include-dir lookup, so the order falls out naturally once `links =` is in place.
 
 ## DSL design
 

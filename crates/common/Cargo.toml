@@ -4,14 +4,16 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-# Bot-facing trait + macro surface is now in `bot_common`; we re-export
-# it so engine-side callers can keep writing `common::WireInput` etc.
+# Bot-facing trait surface is in `bot_common`; we re-export it so
+# engine-side callers can keep writing `common::WireInput` etc.
 bot_common.workspace = true
 
 anyhow.workspace = true
 thiserror.workspace = true
-libloading.workspace = true
 serde.workspace = true
 bincode.workspace = true
 rand.workspace = true
 tracing = "0.1.44"
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true

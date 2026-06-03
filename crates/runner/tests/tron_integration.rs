@@ -1,7 +1,7 @@
-//! End-to-end smoke tests for tron: build the baselines (Rust + C++,
-//! both stdio and FFI), spawn each in turn against a fixed seed, and
-//! assert on the wire-format outputs to confirm the runner's
-//! plugin/subprocess plumbing still works.
+//! End-to-end smoke test for tron: build both baselines (Rust + C++),
+//! spawn each in turn against a fixed seed via the runner, and assert
+//! on the wire-format outputs to confirm the subprocess plumbing
+//! still works.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -35,44 +35,12 @@ fn artifact_dir() -> PathBuf {
     workspace_target.join(profile)
 }
 
-#[cfg(target_os = "macos")]
-fn plugin_filename(stem: &str) -> String {
-    format!("lib{stem}.dylib")
-}
-#[cfg(target_os = "linux")]
-fn plugin_filename(stem: &str) -> String {
-    format!("lib{stem}.so")
-}
-#[cfg(target_os = "windows")]
-fn plugin_filename(stem: &str) -> String {
-    format!("{stem}.dll")
-}
-
-#[derive(Copy, Clone, Debug)]
-enum Bot {
-    RustStdio,
-    RustFfi,
-    CppStdio,
-    CppFfi,
-}
-
-impl Bot {
-    fn path(self) -> PathBuf {
-        let d = artifact_dir();
-        match self {
-            Bot::RustStdio => d.join("tron_baseline_rs"),
-            Bot::CppStdio => d.join("tron_baseline_cpp_stdio"),
-            Bot::RustFfi => d.join(plugin_filename("tron_baseline_rs")),
-            Bot::CppFfi => d.join(plugin_filename("tron_baseline_cpp")),
-        }
-    }
-}
-
-fn run_match(p0: Bot, p1: Bot) {
+fn run_match(p0_stem: &str, p1_stem: &str) {
     ensure_bots_built();
 
-    let p0_path = p0.path();
-    let p1_path = p1.path();
+    let d = artifact_dir();
+    let p0_path = d.join(p0_stem);
+    let p1_path = d.join(p1_stem);
     assert!(
         p0_path.exists(),
         "missing bot artifact: {}",
@@ -96,47 +64,20 @@ fn run_match(p0: Bot, p1: Bot) {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         out.status.success(),
-        "runner failed ({:?} vs {:?})\nstdout:\n{}\nstderr:\n{}",
-        p0,
-        p1,
-        stdout,
-        stderr,
+        "runner failed ({p0_stem} vs {p1_stem})\nstdout:\n{stdout}\nstderr:\n{stderr}",
     );
     assert!(
         stdout.contains("outcome:"),
-        "no outcome line in runner output ({:?} vs {:?})\nstdout:\n{}",
-        p0,
-        p1,
-        stdout,
+        "no outcome line in runner output ({p0_stem} vs {p1_stem})\nstdout:\n{stdout}",
     );
 }
 
 #[test]
-fn rust_ffi_vs_rust_stdio() {
-    run_match(Bot::RustFfi, Bot::RustStdio);
+fn rust_vs_cpp() {
+    run_match("tron_baseline_rs", "tron_baseline_cpp");
 }
 
 #[test]
-fn cpp_ffi_vs_cpp_stdio() {
-    run_match(Bot::CppFfi, Bot::CppStdio);
-}
-
-#[test]
-fn rust_ffi_vs_cpp_ffi() {
-    run_match(Bot::RustFfi, Bot::CppFfi);
-}
-
-#[test]
-fn rust_stdio_vs_cpp_stdio() {
-    run_match(Bot::RustStdio, Bot::CppStdio);
-}
-
-#[test]
-fn rust_ffi_vs_cpp_stdio() {
-    run_match(Bot::RustFfi, Bot::CppStdio);
-}
-
-#[test]
-fn rust_stdio_vs_cpp_ffi() {
-    run_match(Bot::RustStdio, Bot::CppFfi);
+fn cpp_vs_rust() {
+    run_match("tron_baseline_cpp", "tron_baseline_rs");
 }

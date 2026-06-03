@@ -1,5 +1,4 @@
-use common::NoInitialInput;
-use common::engine::{FfiGame, Game, GameRng, PlayerId};
+use common::engine::{Game, GameRng, PlayerId};
 use rand::RngExt;
 use tron_defs::{Direction, Line, Pos, TurnInput, TurnOutput};
 
@@ -76,11 +75,15 @@ impl TronGame {
     }
 }
 
-// TODO: review all this code
 impl Game for TronGame {
     const NAME: &'static str = "tron";
+    // CodinGame's tron budget: 1 s for the first move, 100 ms each
+    // subsequent. Bots that exceed get marked dead by the engine
+    // (PlayerError::Timeout) and the match continues without them.
+    const INITIAL_TURN_TIMEOUT_MS: u64 = 1000;
+    const TURN_TIMEOUT_MS: u64 = 100;
 
-    type InitialInput = NoInitialInput;
+    type InitialInput = ();
     type Input = TurnInput;
     type Output = TurnOutput;
     type Outcome = TronOutcome;
@@ -126,9 +129,7 @@ impl Game for TronGame {
         }
     }
 
-    fn initial_input(&self, _player: PlayerId) -> NoInitialInput {
-        NoInitialInput::default()
-    }
+    fn initial_input(&self, _player: PlayerId) {}
 
     fn input_for(&self, player: PlayerId) -> TurnInput {
         let player_lines = (0..self.num_players as usize)
@@ -326,11 +327,4 @@ fn apply_direction(p: Pos, d: Direction) -> Pos {
         Direction::Left => Pos { x: p.x - 1, y: p.y },
         Direction::Right => Pos { x: p.x + 1, y: p.y },
     }
-}
-
-// Plugin glue: marks TronGame as FFI-playable and points at the `_defs`
-// crate's Ffi marker. Everything else (FFI fn-pointer shape, ABI version,
-// symbol names) flows from `tron_defs::Ffi`'s `Defs` impl.
-impl FfiGame for TronGame {
-    type Defs = tron_defs::Ffi;
 }

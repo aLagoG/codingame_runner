@@ -2,51 +2,44 @@
 //! CLI wrapper; programmatic users (the `tournament` crate, future
 //! tooling) call into here directly so they don't have to re-exec the
 //! binary per match.
+//!
+//! Single source of truth for which games this build knows about
+//! lives in [`for_each_game!`] below. The runner's CLI dispatch and
+//! the tournament's `run_match_named` both expand the macro instead
+//! of carrying parallel match arms — adding a new game is one line
+//! here, and `xtask new-game` patches exactly that line.
 
 use std::{path::Path, process::Command};
 
 use anyhow::{Context, Result};
-use common::engine::{FfiGame, Player, PluginPlayer, SubprocessPlayer};
+use common::engine::{Game, Player};
 
-/// True if `path` looks like a dynamic library we can `dlopen` as an
-/// FFI plugin (`.so` / `.dylib` / `.dll`). Anything else is treated
-/// as a subprocess bot.
-pub fn is_plugin(path: &Path) -> bool {
-    matches!(
-        path.extension().and_then(|e| e.to_str()),
-        Some("so") | Some("dylib") | Some("dll")
-    )
+/// Build a `Player<G>` from a bot binary path. Spawns the binary as a
+/// child process; the engine talks to it over stdin/stdout in the
+/// wire format defined by `G::Input` / `G::Output`.
+pub fn make_player<G: Game>(path: &Path) -> Result<Player<G>> {
+    Player::<G>::spawn(&mut Command::new(path))
+        .with_context(|| format!("spawning subprocess {}", path.display()))
 }
 
-/// Build a `Player<G>` from a filesystem path, picking the FFI plugin
-/// loader or the subprocess spawner based on the extension. Used by
-/// both the runner binary and the tournament harness.
+/// Invoke `$cb!("<name>", <Game type>)` once per game compiled into
+/// this build. Callers use it like a `match` table — see
+/// `crates/runner/src/main.rs` and `crates/tournament/src/lib.rs`
+/// for the pattern.
 ///
-/// `enable_counters` requests the FFI counter-callback registration
-/// for plugin bots; it's a no-op for subprocess bots and a graceful
-/// no-op for plugin bots that don't export `set_counter_callback`.
-///
-/// # Safety
-/// On the plugin path this calls `PluginPlayer::load`, which is
-/// `unsafe` because it `dlopen`s a foreign library; the
-/// ABI-version handshake inside `load` is what makes it sound to call
-/// from safe code here. See `PluginPlayer::load` for the contract.
-pub fn make_player<G: FfiGame + 'static>(
-    path: &Path,
-    enable_counters: bool,
-) -> Result<Box<dyn Player<G>>> {
-    if is_plugin(path) {
-        let mut player = unsafe { PluginPlayer::<G>::load(path) }
-            .with_context(|| format!("loading plugin {}", path.display()))?;
-        if enable_counters {
-            // Best-effort — older plugins that don't export
-            // `set_counter_callback` just don't participate.
-            let _ = player.enable_counters();
-        }
-        Ok(Box::new(player))
-    } else {
-        let player = SubprocessPlayer::<G>::spawn(&mut Command::new(path))
-            .with_context(|| format!("spawning subprocess {}", path.display()))?;
-        Ok(Box::new(player))
-    }
+/// `__games::*` re-exports each game crate's `Game` type so callers
+/// don't have to add per-game deps themselves; runner already has
+/// them as direct deps.
+#[macro_export]
+macro_rules! for_each_game {
+    ($cb:ident) => {
+        $cb!("tron", $crate::__games::TronGame);
+        $cb!("fantastic_bits", $crate::__games::FantasticBitsGame);
+    };
+}
+
+#[doc(hidden)]
+pub mod __games {
+    pub use fantastic_bits_game::FantasticBitsGame;
+    pub use tron_game::TronGame;
 }

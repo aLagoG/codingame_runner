@@ -15,8 +15,6 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
-codingame_macros.workspace = true
 common.workspace = true
 tron_game.workspace = true
-serde.workspace = true
 fantastic_bits_game.workspace = true

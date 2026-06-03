@@ -2,7 +2,7 @@
 name = "cgio_build"
 version.workspace = true
 edition.workspace = true
-description = "Shared build-script helpers for C++ bot crates: compile bot.cpp into a cdylib + main.cpp into a [[bin]], with the force-load and exported-symbols dance the runner's PluginPlayer requires."
+description = "Shared build-script helper for C++ bot crates: compile main.cpp into a static archive that the crate's `[[bin]]` links against."
 
 [dependencies]
 cc.workspace = true

@@ -7,8 +7,8 @@
 //! not "be a real preprocessor".
 //!
 //! Each local include is inlined at most once — the second occurrence
-//! is dropped, mimicking `#pragma once`. That's what makes flattening
-//! cbindgen-generated headers (which lack include guards) safe.
+//! is dropped, mimicking `#pragma once`. Belt-and-suspenders safety
+//! for any header that forgets the guard.
 //!
 //! ## Known limitations
 //!

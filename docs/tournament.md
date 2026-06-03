@@ -1,6 +1,6 @@
 # Tournament Harness — Design Note
 
-**Status**: design only. Pick a structure, pick an output, then implement.
+**Status**: implemented; this doc is the original design rationale (Option A / round-robin landed; Elo + Swiss were intentionally deferred and remain deferred). For current usage see `cargo run -p tournament -- --help`. The CLI example below and the dlopen-caching section have been updated/redacted to match the post-FFI implementation; everything else is the original design text.
 
 ## Why this exists
 
@@ -135,17 +135,15 @@ Caveats:
 ## CLI design
 
 ```sh
-cargo run -p tournament -- \
+cargo run -p tournament -- run \
     --game tron \
-    --bot rust_v1=target/debug/tron_rs \
-    --bot cpp_v1=target/debug/tron_cpp_stdio \
-    --bot cpp_v2=tron/tron_cpp/v2/tron_v2 \
     --rounds 50 \
     --parallel 1 \
-    --output results/2026-05-22-tron.jsonl
+    --output results/2026-05-22-tron.jsonl \
+    baseline v1 v2
 ```
 
-Subcommands instead of flags is also fine; the above is enough to be useful on day 1.
+(As-built today: positional bot stems are resolved via `bot.toml` to `games/<game>/bots/<bot>_<lang>/` and built via `cargo build --release -p <crate>`. Use `<bot>:rs` / `<bot>:cpp` to pick a lang when both exist.)
 
 After a run:
 
@@ -206,38 +204,19 @@ Smallest useful slice:
 Once that lands, "is v2 stronger than v1" becomes:
 
 ```sh
-cargo run -p tournament -- --game tron \
-    --bot v1=tron/tron_cpp/v1/tron_v1 \
-    --bot v2=tron/tron_cpp/v2/tron_v2 \
-    --rounds 100 \
-    --output v1_vs_v2.jsonl
-cargo run -p tournament -- report v1_vs_v2.jsonl
+# Today's CLI:
+cargo run -p tournament -- compare --game tron --rounds 100 v1 v2
+# (compare wraps run + report and prints a focused verdict line.)
 ```
 
 Followed (if perf-analysis counters from `docs/perf-analysis.md` are in) by per-decision histograms in the same run — and we have a clean story about both *who wins* and *how hard each bot worked to get there*.
 
 ---
 
-## Deferred — dlopen caching across matches
+## Deferred — fork+exec cost per match
 
-samply traces of the tournament show that for fast bots (sub-100ms matches), most of the wall time per match is spent in `dlopen` + relocations + constructor runs, not in the bot's actual decisions. Each match today does a full load → play → unload cycle per FFI bot. The OS page cache makes the file I/O free but the per-process work (mmap, relocations, `__mod_init_func`) repeats every time.
+The FFI variant of this doc planned an optional `reset_for_match` symbol so the runner could cache a loaded dylib and reuse it across matches, dodging the dlopen+relocations+ctors per match. That entire optimization disappeared with FFI itself — there are no dylibs to cache.
 
-### Picked direction (when we get to it): explicit per-match reset
+The subprocess equivalent is `fork+exec` cost per match. `SubprocessPlayer::spawn` (`crates/common/src/engine.rs`) already absorbs the bulk of it via `SUBPROCESS_WARMUP_DEFAULT` (~100 ms blocking sleep). Real spawn cost on macOS is ~5–20 ms for Rust bots and ~10–50 ms for C++ bots (libcxx static init). For ≥ 100 ms matches it's noise; for sub-10 ms matches it dominates wall time.
 
-- Add an optional FFI symbol `reset_for_match`. Runner caches the `Library` for the worker's lifetime (`HashMap<PathBuf, Arc<Library>>`); per match, it calls `reset_for_match` if present, then `initialize`, then plays.
-- Bots that don't export `reset_for_match` keep today's "fresh load per match" semantic (runner falls back to the current dlopen/dlclose path) so this is backwards-compatible.
-- Bot authors with persistent globals (e.g. a v2-style TT + board) implement the reset by clearing those structures. Stateless bots define nothing and get the speedup for free once they opt in by simply not having state.
-- ~50 lines of runner change + macro-level support so `ffi_bot!` can generate a default `reset_for_match` that clears bot-side statics declared via a `register_reset!` helper.
-
-Expected payoff: 10-100× speedup on sub-100ms matches; negligible for long matches. Useful both for "compare two trivial bots across thousands of seeds" and for any future ablation where iteration speed matters.
-
-### Considered and rejected
-
-- **`fork()`-per-match.** Loads bot once, fork()s a fresh COW child per match. Best on Linux. But macOS post-Sierra makes fork-without-exec fragile (codesigning + libdispatch interactions), and we want to support macOS-as-dev-host. Could revisit as an opt-in `--isolation fork` mode if we ever need it.
-- **`__DATA` snapshot + memcpy restore.** Conceptually clean: snapshot the bot's data segment after first init, memcpy back between matches. Only resets static storage, not heap — any bot using `Vec`/`unique_ptr` would silently corrupt. Brittle, not worth it.
-- **`dlmopen(LM_ID_NEWLM)`.** Doesn't actually save the relocation + constructor cost; only gives fresh data. Linux-only. No win.
-- **CRIU process snapshot/restore.** Heavyweight, needs special caps, won't run portably.
-
-### Trigger to build
-
-When we have at least one slow-loading bot (e.g. v2 with its 1 MB Zobrist table) being run across many short tournaments and the load cost shows up as the top frame in samply.
+When the workload demands it, the obvious next move is to keep one long-lived bot process across multiple matches and reset its state via a wire-level `RESET\n` line — same shape as the `READY\n` handshake idea referenced in `engine.rs`, just played per match instead of per spawn. Deferred until a real workload hits the threshold.

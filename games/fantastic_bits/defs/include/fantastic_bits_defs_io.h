@@ -1,9 +1,9 @@
-// Hand-written stdio wire-format helpers for fantastic_bits — paired
-// with the cbindgen-generated `fantastic_bits_defs.h`. Stays in sync
-// with the Rust impls in `fantastic_bits_defs/src/lib.rs` by hand; if
-// you change the format in one place, change the other.
+// Stdio wire-format helpers for fantastic_bits. Paired with
+// `fantastic_bits_defs.h` (the type definitions). Stays in sync with
+// the Rust impls in `fantastic_bits_defs/src/lib.rs` by hand — change
+// the format in one place, change the other.
 //
-// Wire format (matches the Rust `Display`/`FromStr` impls):
+// Wire format:
 //
 //   <my_team_id>                                          ← initial input (once)
 //
@@ -26,9 +26,6 @@
 //   PETRIFICUS <id>
 //   ACCIO <id>
 //   FLIPENDO <id>
-//
-// See `docs/wire-codegen.md` for the plan to autogenerate this header
-// from a shared schema once the count of games justifies it.
 
 #pragma once
 
@@ -36,41 +33,16 @@
 
 #include <cstdint>
 #include <iostream>
-#include <span>
 #include <string>
 #include <vector>
 
 namespace cgio {
 
 // ---- InitialInput ----
-//
-// Three names every `_defs_io.h` exposes regardless of whether the
-// game has a real init:
-//   * `cgio::InitialInput`     — owning struct read by `main.cpp` from stdin.
-//   * `cgio::InitialInputRef`  — borrowed view passed to `strategy.h::on_init`.
-//   * `cgio::InitialInputFfi`  — alias to whatever cbindgen named the
-//                                 FFI struct, so `bot.cpp::initialize`
-//                                 stays game-agnostic.
-// For NoInitialInput games the structs are empty and `operator>>` is
-// a no-op; bot files don't need to know the difference.
-
-using InitialInputFfi = ::InitialInputFFI;
 
 struct InitialInput {
     int32_t my_team_id;
 };
-
-struct InitialInputRef {
-    int32_t my_team_id;
-};
-
-inline InitialInputRef as_ref(const InitialInput& v) {
-    return InitialInputRef{v.my_team_id};
-}
-
-inline InitialInputRef as_ref(const InitialInputFfi& ffi) {
-    return InitialInputRef{ffi.my_team_id};
-}
 
 inline std::istream& operator>>(std::istream& in, InitialInput& v) {
     return in >> v.my_team_id;
@@ -133,46 +105,15 @@ inline std::ostream& operator<<(std::ostream& out, const TurnOutput& o) {
     return out << o.primary << '\n' << o.secondary;
 }
 
-// ---- TurnInput / TurnRef ----
+// ---- TurnInput (owning) ----
 
-/// Borrowed view shared between the owning `TurnInput` (subprocess
-/// transport) and the cbindgen-generated `::TurnInputFFI` (plugin
-/// transport). Bot logic should take `const TurnRef&` so the same
-/// `decide(...)` function works in both transports — mirrors the
-/// `TurnRef`/`as_ref` pattern on the Rust side.
-struct TurnRef {
-    int32_t                 my_score;
-    int32_t                 my_magic;
-    int32_t                 opp_score;
-    int32_t                 opp_magic;
-    std::span<const Entity> entities;
-};
-
-/// Owning C++ form of the per-tick input — the FFI-facing `TurnInputFFI`
-/// is a borrowed view, which doesn't fit the subprocess transport. This
-/// type is what subprocess bots actually read from stdin.
 struct TurnInput {
     int32_t             my_score;
     int32_t             my_magic;
     int32_t             opp_score;
     int32_t             opp_magic;
     std::vector<Entity> entities;
-
-    TurnRef as_ref() const {
-        return TurnRef{my_score, my_magic, opp_score, opp_magic,
-                       std::span<const Entity>(entities)};
-    }
 };
-
-inline TurnRef as_ref(const ::TurnInputFFI& ffi) {
-    return TurnRef{
-        ffi.my_score,
-        ffi.my_magic,
-        ffi.opp_score,
-        ffi.opp_magic,
-        std::span<const Entity>(ffi.entities, static_cast<size_t>(ffi.num_entities)),
-    };
-}
 
 inline std::istream& operator>>(std::istream& in, TurnInput& v) {
     if (!(in >> v.my_score >> v.my_magic)) return in;

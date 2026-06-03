@@ -1,5 +1,4 @@
-use common::NoInitialInput;
-use common::engine::{FfiGame, Game, GameRng, PlayerId};
+use common::engine::{Game, GameRng, PlayerId};
 use {{name}}_defs::{TurnInput, TurnOutput};
 
 pub struct {{name_pascal}}Game {
@@ -18,8 +17,13 @@ pub struct {{name_pascal}}Outcome {
 
 impl Game for {{name_pascal}}Game {
     const NAME: &'static str = "{{name}}";
+    // CodinGame's typical per-tick budget. Override to whatever this
+    // game's statement says. Bots that exceed get marked dead with
+    // `PlayerError::Timeout`.
+    const INITIAL_TURN_TIMEOUT_MS: u64 = 1000;
+    const TURN_TIMEOUT_MS: u64 = 100;
 
-    type InitialInput = NoInitialInput;
+    type InitialInput = ();
     type Input = TurnInput;
     type Output = TurnOutput;
     type Outcome = {{name_pascal}}Outcome;
@@ -30,9 +34,7 @@ impl Game for {{name_pascal}}Game {
         }
     }
 
-    fn initial_input(&self, _player: PlayerId) -> NoInitialInput {
-        NoInitialInput::default()
-    }
+    fn initial_input(&self, _player: PlayerId) {}
 
     fn input_for(&self, _player: PlayerId) -> TurnInput {
         TurnInput::default()
@@ -57,11 +59,4 @@ impl Game for {{name_pascal}}Game {
     fn standings(outcome: &{{name_pascal}}Outcome) -> Vec<u32> {
         outcome.standings.clone()
     }
-}
-
-// Plugin glue: marks this game as FFI-playable and points at the `_defs`
-// crate's `Ffi` marker. Everything else (FFI fn-pointer shape, ABI version,
-// symbol names) flows from `{{name}}_defs::Ffi`'s `Defs` impl.
-impl FfiGame for {{name_pascal}}Game {
-    type Defs = {{name}}_defs::Ffi;
 }

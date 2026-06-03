@@ -263,29 +263,31 @@ enum Command {
         clipboard: bool,
     },
     /// Profile a tournament run with `samply`. Builds the workspace
-    /// in release mode (so symbols and optimizations match what
-    /// you'd actually deploy), records a profile, then opens it in
-    /// the Firefox-profiler view via samply's built-in local server.
+    /// under the `profiling` cargo profile (release + full debug
+    /// info, so samply can see inlined functions and per-line
+    /// attribution), records a profile, then opens the
+    /// Firefox-profiler view via samply's built-in local server.
     ///
     /// Anything after `--` is forwarded verbatim to
     /// `tournament run`, so a typical invocation looks like:
     ///
-    ///   cargo xtask profile -- --game tron \
-    ///       --bot a=target/release/libtron_baseline_rs.dylib \
-    ///       --bot b=target/release/libtron_baseline_cpp.dylib \
-    ///       --rounds 2000 --parallel 1 \
+    ///   cargo xtask profile -- --game tron v1 v2 \
+    ///       --rounds 50 --parallel 1 \
     ///       --output /tmp/profile_run.jsonl
     Profile {
-        /// Skip opening the UI (just record + save). Useful in CI.
-        #[arg(long)]
-        no_open: bool,
         /// Override the output path for the recorded profile.
         /// Defaults to `target/samply/profile.json.gz`.
         #[arg(long)]
         output: Option<PathBuf>,
+        /// Sampling rate in Hz. Default 1000 is fine for most
+        /// matches; bump to 4000–8000 for sharper line-level
+        /// attribution on hot inner loops. Passed through to
+        /// `samply record --rate`.
+        #[arg(long, default_value_t = 1000)]
+        rate: u32,
         /// Forwarded to `tournament run`. Use `--` to separate
         /// from xtask's own flags, e.g.
-        /// `cargo xtask profile -- --game tron --bot a=… …`.
+        /// `cargo xtask profile -- --game tron v1 v2 …`.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         tournament_args: Vec<String>,
     },
@@ -403,10 +405,10 @@ fn main() -> Result<()> {
             clipboard,
         } => statement(&game, input.as_deref(), output.as_deref(), clipboard)?,
         Command::Profile {
-            no_open,
             output,
+            rate,
             tournament_args,
-        } => profile(no_open, output.as_deref(), &tournament_args)?,
+        } => profile(output.as_deref(), rate, &tournament_args)?,
     }
 
     Ok(())
@@ -559,14 +561,23 @@ fn read_clipboard() -> Result<String> {
     String::from_utf8(out.stdout).context("clipboard contents weren't valid UTF-8")
 }
 
-/// Build a release tournament binary, then drive it with `samply
-/// record`. samply's local server opens the Firefox-profiler view
-/// for the recorded trace unless `--no-open` was passed.
-fn profile(
-    no_open: bool,
-    output_override: Option<&Path>,
-    tournament_args: &[String],
-) -> Result<()> {
+/// Build the workspace under the `profiling` cargo profile (release
+/// + full debug info), then drive the resulting tournament binary
+/// under `samply record`. samply's local server opens the
+/// Firefox-profiler view for the recorded trace.
+///
+/// We use a dedicated cargo profile rather than `release` for two
+/// reasons:
+///
+///   1. Full debug info (`debug = 2`) lets samply attribute samples
+///      to source lines AND resolve inlined helpers as their own
+///      frames in the call tree — the difference between "96% in
+///      leaf_heuristic" and "60% in passable, 30% in cell_idx,
+///      6% elsewhere".
+///   2. The bigger debug sections + slower link don't bleed into
+///      normal `cargo build --release` runs (tournament compare /
+///      run, CI), which stay on the lean `release` profile.
+fn profile(output_override: Option<&Path>, rate: u32, tournament_args: &[String]) -> Result<()> {
     let s = Style::new();
 
     // 1. Verify samply is on PATH; point the user at the install
@@ -584,28 +595,32 @@ fn profile(
         "samply not found on PATH — install with `cargo install samply` and try again",
     );
 
-    // 2. Build the workspace in release. With the
-    //    `[profile.release] debug = "line-tables-only"` setting in
-    //    the top-level Cargo.toml, both Rust and (via cc-rs) C++
-    //    end up with line-table symbols, which is what makes the
-    //    profile actually navigable.
+    // 2. Build just the tournament binary under the `profiling`
+    //    profile (release optimizations + full DWARF, see
+    //    `[profile.profiling]` in the top-level Cargo.toml; cargo
+    //    writes artifacts to `target/profiling/`).
+    //
+    //    Bots aren't built here — `tournament run --profile profiling`
+    //    (invoked below) goes through `resolve_and_build`, which
+    //    rebuilds each participating bot under the same profile on
+    //    demand. Building the full workspace upfront would compile
+    //    every game/bot variant whether the run uses them or not.
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
     println!(
-        "{} Building workspace in release (with line-tables-only debug info)…",
+        "{} Building tournament under the `profiling` cargo profile (release + full debug info)…",
         s.ok("→"),
     );
     let status = std::process::Command::new(&cargo)
-        .args(["build", "--release", "--workspace"])
+        .args(["build", "--profile", "profiling", "-p", "tournament"])
         .status()
         .context("running cargo build")?;
     anyhow::ensure!(status.success(), "cargo build failed");
 
-    // 3. Resolve paths. The release tournament binary is the
-    //    target we'll profile; the user supplied the rest of the
-    //    args (game, bots, etc.).
+    // 3. Resolve paths. The `profiling` profile lives at
+    //    `target/profiling/<bin>` (not `target/release/`).
     let target_dir =
         PathBuf::from(std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string()));
-    let tournament_bin = target_dir.join("release").join("tournament");
+    let tournament_bin = target_dir.join("profiling").join("tournament");
     anyhow::ensure!(
         tournament_bin.exists(),
         "expected {} after build — was the build profile changed?",
@@ -622,15 +637,30 @@ fn profile(
     // 4. Spawn samply. With `--save-only` set we just record and
     //    exit; without it samply boots its local server and (by
     //    default) opens the UI in a browser tab.
+    //
+    //    `--fold-recursive-prefix`: tron/fb bots are deeply recursive
+    //    (alpha-beta, BFS), so unfolded call trees are dozens of
+    //    frames tall and the leaf (heuristic / decide body) gets
+    //    buried. Folding collapses repeated base frames so the
+    //    interesting work surfaces at usable depth in samply's UI.
+    //
+    //    samply already follows fork/exec by default on macOS/Linux,
+    //    so each bot subprocess becomes its own thread in the profile
+    //    automatically — no extra flag needed.
+    //
+    //    `--profile profiling` is forwarded to `tournament run` so
+    //    the bots it rebuilds also get the full-debug treatment and
+    //    samply can see inlined / source-line attribution inside the
+    //    bot's hot functions.
     let mut cmd = std::process::Command::new("samply");
-    cmd.arg("record");
-    if no_open {
-        cmd.args(["--save-only", "--no-open"]);
-    }
-    cmd.arg("--output").arg(&output);
+    cmd.arg("record")
+        .arg("--fold-recursive-prefix")
+        .args(["--rate", &rate.to_string()])
+        .arg("--output")
+        .arg(&output);
     cmd.arg("--");
     cmd.arg(&tournament_bin);
-    cmd.arg("run");
+    cmd.args(["run", "--profile", "profiling"]);
     cmd.args(tournament_args);
 
     println!(
@@ -641,14 +671,17 @@ fn profile(
     let status = cmd.status().context("running samply")?;
     anyhow::ensure!(status.success(), "samply exited with {status}");
 
-    if no_open {
-        println!(
-            "{} Profile saved to {}. Open later with {}.",
-            s.ok("✓"),
-            s.path(&output.display().to_string()),
-            s.code(&format!("samply load {}", output.display())),
-        );
-    }
+    // samply's default behaviour is to boot a local server and open
+    // the Firefox-profiler view in a browser tab after the recording
+    // completes; the UI stays up until you Ctrl-C, at which point we
+    // print where the saved profile lives so you can `samply load`
+    // it later without re-recording.
+    println!(
+        "{} Profile saved to {}. Reopen with {}.",
+        s.ok("✓"),
+        s.path(&output.display().to_string()),
+        s.code(&format!("samply load {}", output.display())),
+    );
     Ok(())
 }
 
@@ -706,7 +739,7 @@ fn bundle(
             let entry = cpp_dir.join("main.cpp");
             anyhow::ensure!(
                 entry.exists(),
-                "no C++ bot stdio entry at {} — does the bot have a main.cpp?",
+                "no C++ bot entry at {} — does the bot have a main.cpp?",
                 entry.display(),
             );
             let status = std::process::Command::new(&cargo)
@@ -719,10 +752,8 @@ fn bundle(
             anyhow::ensure!(status.success(), "cpp_flatten exited with {status}");
         }
         BotLang::Rust => {
-            // Rust bots own both a `[lib]` (decide + ffi_bot!) and a
-            // `[[bin]]` (the stdio shim). CodinGame submissions are
-            // stdio bots, so we flatten the bin target; its package +
-            // bin both inherit the crate name.
+            // Rust bots are pure `[[bin]]` (the stdio loop). Flatten the
+            // bin target; package + bin both inherit the crate name.
             let crate_name = format!("{game}_{bot}_rs");
             let mut cmd = std::process::Command::new(&cargo);
             cmd.args(["run", "--quiet", "-p", "flatten", "--"])
@@ -847,9 +878,7 @@ fn new_game(name: &str) -> Result<()> {
     // existing scaffold without duplicating arms.
     let game_crate = format!("{name}_game");
     add_cargo_dep("crates/runner/Cargo.toml", &game_crate)?;
-    add_cargo_dep("crates/tournament/Cargo.toml", &game_crate)?;
-    wire_runner_dispatch("crates/runner/src/main.rs", name, &vars.name_pascal)?;
-    wire_tournament_dispatch("crates/tournament/src/lib.rs", name, &vars.name_pascal)?;
+    wire_game_registry("crates/runner/src/lib.rs", name, &vars.name_pascal)?;
 
     print_next_steps(name, &vars.name_pascal);
     Ok(())
@@ -905,7 +934,7 @@ fn new_bot(game: &str, bot: &str, lang: BotLang, from_existing: Option<&str>) ->
             name: bot.to_string(),
             lang: suffix.to_string(),
             parent,
-            created_at: Some(now_rfc3339()),
+            created_at: None,
             description,
             // CodinGame submission info gets filled in by hand after
             // the user actually submits the bot.
@@ -942,7 +971,7 @@ fn new_bot(game: &str, bot: &str, lang: BotLang, from_existing: Option<&str>) ->
     println!(
         "  3. Play a match: {}.",
         s.code(&format!(
-            "cargo run -p codingame_runner -- --game {game} \\\n     target/release/lib{}.dylib ...",
+            "cargo run -p codingame_runner -- --game {game} \\\n     target/release/{} target/release/<opponent>",
             created[0]
         )),
     );
@@ -1351,7 +1380,7 @@ fn doctor(game: &str) -> Result<()> {
             }
         }
     }
-    for ((name, lang), _) in &bots {
+    for (name, lang) in bots.keys() {
         let expected = format!("games/{game}/bots/{name}_{lang}");
         if !ws_entries.contains(&expected) {
             findings.push(format!(
@@ -1931,7 +1960,7 @@ fn print_next_steps(name: &str, name_pascal: &str) {
     println!(
         "  3. Implement {} in {}.",
         s.code("decide"),
-        s.path(&format!("games/{name}/bots/baseline_rs/src/lib.rs")),
+        s.path(&format!("games/{name}/bots/baseline_rs/src/main.rs")),
     );
     println!(
         "  4. (auto-wired) Runner + tournament dispatch already updated — \
@@ -1944,12 +1973,12 @@ fn print_next_steps(name: &str, name_pascal: &str) {
     );
     println!(
         "  6. (optional) C++ bot starter at {} — build with {} and pass",
-        s.path(&format!("games/{name}/bots/baseline_cpp/bot.cpp")),
+        s.path(&format!("games/{name}/bots/baseline_cpp/strategy.h")),
         s.code(&format!("cargo build -p {name}_baseline_cpp")),
     );
     println!(
         "     {} to the runner.",
-        s.path(&format!("target/debug/lib{name}_baseline_cpp.dylib")),
+        s.path(&format!("target/debug/{name}_baseline_cpp")),
     );
     println!(
         "  7. Add more bots with {} (or {} to clone an existing one).",
@@ -2149,93 +2178,56 @@ fn add_cargo_dep(cargo_toml: &str, crate_name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Insert a `use <name>_game::<NamePascal>Game;` import and a
-/// `"<name>" => run_for_game::<<NamePascal>Game>(args.bots, args.save_replay),`
-/// dispatch arm into the runner's `main.rs`. Idempotent: if the file
-/// already references this game, no edit happens. Surgical text
-/// insertion against landmark lines — must be kept in sync with the
-/// runner's structure (specifically the `match args.game.as_str()`
-/// block and its `// Keep this catch-all generic` marker comment).
-fn wire_runner_dispatch(main_rs_path: &str, name: &str, name_pascal: &str) -> Result<()> {
-    let src =
-        fs::read_to_string(main_rs_path).with_context(|| format!("reading {main_rs_path}"))?;
-    let arm_marker = format!("\"{name}\" =>");
-    let use_line = format!("use {name}_game::{name_pascal}Game;");
-    if src.contains(&use_line) && src.contains(&arm_marker) {
+/// Add a `$cb!("<name>", $crate::__games::<NamePascal>Game);` line +
+/// the matching `pub use <name>_game::<NamePascal>Game;` into the
+/// `for_each_game!` macro definition (and its `__games` re-export
+/// block) in `crates/runner/src/lib.rs`. Idempotent: if the file
+/// already references this game, no edit happens.
+///
+/// This is the single dispatch wiring site — both the runner CLI and
+/// `tournament::run_match_named` expand `for_each_game!`, so adding
+/// the entry here makes the new game visible to both.
+fn wire_game_registry(lib_rs_path: &str, name: &str, name_pascal: &str) -> Result<()> {
+    let src = fs::read_to_string(lib_rs_path).with_context(|| format!("reading {lib_rs_path}"))?;
+    let cb_line = format!("        $cb!(\"{name}\", $crate::__games::{name_pascal}Game);");
+    let use_line = format!("    pub use {name}_game::{name_pascal}Game;");
+    if src.contains(&cb_line) && src.contains(&use_line) {
         return Ok(());
     }
 
-    // Build the output by re-walking the source and inserting the new
-    // `use` after the LAST contiguous `use ..._game::...Game;` line and
-    // the new arm BEFORE the catch-all landmark. Two-pass to avoid
-    // greedy-insert-on-first-match bugs.
-    let is_game_use = |line: &str| -> bool {
-        line.starts_with("use ") && line.contains("_game::") && line.ends_with("Game;")
-    };
+    // The macro body's last `$cb!(...)` line and the `__games`
+    // module's last `pub use ...;` line are the landmarks to insert
+    // after. We find the closing `};` / `}` immediately following
+    // each and insert just before it.
     let lines: Vec<&str> = src.lines().collect();
-    let last_game_use_idx = lines.iter().rposition(|l| is_game_use(l));
-    let catchall_idx = lines
+    let last_cb_idx = lines
         .iter()
-        .position(|l| l.trim_start().starts_with("// Keep this catch-all generic"));
+        .rposition(|l| l.trim_start().starts_with("$cb!("))
+        .context(
+            "no `$cb!(...)` lines found inside `for_each_game!` in runner/src/lib.rs — \
+             scaffolder landmark missing; wire the registry by hand",
+        )?;
+    let last_use_idx = lines
+        .iter()
+        .rposition(|l| l.trim_start().starts_with("pub use ") && l.contains("_game::"))
+        .context(
+            "no `pub use ..._game::...Game;` lines found inside `__games` in runner/src/lib.rs — \
+             scaffolder landmark missing; wire the registry by hand",
+        )?;
 
-    anyhow::ensure!(
-        last_game_use_idx.is_some(),
-        "no `use <game>_game::...Game;` lines found in {main_rs_path} — \
-         scaffolder landmark missing; wire the dispatch by hand",
-    );
-    anyhow::ensure!(
-        catchall_idx.is_some(),
-        "couldn't find `// Keep this catch-all generic` landmark in {main_rs_path} — \
-         scaffolder needs it to know where to insert the new dispatch arm",
-    );
-    let last_game_use_idx = last_game_use_idx.unwrap();
-    let catchall_idx = catchall_idx.unwrap();
-
-    let arm = format!(
-        "        \"{name}\" => run_for_game::<{name_pascal}Game>(args.bots, args.save_replay),"
-    );
-
-    let mut out = String::with_capacity(src.len() + use_line.len() + arm.len() + 2);
+    let mut out = String::with_capacity(src.len() + cb_line.len() + use_line.len() + 2);
     for (i, line) in lines.iter().enumerate() {
-        if i == catchall_idx && !src.contains(&arm_marker) {
-            out.push_str(&arm);
-            out.push('\n');
-        }
         out.push_str(line);
         out.push('\n');
-        if i == last_game_use_idx && !src.contains(&use_line) {
+        if i == last_cb_idx && !src.contains(&cb_line) {
+            out.push_str(&cb_line);
+            out.push('\n');
+        }
+        if i == last_use_idx && !src.contains(&use_line) {
             out.push_str(&use_line);
             out.push('\n');
         }
     }
-
-    fs::write(main_rs_path, out)?;
-    Ok(())
-}
-
-/// Insert a `"<name>" => run_match_typed::<<name>_game::<NamePascal>Game>(...)`
-/// arm into the tournament's `run_match_named` match. Idempotent.
-fn wire_tournament_dispatch(lib_rs_path: &str, name: &str, name_pascal: &str) -> Result<()> {
-    let src = fs::read_to_string(lib_rs_path).with_context(|| format!("reading {lib_rs_path}"))?;
-    let arm_marker = format!("\"{name}\" =>");
-    if src.contains(&arm_marker) {
-        return Ok(());
-    }
-
-    // The tournament's catch-all has its own landmark: the single line
-    // `other => bail!("unknown game: {other}"),` immediately closes the
-    // `match game { ... }` in `run_match_named`. Insert before it.
-    let needle = "        other => bail!(\"unknown game: {other}\"),";
-    let pos = src.find(needle).context(
-        "tournament's `other => bail!(...)` landmark not found — wire by hand or update the scaffolder",
-    )?;
-    let arm = format!(
-        "        \"{name}\" => run_match_typed::<{name}_game::{name_pascal}Game>(\n            game,\n            bots,\n            seed,\n            enable_counters,\n        ),\n"
-    );
-    let mut out = String::with_capacity(src.len() + arm.len());
-    out.push_str(&src[..pos]);
-    out.push_str(&arm);
-    out.push_str(&src[pos..]);
 
     fs::write(lib_rs_path, out)?;
     Ok(())

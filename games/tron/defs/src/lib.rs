@@ -1,30 +1,24 @@
-// Treat `improper_ctypes` as an error. The `unsafe extern "C" { ... }` block
-// below references `TurnInputFFI<'_>` and `TurnResult<TurnOutput>`; if either
-// drops `#[repr(C)]` (or gains a non-FFI-safe field) the lint fires at the
-// extern block — the closest thing Rust has to a "must be repr(C)" check.
-#![deny(improper_ctypes)]
-
 use std::{
     fmt::Display,
     io::{BufRead, Write},
-    marker::PhantomData,
     str::FromStr,
 };
 
 use anyhow::{Context, bail};
-use bot_common::{
-    Defs, NoInitialInput, NoInitialInputFfi, ReadFrom, SingleLine, TurnResult, WireInput,
-    WireInputFfi, WireOutput, WriteTo,
-};
+use bot_common::{ReadFrom, SingleLine, WriteTo};
 
-#[repr(C)]
+/// Tron has no per-match init payload. The alias exists so generic
+/// code (the bot template, the runner) can name `<game>_defs::InitialInput`
+/// uniformly across games — `()` already implements `ReadFrom` /
+/// `WriteTo` as no-ops via `bot_common`'s blanket `()` impls.
+pub type InitialInput = ();
+
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Hash)]
 pub struct Pos {
     pub x: i32,
     pub y: i32,
 }
 
-#[repr(C)]
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub struct Line {
     pub start: Pos,
@@ -37,28 +31,6 @@ pub struct TurnInput {
     pub player_lines: Vec<Line>,
 }
 
-pub struct TurnRef<'a> {
-    pub number_of_players: i32,
-    pub player_number: i32,
-    pub player_lines: &'a [Line],
-}
-
-// Fields are private — the only way to obtain a `TurnInputFFI<'a>` is
-// `TurnInput::as_ffi`, which establishes the invariants relied on by `as_ref`:
-//   1. `player_lines` is a valid, properly-aligned pointer to a contiguous
-//      array of `Line`s.
-//   2. The array has at least `number_of_players` elements.
-//   3. The memory is live for `'a` (enforced by the lifetime + PhantomData).
-#[repr(C)]
-#[derive(Debug, PartialEq, Eq)]
-pub struct TurnInputFFI<'a> {
-    number_of_players: i32,
-    player_number: i32,
-    player_lines: *const Line,
-    _marker: PhantomData<&'a [Line]>,
-}
-
-#[repr(u8)]
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum Direction {
     Up,
@@ -67,7 +39,6 @@ pub enum Direction {
     Right,
 }
 
-#[repr(C)]
 #[derive(Debug, PartialEq, Eq)]
 pub struct TurnOutput {
     pub direction: Direction,
@@ -80,91 +51,6 @@ impl Default for TurnOutput {
         }
     }
 }
-
-/// Asserts `TurnOutput` satisfies the full bundled contract — see
-/// [`common::WireOutput`].
-impl WireOutput for TurnOutput {}
-
-/// Bumped on any wire-type change. Plugins built against an older `tron_defs`
-/// export an older value; `PluginPlayer::load` reads it through `abi_version()`
-/// and refuses mismatches before any UB-prone call lands.
-pub const ABI_VERSION: u32 = 1;
-
-/// Marker type. Implementing [`common::Defs`] on it is the single line that
-/// ratifies this crate's FFI surface — all of `WireInput`, `WireInputFfi`,
-/// `WireOutput`, and `ABI_VERSION` are checked at this exact site.
-pub struct Ffi;
-
-impl Defs for Ffi {
-    type InitialInput = NoInitialInput;
-    type Input = TurnInput;
-    type Output = TurnOutput;
-    const ABI_VERSION: u32 = ABI_VERSION;
-}
-
-// `extern "C" { ... }` block: declares the FFI signatures bots must export.
-// Used only by cbindgen as a reachability root for the header — no symbols
-// are introduced into `_defs.rlib` (so no collision with the real ones the
-// bot's `common::ffi_bot!` macro defines downstream). Keep in sync with the
-// macro. `TurnResult` is generic over the per-game output; cbindgen
-// monomorphises it into a concrete C++ struct.
-unsafe extern "C" {
-    pub fn initialize(input: NoInitialInputFfi<'_>);
-    pub fn take_turn(input: TurnInputFFI<'_>) -> TurnResult<TurnOutput>;
-    pub fn abi_version() -> u32;
-}
-
-// region: Wire-input impls
-impl<'a> TurnInputFFI<'a> {
-    pub fn number_of_players(&self) -> i32 {
-        self.number_of_players
-    }
-
-    pub fn player_number(&self) -> i32 {
-        self.player_number
-    }
-}
-
-impl WireInput for TurnInput {
-    type Ffi<'a> = TurnInputFFI<'a>;
-    type Ref<'a> = TurnRef<'a>;
-
-    fn as_ffi(&self) -> TurnInputFFI<'_> {
-        assert!(self.player_lines.len() == self.number_of_players as usize);
-
-        TurnInputFFI {
-            number_of_players: self.number_of_players,
-            player_number: self.player_number,
-            player_lines: self.player_lines.as_ptr(),
-            _marker: PhantomData,
-        }
-    }
-
-    fn as_ref(&self) -> TurnRef<'_> {
-        TurnRef {
-            number_of_players: self.number_of_players,
-            player_number: self.player_number,
-            player_lines: &self.player_lines,
-        }
-    }
-}
-
-impl<'a> WireInputFfi<'a> for TurnInputFFI<'a> {
-    type Ref = TurnRef<'a>;
-
-    // Safe because every `TurnInputFFI<'a>` is constructed by `as_ffi`, which
-    // establishes the three invariants documented on the struct.
-    fn as_ref(&self) -> TurnRef<'a> {
-        TurnRef {
-            number_of_players: self.number_of_players,
-            player_number: self.player_number,
-            player_lines: unsafe {
-                std::slice::from_raw_parts(self.player_lines, self.number_of_players as usize)
-            },
-        }
-    }
-}
-// endregion: Wire-input impls
 
 // region: Display impls
 impl Display for Pos {
@@ -184,17 +70,6 @@ impl Display for TurnInput {
         write!(f, "{} {}", self.number_of_players, self.player_number)?;
         for line in &self.player_lines {
             write!(f, "\n{line}")?;
-        }
-        Ok(())
-    }
-}
-
-impl Display for TurnInputFFI<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let view = self.as_ref();
-        writeln!(f, "{} {}", view.number_of_players, view.player_number)?;
-        for line in view.player_lines {
-            writeln!(f, "{line}")?;
         }
         Ok(())
     }
@@ -487,90 +362,6 @@ mod test {
             direction: Direction::Up,
         };
         assert!(output == output.to_string().parse()?);
-        Ok(())
-    }
-
-    fn stdio_round_trip<T>(value: T) -> Result<T>
-    where
-        T: ReadFrom + WriteTo,
-    {
-        let mut buf = Vec::new();
-        value.write_to(&mut buf)?;
-        T::read_from(&mut buf.as_slice())
-    }
-
-    #[test]
-    fn pos_stdio_round_trip() -> Result<()> {
-        let pos = Pos { x: 1, y: 2 };
-        assert!(pos == stdio_round_trip(Pos { x: 1, y: 2 })?);
-        let _ = pos;
-        Ok(())
-    }
-
-    #[test]
-    fn line_stdio_round_trip() -> Result<()> {
-        let line = Line {
-            start: Pos { x: 1, y: 2 },
-            end: Pos { x: 3, y: 4 },
-        };
-        let parsed = stdio_round_trip(Line {
-            start: Pos { x: 1, y: 2 },
-            end: Pos { x: 3, y: 4 },
-        })?;
-        assert!(line == parsed);
-        Ok(())
-    }
-
-    #[test]
-    fn direction_stdio_round_trip() -> Result<()> {
-        for d in [
-            Direction::Up,
-            Direction::Down,
-            Direction::Left,
-            Direction::Right,
-        ] {
-            let mut buf = Vec::new();
-            d.write_to(&mut buf)?;
-            let parsed = Direction::read_from(&mut buf.as_slice())?;
-            assert!(d == parsed);
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn turn_output_stdio_round_trip() -> Result<()> {
-        let output = TurnOutput {
-            direction: Direction::Right,
-        };
-        let parsed = stdio_round_trip(TurnOutput {
-            direction: Direction::Right,
-        })?;
-        assert!(output == parsed);
-        Ok(())
-    }
-
-    #[test]
-    fn turn_input_stdio_round_trip() -> Result<()> {
-        let input = TurnInput {
-            number_of_players: 2,
-            player_number: 0,
-            player_lines: vec![
-                Line {
-                    start: Pos { x: 1, y: 2 },
-                    end: Pos { x: 3, y: 4 },
-                },
-                Line {
-                    start: Pos { x: 5, y: 6 },
-                    end: Pos { x: 7, y: 8 },
-                },
-            ],
-        };
-        let mut buf = Vec::new();
-        input.write_to(&mut buf)?;
-        let parsed = TurnInput::read_from(&mut buf.as_slice())?;
-        assert!(parsed.number_of_players == input.number_of_players);
-        assert!(parsed.player_number == input.player_number);
-        assert!(parsed.player_lines == input.player_lines);
         Ok(())
     }
 }

@@ -9,7 +9,7 @@
 //! Physics primitives live in `physics`. Game-level logic (spell
 //! state, magic accounting, AI, scoring, end conditions) lives here.
 
-use common::engine::{FfiGame, Game, GameRng, PlayerId};
+use common::engine::{Game, GameRng, PlayerId};
 use fantastic_bits_defs::{
     ActionKind, Entity, EntityKind, InitialInput, TurnInput, TurnOutput, WizardAction,
 };
@@ -248,6 +248,12 @@ impl FantasticBitsGame {
 
 impl Game for FantasticBitsGame {
     const NAME: &'static str = "fantastic_bits";
+    // CodinGame's fantastic_bits budget: 1 s for the first move,
+    // 100 ms each subsequent. Bots that exceed get marked dead by
+    // the engine (PlayerError::Timeout).
+    const INITIAL_TURN_TIMEOUT_MS: u64 = 1000;
+    const TURN_TIMEOUT_MS: u64 = 100;
+
 
     type InitialInput = InitialInput;
     type Input = TurnInput;
@@ -418,10 +424,6 @@ impl Game for FantasticBitsGame {
     fn scores(outcome: &FantasticBitsOutcome) -> Option<Vec<f64>> {
         Some(outcome.score.iter().map(|s| *s as f64).collect())
     }
-}
-
-impl FfiGame for FantasticBitsGame {
-    type Defs = fantastic_bits_defs::Ffi;
 }
 
 // ============================================================

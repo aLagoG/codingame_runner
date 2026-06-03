@@ -87,7 +87,7 @@ fn shared_header_is_emitted_only_once() {
 }
 
 #[test]
-fn cbindgen_style_guardless_header_is_safe() {
+fn guardless_header_included_twice_is_deduped() {
     // main.cpp pulls in BOTH defs.h and io.h; io.h ALSO pulls in defs.h.
     // Without dedup, `struct S {};` would be defined twice and break.
     let out = flatten(

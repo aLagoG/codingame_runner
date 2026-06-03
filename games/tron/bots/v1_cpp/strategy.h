@@ -2,7 +2,7 @@
 //
 // Port of games/tron/bots/baseline_cpp/v1/tron.cpp onto the workspace's
 // bot template: structurally identical to the original CodinGame paste,
-// but wrapped in a namespace and driven by `cgio::TurnRef` / `TurnOutput`
+// but wrapped in a namespace and driven by `cgio::TurnInput` / `TurnOutput`
 // instead of stdin / stdout. The per-tick logic at the bottom of
 // `decide()` mirrors the snapshot's `int main()` body line-for-line so a
 // future bug-fix port stays a 5-minute diff. Bugs the v2 prologue calls
@@ -54,12 +54,12 @@ struct Position {
     void clear(char last = 0) const { g_map[static_cast<int>(x)][static_cast<int>(y)] = last; }
 };
 
-struct MoveEntry { const char* name; Position delta; ::Direction dir; };
+struct MoveEntry { const char* name; Position delta; Direction dir; };
 inline MoveEntry MOVES[4] = {
-    {"UP",    Position(0, -1), ::Direction::Up},
-    {"RIGHT", Position(1, 0),  ::Direction::Right},
-    {"DOWN",  Position(0, 1),  ::Direction::Down},
-    {"LEFT",  Position(-1, 0), ::Direction::Left},
+    {"UP",    Position(0, -1), Direction::Up},
+    {"RIGHT", Position(1, 0),  Direction::Right},
+    {"DOWN",  Position(0, 1),  Direction::Down},
+    {"LEFT",  Position(-1, 0), Direction::Left},
 };
 
 struct Player {
@@ -242,14 +242,12 @@ inline int AB(Player& py, int depth, int alpha, int beta) {
 //  Bot entry points
 // ----------------------------------------------------------------
 
-// Tron has no per-match init payload (`InitialInput = NoInitialInput`)
-// and the runner reloads the dylib per match — `Library::new` → drop
-// in `make_player` actually dlcloses + reopens, which re-runs C++
-// initializers — so all the inline globals above start fresh every
-// match without any work here.
-inline void on_init(const cgio::InitialInputRef& /*init*/) {}
+// Tron has no per-match init payload. The runner spawns a fresh
+// subprocess per match, so all the inline globals above start fresh
+// every match with no reset work needed here.
+inline void on_init(const cgio::InitialInput& /*init*/) {}
 
-inline ::TurnOutput decide(const cgio::TurnRef& turn) {
+inline TurnOutput decide(const cgio::TurnInput& turn) {
     int N = turn.number_of_players;
     int P = turn.player_number;
     Player::my_id = static_cast<char>(P + 1);
@@ -288,7 +286,7 @@ inline ::TurnOutput decide(const cgio::TurnRef& turn) {
         }
     }
 
-    ::TurnOutput out{};
+    TurnOutput out{};
     out.direction = MOVES[best_idx].dir;
     // v1 clears the per-tick player list and rebuilds it from scratch
     // every tick. We do the same so the next tick's `Player::create`

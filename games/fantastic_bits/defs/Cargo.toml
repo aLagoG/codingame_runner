@@ -2,19 +2,10 @@
 name = "fantastic_bits_defs"
 version.workspace = true
 edition.workspace = true
-# Claims a unique "native lib" name in cargo's dep graph so that cargo
-# enforces strict build-script ordering for dependents — specifically,
-# `fantastic_bits_cpp/build.rs` won't start until this crate's `build.rs` (which
-# generates `include/fantastic_bits_defs.h`) has finished. We don't actually link
-# a native library here.
-links = "fantastic_bits_defs"
 
 [dependencies]
 anyhow.workspace = true
-# Bot-facing surface only — deliberately NOT `common`, which would drag
-# serde/thiserror/libloading into the flattened bot bundle and break
+# Bot-facing surface only — deliberately NOT `common`, which would
+# drag serde/thiserror into the flattened bot bundle and break
 # CodinGame submission.
 bot_common.workspace = true
-
-[build-dependencies]
-cbindgen = "0.29.2"

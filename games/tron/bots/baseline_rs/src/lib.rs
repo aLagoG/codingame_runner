@@ -1,19 +1,16 @@
-use tron_defs::{TurnOutput, TurnRef};
+use tron_defs::{InitialInput, TurnInput, TurnOutput};
 
-pub fn decide(turn: TurnRef<'_>) -> TurnOutput {
+// Tron has no per-match init payload (`InitialInput = ()`); this is
+// a no-op kept for shape symmetry with init-shipping games like
+// fantastic_bits.
+pub fn on_init(_init: &InitialInput) {}
+
+pub fn decide(turn: &TurnInput) -> TurnOutput {
     eprintln!(
         "players={} me={} lines={}",
         turn.number_of_players,
         turn.player_number,
         turn.player_lines.len()
     );
-    // Demo counters — shows the Rust-side `emit_counter` flow.
-    // When the runner enables counters (--counters), these
-    // surface in the tournament report; otherwise they're a cheap
-    // no-op (one atomic load + null check).
-    bot_common::emit_counter("players_alive", turn.number_of_players as f64);
-    bot_common::emit_counter("my_seat", turn.player_number as f64);
     TurnOutput::default()
 }
-
-bot_common::ffi_bot!(tron_defs::Ffi, decide);

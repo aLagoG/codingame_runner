@@ -9,13 +9,13 @@
 
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command as ProcCommand, Stdio};
 use std::sync::mpsc;
 use std::thread;
 
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use tournament::{
     BotSpec, MatchRecord, ScheduleConfig, ScheduledMatch, build_report, build_schedule,
     play_schedule,
@@ -50,7 +50,7 @@ enum Command {
     long_about = "\
 Wraps `run` + `report` for the most common case: \"is candidate X better than baseline Y?\". \
 Bot names are stems (e.g. `v1`, `baseline`) — `compare` reads each bot's `bot.toml` to \
-figure out which language variant exists and resolves the dylib path under `target/release/`. \
+figure out which language variant exists and resolves the bin under `target/release/`. \
 Re-runs `cargo build --release -p <crate>` for every bot (incremental, so a no-op when up-to-date). \
 For N=2 prints a single verdict line + a \"need ≈ X more games\" epilogue when inconclusive; \
 for N≥3 prints a ranked table + pairwise verdict block."
@@ -77,10 +77,17 @@ struct CompareArgs {
     #[arg(long, default_value_t = 2)]
     bots_per_match: usize,
 
-    /// Skip the `cargo build --release` step. Useful when the dylibs
+    /// Skip the `cargo build --release` step. Useful when the bots
     /// are already built and you want the fastest possible iteration.
     #[arg(long)]
     no_build: bool,
+
+    /// Cargo build profile for the bots. Defaults to `release`.
+    /// Use `profiling` (release + full debug info) when recording
+    /// with samply — `cargo xtask profile` passes this through.
+    /// Resolves bot binaries from `target/<profile>/`.
+    #[arg(long, default_value = "release")]
+    profile: String,
 
     /// After the tournament, append a `[[history]]` entry to every
     /// participant's `bot.toml` capturing this matchup's outcome
@@ -92,15 +99,9 @@ struct CompareArgs {
     /// Number of matches to run in parallel. Defaults to the number
     /// of available logical cores. Pass `--parallel 1` for clean
     /// per-turn timing baselines (the printed verdict ignores
-    /// timing, but `record_history` carries it forward). Mirrors
-    /// `run --parallel`: workers are separate processes so FFI
-    /// plugins' C++ globals stay isolated per match.
+    /// timing, but `record_history` carries it forward).
     #[arg(long, default_value_t = default_parallel())]
     parallel: usize,
-
-    /// Bot transport. See `run --transport` — same semantics here.
-    #[arg(long, value_enum, default_value_t = Transport::Ffi)]
-    transport: Transport,
 }
 
 #[derive(Parser)]
@@ -127,10 +128,15 @@ struct RunArgs {
     #[arg(required = true, num_args = 2..)]
     bots: Vec<String>,
 
-    /// Skip `cargo build --release` and trust whatever's already in
-    /// `target/release/`. Mirrors `compare --no-build`.
+    /// Skip the bot build and trust whatever's already in
+    /// `target/<profile>/`. Mirrors `compare --no-build`.
     #[arg(long)]
     no_build: bool,
+
+    /// Cargo build profile for the bots. Defaults to `release`. See
+    /// `compare --profile` — same semantics.
+    #[arg(long, default_value = "release")]
+    profile: String,
 
     /// Players per match. 2 by default. Must be in `[2, num_bots]`.
     #[arg(long, default_value_t = 2)]
@@ -173,18 +179,9 @@ struct RunArgs {
     /// Number of matches to run in parallel. Defaults to the number
     /// of available logical cores. Set to 1 for clean per-turn
     /// decision-time measurements; higher values trade timing
-    /// fidelity for wall-clock speedup. When >1, the matches run in
-    /// separate worker processes so FFI plugins (which have shared
-    /// global state) stay safely isolated.
+    /// fidelity for wall-clock speedup.
     #[arg(long, default_value_t = default_parallel())]
     parallel: usize,
-
-    /// Enable FFI counter capture. Subprocess bots ignore this;
-    /// plugin bots that export `set_counter_callback` get a
-    /// callback registered and their per-tick counter emissions
-    /// are aggregated into the JSONL log + report.
-    #[arg(long)]
-    counters: bool,
 
     /// After the run completes, append a `[[history]]` entry to every
     /// participant's `bot.toml` capturing this run's pairwise outcomes
@@ -212,14 +209,6 @@ struct RunArgs {
     /// stat checks (cheaper) but coarser early-stop granularity.
     #[arg(long, default_value_t = 50)]
     wave_size: usize,
-
-    /// Bot transport. `ffi` (default) loads each bot as a cdylib via
-    /// `dlopen` and calls `take_turn` in-process — ~10× faster per
-    /// turn for sub-millisecond decisions. `subprocess` spawns each
-    /// bot as a child process and talks wire format over stdin/stdout
-    /// — matches what CodinGame runs at submission time.
-    #[arg(long, value_enum, default_value_t = Transport::Ffi)]
-    transport: Transport,
 }
 
 #[derive(Parser)]
@@ -228,11 +217,6 @@ struct WorkerArgs {
     game: String,
     #[arg(long = "bot", value_parser = parse_bot_spec, required = true)]
     bots: Vec<BotSpec>,
-    /// Mirror of the parent's `--counters` flag — propagated through
-    /// the worker spawn so plugin players in each worker register
-    /// the callback independently.
-    #[arg(long)]
-    counters: bool,
 }
 
 fn default_parallel() -> usize {
@@ -261,8 +245,8 @@ fn main() -> Result<()> {
 // ============================================================
 
 fn cmd_run(args: RunArgs) -> Result<()> {
-    let resolved = resolve_and_build(&args.game, &args.bots, args.no_build, args.transport)?;
-    let bot_specs: Vec<BotSpec> = resolved.iter().map(|r| r.to_spec(args.transport)).collect();
+    let resolved = resolve_and_build(&args.game, &args.bots, args.no_build, &args.profile)?;
+    let bot_specs: Vec<BotSpec> = resolved.iter().map(|r| r.to_spec()).collect();
 
     let seeds = assemble_seeds(&args.seeds, args.rounds as usize, args.random_seeds);
     let cfg = ScheduleConfig {
@@ -322,7 +306,6 @@ fn cmd_run(args: RunArgs) -> Result<()> {
             &args.game,
             &bot_specs,
             &schedule,
-            args.counters,
             args.wave_size,
             args.alpha,
             out,
@@ -333,16 +316,9 @@ fn cmd_run(args: RunArgs) -> Result<()> {
             args.game
         );
         if parallel == 1 {
-            run_sequential(&args.game, &bot_specs, &schedule, args.counters, out, total)?;
+            run_sequential(&args.game, &bot_specs, &schedule, out, total)?;
         } else {
-            run_parallel(
-                &args.game,
-                &bot_specs,
-                schedule,
-                args.counters,
-                out,
-                parallel,
-            )?;
+            run_parallel(&args.game, &bot_specs, schedule, out, parallel)?;
         }
         total
     };
@@ -354,18 +330,7 @@ fn cmd_run(args: RunArgs) -> Result<()> {
     // flushed and its pages are hot in the page cache. Avoids forking
     // the sequential/parallel/adaptive code paths just to thread
     // records back through.
-    let file = File::open(&args.output)
-        .with_context(|| format!("reopening {} to summarise", args.output.display()))?;
-    let mut records: Vec<MatchRecord> = Vec::with_capacity(actually_played);
-    for (lineno, line) in BufReader::new(file).lines().enumerate() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let rec: MatchRecord = serde_json::from_str(&line)
-            .with_context(|| format!("parsing line {} of {}", lineno + 1, args.output.display()))?;
-        records.push(rec);
-    }
+    let records = read_jsonl_records(&args.output)?;
     let report = build_report(&records);
     println!();
     print_report(&report);
@@ -384,7 +349,6 @@ fn run_sequential(
     game: &str,
     bots: &[BotSpec],
     schedule: &[ScheduledMatch],
-    enable_counters: bool,
     mut out: BufWriter<File>,
     total: usize,
 ) -> Result<()> {
@@ -398,7 +362,7 @@ fn run_sequential(
             m.seed,
             names.join(" vs ")
         );
-        let rec = tournament::run_match_named(game, &entries, m.seed, enable_counters)
+        let rec = tournament::run_match_named(game, &entries, m.seed)
             .with_context(|| format!("match {} ({})", i + 1, names.join(" vs ")))?;
         serde_json::to_writer(&mut out, &rec)?;
         writeln!(out)?;
@@ -422,13 +386,10 @@ fn run_adaptive(
     game: &str,
     bots: &[BotSpec],
     schedule: &[ScheduledMatch],
-    enable_counters: bool,
     wave_size: usize,
     alpha: f64,
     mut out: BufWriter<File>,
 ) -> Result<usize> {
-    use tournament::pairwise_stats::PairStats;
-
     let total = schedule.len();
     let max_waves = total.div_ceil(wave_size).max(1);
     let per_look_alpha = alpha / max_waves as f64;
@@ -449,10 +410,9 @@ fn run_adaptive(
                 m.seed,
                 names.join(" vs ")
             );
-            let rec = tournament::run_match_named(game, &entries, m.seed, enable_counters)
-                .with_context(|| {
-                    format!("match in wave {} ({})", wave_idx + 1, names.join(" vs "))
-                })?;
+            let rec = tournament::run_match_named(game, &entries, m.seed).with_context(|| {
+                format!("match in wave {} ({})", wave_idx + 1, names.join(" vs "))
+            })?;
             serde_json::to_writer(&mut out, &rec)?;
             writeln!(out)?;
             out.flush()?;
@@ -463,37 +423,15 @@ fn run_adaptive(
         let report = build_report(&records);
         let bot_names: Vec<&str> = bots.iter().map(|b| b.name.as_str()).collect();
         let mut all_significant = true;
-        for i in 0..bot_names.len() {
+        'pairs: for i in 0..bot_names.len() {
             for j in (i + 1)..bot_names.len() {
-                let (a, b) = (bot_names[i], bot_names[j]);
-                let games = report
-                    .pair_games
-                    .get(&(a.to_string(), b.to_string()))
-                    .copied()
-                    .unwrap_or(0);
-                if games == 0 {
-                    all_significant = false;
-                    break;
+                match report.pair_stats(bot_names[i], bot_names[j]) {
+                    Some(s) if s.p_value < per_look_alpha => {}
+                    _ => {
+                        all_significant = false;
+                        break 'pairs;
+                    }
                 }
-                let wins_a = report
-                    .pair_wins
-                    .get(&(a.to_string(), b.to_string()))
-                    .copied()
-                    .unwrap_or(0);
-                let wins_b = report
-                    .pair_wins
-                    .get(&(b.to_string(), a.to_string()))
-                    .copied()
-                    .unwrap_or(0);
-                let draws = games.saturating_sub(wins_a + wins_b);
-                let s = PairStats::compute(wins_a, wins_b, draws);
-                if s.p_value >= per_look_alpha {
-                    all_significant = false;
-                    break;
-                }
-            }
-            if !all_significant {
-                break;
             }
         }
         if all_significant {
@@ -525,11 +463,10 @@ fn run_parallel(
     game: &str,
     bots: &[BotSpec],
     schedule: Vec<ScheduledMatch>,
-    enable_counters: bool,
     mut out: BufWriter<File>,
     parallel: usize,
 ) -> Result<()> {
-    play_schedule_parallel(game, bots, schedule, enable_counters, parallel, |line| {
+    play_schedule_parallel(game, bots, schedule, parallel, |line| {
         writeln!(out, "{line}")?;
         out.flush()?;
         Ok(())
@@ -540,16 +477,12 @@ fn run_parallel(
 /// robin across them, and invoke `on_line` for each JSONL record they
 /// stream back. Used by both `run --parallel N` (callback writes to
 /// the output file) and `compare --parallel N` (callback deserialises
-/// into an in-memory `Vec<MatchRecord>`). Worker-per-process is what
-/// makes FFI plugins safe: a single process loading the same dylib
-/// twice in two threads would share C++ globals, which the runner's
-/// per-match `Library::new`/drop dance only resets across separate
-/// loads in the *same* thread.
+/// into an in-memory `Vec<MatchRecord>`). Worker-per-process keeps
+/// each match's bot-subprocess spawns independent across workers.
 fn play_schedule_parallel<F>(
     game: &str,
     bots: &[BotSpec],
     schedule: Vec<ScheduledMatch>,
-    enable_counters: bool,
     parallel: usize,
     mut on_line: F,
 ) -> Result<()>
@@ -575,9 +508,6 @@ where
     for _ in 0..parallel {
         let mut cmd = ProcCommand::new(&exe);
         cmd.args(["worker", "--game", game]);
-        if enable_counters {
-            cmd.arg("--counters");
-        }
         for bot in bots {
             cmd.arg("--bot")
                 .arg(format!("{}={}", bot.name, bot.path.display()));
@@ -663,13 +593,7 @@ fn cmd_worker(args: WorkerArgs) -> Result<()> {
     // Play it and stream JSONL on stdout. Each line is one
     // MatchRecord; main's reader thread picks them up by line.
     let stdout = std::io::stdout();
-    play_schedule(
-        &args.game,
-        &args.bots,
-        &schedule,
-        args.counters,
-        stdout.lock(),
-    )
+    play_schedule(&args.game, &args.bots, &schedule, stdout.lock())
 }
 
 /// Build the final seed list for the scheduler. `explicit` is the
@@ -743,18 +667,7 @@ fn parse_bot_spec(s: &str) -> Result<BotSpec, String> {
 // ============================================================
 
 fn cmd_report(args: ReportArgs) -> Result<()> {
-    let file =
-        File::open(&args.input).with_context(|| format!("opening {}", args.input.display()))?;
-    let mut records: Vec<MatchRecord> = Vec::new();
-    for (lineno, line) in BufReader::new(file).lines().enumerate() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let rec: MatchRecord = serde_json::from_str(&line)
-            .with_context(|| format!("parsing line {} of {}", lineno + 1, args.input.display()))?;
-        records.push(rec);
-    }
+    let records = read_jsonl_records(&args.input)?;
     if records.is_empty() {
         bail!("no records in {}", args.input.display());
     }
@@ -762,6 +675,25 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
     let report = build_report(&records);
     print_report(&report);
     Ok(())
+}
+
+/// Read a JSONL match log into `Vec<MatchRecord>`. Used by `report`
+/// to load a log written by a previous `run`, and by `run` itself to
+/// re-read the log it just wrote (so the post-play report-printing
+/// and optional history-recording paths share one source).
+fn read_jsonl_records(path: &Path) -> Result<Vec<MatchRecord>> {
+    let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let mut records = Vec::new();
+    for (lineno, line) in BufReader::new(file).lines().enumerate() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let rec: MatchRecord = serde_json::from_str(&line)
+            .with_context(|| format!("parsing line {} of {}", lineno + 1, path.display()))?;
+        records.push(rec);
+    }
+    Ok(records)
 }
 
 /// Per-bot summary table + win-rate matrix + pairwise verdicts.
@@ -795,33 +727,14 @@ fn print_pairwise_verdicts(report: &tournament::Report) {
     for i in 0..names.len() {
         for j in (i + 1)..names.len() {
             let (a, b) = (&names[i], &names[j]);
-            let games = report
-                .pair_games
-                .get(&(a.clone(), b.clone()))
-                .copied()
-                .unwrap_or(0);
-            if games == 0 {
+            let Some(stats) = report.pair_stats(a, b) else {
                 continue;
-            }
-            let wins_a = report
-                .pair_wins
-                .get(&(a.clone(), b.clone()))
-                .copied()
-                .unwrap_or(0);
-            let wins_b = report
-                .pair_wins
-                .get(&(b.clone(), a.clone()))
-                .copied()
-                .unwrap_or(0);
-            let draws = games.saturating_sub(wins_a + wins_b);
-            let stats = PairStats::compute(wins_a, wins_b, draws);
-            // Orient so A is the better side.
+            };
             if stats.a_win_rate >= 0.5 {
                 rows.push((a.clone(), b.clone(), stats));
             } else {
-                // Flip: recompute with B as A.
-                let flipped = PairStats::compute(wins_b, wins_a, draws);
-                rows.push((b.clone(), a.clone(), flipped));
+                // Flip orientation so A is the stronger side.
+                rows.push((b.clone(), a.clone(), report.pair_stats(b, a).unwrap()));
             }
         }
     }
@@ -876,14 +789,6 @@ fn print_summary(report: &tournament::Report) {
         .max()
         .unwrap_or(0);
     let any_scores = report.per_bot.values().any(|s| s.score_summary.is_some());
-    // Collect the union of counter names across all bots so we
-    // print one column per counter, with `-` for bots that didn't
-    // emit it.
-    let counter_keys: std::collections::BTreeSet<String> = report
-        .per_bot
-        .values()
-        .flat_map(|s| s.counter_summary.keys().cloned())
-        .collect();
 
     let mut header = format!(
         "{:<width$}  {:>5}  {:>5}  {:>6}  {:>5}  {:>5}  {:>6}  {:>6}",
@@ -905,12 +810,6 @@ fn print_summary(report: &tournament::Report) {
             "  {:>8}  {:>7}  {:>7}",
             "avg sc", "min sc", "max sc"
         ));
-    }
-    for key in &counter_keys {
-        // Headline: average across matches of the per-match average.
-        // Tight ~9-char column so a handful of counters fit on one
-        // line without wrapping.
-        header.push_str(&format!("  {:>9}", truncate(key, 9)));
     }
     header.push_str(&format!(
         "  {:>7}  {:>7}  {:>7}",
@@ -950,25 +849,11 @@ fn print_summary(report: &tournament::Report) {
                 None => row.push_str(&format!("  {:>8}  {:>7}  {:>7}", "-", "-", "-")),
             }
         }
-        for key in &counter_keys {
-            match s.counter_summary.get(key) {
-                Some(c) => row.push_str(&format!("  {:>9.2}", c.avg_of_avg)),
-                None => row.push_str(&format!("  {:>9}", "-")),
-            }
-        }
         row.push_str(&format!(
             "  {:>7.2}  {:>7.2}  {:>7.2}",
             s.time_summary.avg_of_avg_ms, s.time_summary.avg_of_p95_ms, s.time_summary.worst_max_ms,
         ));
         println!("{row}");
-    }
-}
-
-fn truncate(s: &str, n: usize) -> String {
-    if s.len() <= n {
-        s.to_string()
-    } else {
-        format!("{}…", &s[..n.saturating_sub(1)])
     }
 }
 
@@ -1029,37 +914,7 @@ fn print_matrix(report: &tournament::Report) {
 //  `compare` — focused N-bot A/B with verdicts
 // ============================================================
 
-/// One resolved bot — what its `bot.toml` says + where its dylib lives.
-/// Transport selector for `run` / `compare`. The runner discriminates
-/// by file extension (`runner::is_plugin`), so this is purely a path
-/// chooser: `Ffi` → `.dylib`/`.so`/`.dll` and `Subprocess` → the bin
-/// produced by the crate's `[[bin]]` target.
-#[derive(Copy, Clone, Debug, ValueEnum)]
-#[clap(rename_all = "lower")]
-enum Transport {
-    /// Load the cdylib via `dlopen` and call `take_turn` directly.
-    /// ~10× faster per turn for sub-millisecond decisions (no I/O,
-    /// no process spawn), but bot panics share the runner's address
-    /// space — they're caught by a `catch_unwind` shim, but a UB
-    /// (use-after-free, OOB write) crashes the whole tournament.
-    Ffi,
-    /// Spawn the bot as a child process and exchange the wire format
-    /// over stdin/stdout. Matches what CodinGame runs at submission
-    /// time — useful when measuring CG-mode strength, or when the
-    /// FFI surface is under test and you don't trust shared-address
-    /// safety yet.
-    Subprocess,
-}
-
-impl Transport {
-    fn label(self) -> &'static str {
-        match self {
-            Transport::Ffi => "ffi",
-            Transport::Subprocess => "subprocess",
-        }
-    }
-}
-
+/// One resolved bot — what its `bot.toml` says + where its bin lives.
 struct ResolvedBot {
     /// Stem the user passed (e.g. `v1`), used to look up the crate +
     /// bot.toml. Note: when the same stem appears multiple times in
@@ -1073,28 +928,17 @@ struct ResolvedBot {
     lang: String,
     /// Cargo crate name, e.g. `fantastic_bits_v1_5_cpp`.
     crate_name: String,
-    /// Where the cdylib lives after `cargo build --release`.
-    dylib_path: PathBuf,
-    /// Where the stdio bin lives after `cargo build --release`.
-    /// Naming differs by lang because the convention does: Rust bots
-    /// auto-discover `src/main.rs` as `<crate>`, C++ bots declare an
-    /// explicit `[[bin]] name = "<crate>_stdio"` to keep it separate
-    /// from the `[lib]` cdylib of the same crate.
+    /// Path to the bot binary `cargo build --release` produces. Both
+    /// Rust and C++ bots produce a default-discovered bin named after
+    /// the crate (`target/<profile>/<crate_name>`).
     bin_path: PathBuf,
 }
 
 impl ResolvedBot {
-    fn path_for(&self, transport: Transport) -> &PathBuf {
-        match transport {
-            Transport::Ffi => &self.dylib_path,
-            Transport::Subprocess => &self.bin_path,
-        }
-    }
-
-    fn to_spec(&self, transport: Transport) -> BotSpec {
+    fn to_spec(&self) -> BotSpec {
         BotSpec {
             name: self.display_name.clone(),
-            path: self.path_for(transport).clone(),
+            path: self.bin_path.clone(),
         }
     }
 }
@@ -1102,8 +946,8 @@ impl ResolvedBot {
 fn cmd_compare(args: CompareArgs) -> Result<()> {
     anyhow::ensure!(args.bots.len() >= 2, "compare needs at least 2 bots");
 
-    let resolved = resolve_and_build(&args.game, &args.bots, args.no_build, args.transport)?;
-    let bot_specs: Vec<BotSpec> = resolved.iter().map(|r| r.to_spec(args.transport)).collect();
+    let resolved = resolve_and_build(&args.game, &args.bots, args.no_build, &args.profile)?;
+    let bot_specs: Vec<BotSpec> = resolved.iter().map(|r| r.to_spec()).collect();
 
     // Build the schedule. Reuse the `tournament run` logic — same
     // seeds-and-rotations rules so `compare --rounds N` matches what
@@ -1148,12 +992,12 @@ fn cmd_compare(args: CompareArgs) -> Result<()> {
                 m.seed,
                 names.join(" vs "),
             );
-            let rec = tournament::run_match_named(&args.game, &entries, m.seed, false)
+            let rec = tournament::run_match_named(&args.game, &entries, m.seed)
                 .with_context(|| format!("match {} ({})", i + 1, names.join(" vs ")))?;
             records.push(rec);
         }
     } else {
-        play_schedule_parallel(&args.game, &bot_specs, schedule, false, parallel, |line| {
+        play_schedule_parallel(&args.game, &bot_specs, schedule, parallel, |line| {
             let rec: MatchRecord = serde_json::from_str(&line)
                 .with_context(|| format!("parsing worker record `{line}`"))?;
             records.push(rec);
@@ -1204,16 +1048,12 @@ fn record_history(
     report: &tournament::Report,
 ) -> Result<()> {
     use bot_manifest::{BotManifest, HistoryEntry, now_rfc3339};
-    use tournament::pairwise_stats::{PairStats, Verdict};
+    use tournament::pairwise_stats::Verdict;
 
     let ran_at = now_rfc3339();
     let mut wrote = 0usize;
     for (name, lang) in participants {
-        let manifest_path = PathBuf::from("games")
-            .join(game)
-            .join("bots")
-            .join(format!("{name}_{lang}"))
-            .join("bot.toml");
+        let manifest_path = BotManifest::path(game, name, lang);
         if !manifest_path.exists() {
             eprintln!(
                 "⚠ skipping history record for {}_{} — no bot.toml at {}",
@@ -1228,31 +1068,14 @@ fn record_history(
             if other_name == name {
                 continue;
             }
-            let games = report
-                .pair_games
-                .get(&(name.clone(), other_name.clone()))
-                .copied()
-                .unwrap_or(0);
-            if games == 0 {
+            let Some(stats) = report.pair_stats(name, other_name) else {
                 continue;
-            }
-            let wins_me = report
-                .pair_wins
-                .get(&(name.clone(), other_name.clone()))
-                .copied()
-                .unwrap_or(0);
-            let wins_them = report
-                .pair_wins
-                .get(&(other_name.clone(), name.clone()))
-                .copied()
-                .unwrap_or(0);
-            let draws = games.saturating_sub(wins_me + wins_them);
-            let stats = PairStats::compute(wins_me, wins_them, draws);
+            };
             // The HistoryEntry's pts is from THIS bot's perspective
             // (effective wins, draws split 0.5/0.5), to match the
             // user's mental model from the printed verdict line.
-            let pts = wins_me as f64 + 0.5 * draws as f64;
-            let opp_pts = wins_them as f64 + 0.5 * draws as f64;
+            let pts = stats.wins_a as f64 + 0.5 * stats.draws as f64;
+            let opp_pts = stats.wins_b as f64 + 0.5 * stats.draws as f64;
             let verdict = match stats.verdict {
                 Verdict::Better => "significant",
                 Verdict::Worse => "worse",
@@ -1261,7 +1084,7 @@ fn record_history(
             manifest.history.push(HistoryEntry {
                 ran_at: ran_at.clone(),
                 opponent: other_name.clone(),
-                rounds: games,
+                rounds: stats.n,
                 pts,
                 opponent_pts: opp_pts,
                 verdict: verdict.to_string(),
@@ -1276,19 +1099,19 @@ fn record_history(
 
 /// Resolve a list of bot stems (each optionally `<bot>:<lang>` qualified)
 /// to fully-resolved `ResolvedBot` entries, optionally running
-/// `cargo build --release` to make sure the binaries exist. Shared by
-/// `run` and `compare`. Bails on duplicate stems, missing crate dirs,
-/// build failure, and post-build missing artifacts for the chosen
-/// transport — all the same checks both verbs used to do inline.
+/// `cargo build --profile <profile>` to make sure the binaries exist.
+/// Shared by `run` and `compare`. Bails on duplicate stems, missing
+/// crate dirs, build failure, and post-build missing artifacts — all
+/// the same checks both verbs used to do inline.
 fn resolve_and_build(
     game: &str,
     stems: &[String],
     no_build: bool,
-    transport: Transport,
+    cargo_profile: &str,
 ) -> Result<Vec<ResolvedBot>> {
     let mut resolved: Vec<ResolvedBot> = stems
         .iter()
-        .map(|spec| resolve_bot(game, spec))
+        .map(|spec| resolve_bot(game, spec, cargo_profile))
         .collect::<Result<_>>()?;
 
     // Allow duplicate stems (self-vs-self comparison) but
@@ -1316,9 +1139,9 @@ fn resolve_and_build(
 
     if !no_build {
         let crates: Vec<&str> = resolved.iter().map(|r| r.crate_name.as_str()).collect();
-        eprintln!("Building: {} (release)…", crates.join(", "));
+        eprintln!("Building: {} ({})…", crates.join(", "), cargo_profile);
         let mut cmd = ProcCommand::new("cargo");
-        cmd.arg("build").arg("--release");
+        cmd.arg("build").args(["--profile", cargo_profile]);
         for c in &crates {
             cmd.arg("-p").arg(c);
         }
@@ -1328,22 +1151,22 @@ fn resolve_and_build(
         anyhow::ensure!(status.success(), "cargo build failed (exit {status})");
     }
     for r in &resolved {
-        let path = r.path_for(transport);
         anyhow::ensure!(
-            path.exists(),
-            "expected {} artifact not found: {} (pass --no-build to skip the build step \
+            r.bin_path.exists(),
+            "expected bot binary not found: {} (pass --no-build to skip the build step \
              only when you know the artifact is somewhere else)",
-            transport.label(),
-            path.display(),
+            r.bin_path.display(),
         );
     }
     Ok(resolved)
 }
 
-/// Find the cdylib for `<game>/<bot>[:<lang>]` and read its `bot.toml`
+/// Find the bin for `<game>/<bot>[:<lang>]` and read its `bot.toml`
 /// to recover the language. Accepts `<bot>:rs` or `<bot>:cpp` as an
-/// explicit qualifier when both variants exist.
-fn resolve_bot(game: &str, spec: &str) -> Result<ResolvedBot> {
+/// explicit qualifier when both variants exist. `cargo_profile` is
+/// the cargo build profile whose output dir we resolve from
+/// (`target/<cargo_profile>/<bin>`).
+fn resolve_bot(game: &str, spec: &str, cargo_profile: &str) -> Result<ResolvedBot> {
     let bots_dir = PathBuf::from("games").join(game).join("bots");
     anyhow::ensure!(
         bots_dir.exists(),
@@ -1374,26 +1197,17 @@ fn resolve_bot(game: &str, spec: &str) -> Result<ResolvedBot> {
     };
 
     let crate_name = format!("{game}_{bot}_{lang}");
-    let release_dir = PathBuf::from("target").join("release");
-    let dylib_path = release_dir.join(format!(
-        "{}{}.{}",
-        std::env::consts::DLL_PREFIX,
-        crate_name,
-        std::env::consts::DLL_EXTENSION,
-    ));
-    // Bin naming differs by lang convention (see `ResolvedBot::bin_path`).
-    let bin_stem = match lang {
-        "cpp" => format!("{crate_name}_stdio"),
-        "rs" => crate_name.clone(),
-        _ => unreachable!("lang matched only `rs`/`cpp` above"),
-    };
-    let bin_path = release_dir.join(format!("{bin_stem}{}", std::env::consts::EXE_SUFFIX));
+    // Both rs and cpp bots produce a default-discovered bin named
+    // after the crate, so the resolver doesn't need to special-case
+    // lang.
+    let bin_path = PathBuf::from("target")
+        .join(cargo_profile)
+        .join(format!("{crate_name}{}", std::env::consts::EXE_SUFFIX));
     Ok(ResolvedBot {
         name: bot.to_string(),
         display_name: bot.to_string(),
         lang: lang.to_string(),
         crate_name,
-        dylib_path,
         bin_path,
     })
 }
@@ -1402,35 +1216,18 @@ fn resolve_bot(game: &str, spec: &str) -> Result<ResolvedBot> {
 /// orients as "stronger", prints one line + a rounds-needed
 /// epilogue when inconclusive.
 fn print_compare_focused(report: &tournament::Report, bot_specs: &[BotSpec]) {
-    use tournament::pairwise_stats::{PairStats, Verdict};
+    use tournament::pairwise_stats::Verdict;
     let (a, b) = (bot_specs[0].name.as_str(), bot_specs[1].name.as_str());
-    let games = report
-        .pair_games
-        .get(&(a.to_string(), b.to_string()))
-        .copied()
-        .unwrap_or(0);
-    if games == 0 {
+    let Some(stats) = report.pair_stats(a, b) else {
         println!("no matches played between {a} and {b}");
         return;
-    }
-    let wins_a = report
-        .pair_wins
-        .get(&(a.to_string(), b.to_string()))
-        .copied()
-        .unwrap_or(0);
-    let wins_b = report
-        .pair_wins
-        .get(&(b.to_string(), a.to_string()))
-        .copied()
-        .unwrap_or(0);
-    let draws = games.saturating_sub(wins_a + wins_b);
-    let stats = PairStats::compute(wins_a, wins_b, draws);
+    };
 
     // Orient so the LEFT bot is the stronger one — reads more naturally.
     let (left, right, s) = if stats.a_win_rate >= 0.5 {
         (a, b, stats)
     } else {
-        (b, a, PairStats::compute(wins_b, wins_a, draws))
+        (b, a, report.pair_stats(b, a).unwrap())
     };
 
     let lo = s.a_ci_95.0 * 100.0;
@@ -1484,4 +1281,3 @@ fn print_compare_ranking(report: &tournament::Report, bot_specs: &[BotSpec]) {
         );
     }
 }
-

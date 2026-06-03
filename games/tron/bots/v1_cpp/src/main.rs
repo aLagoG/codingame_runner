@@ -1,9 +1,6 @@
-// One-line Rust shim for the C++ stdio bot. The real work lives in
-// `main.cpp` (compiled by `build.rs` via cc-rs); cargo just needs a
-// Rust entry point for its `[[bin]]` target.
+// See ../baseline_cpp/src/main.rs for the rationale.
 
-#[link(name = "tron_v1_cpp_stdio_inner", kind = "static")]
-#[link(name = "c++", kind = "dylib")]
+#[link(name = "tron_v1_cpp_inner", kind = "static")]
 unsafe extern "C" {
     fn cgio_main() -> i32;
 }

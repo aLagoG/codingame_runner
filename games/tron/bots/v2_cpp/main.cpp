@@ -1,5 +1,4 @@
-// C++ subprocess bot for tron (v2). See ../baseline_cpp/main.cpp for
-// the transport contract.
+// See ../baseline_cpp/main.cpp for the transport contract.
 
 #include "strategy.h"
 
@@ -17,11 +16,11 @@ int main()
 
     InitialInput init;
     if (!(std::cin >> init)) return 0;
-    tron_v2_cpp::on_init(cgio::as_ref(init));
+    tron_v2_cpp::on_init(init);
 
     TurnInput input;
     while (std::cin >> input) {
-        std::cout << tron_v2_cpp::decide(input.as_ref()) << std::endl;
+        std::cout << tron_v2_cpp::decide(input) << std::endl;
     }
     return 0;
 }

@@ -1,6 +1,6 @@
 # Tron Bot — v2 Design Note
 
-Companion to `tron/tron_cpp/v2/tron.cpp`. v1 is at `tron/tron_cpp/v1/tron.cpp` for diffing.
+Companion to `games/tron/bots/v2_cpp/strategy.h`. v1 is at `games/tron/bots/v1_cpp/strategy.h` for diffing.
 
 ## Goals
 

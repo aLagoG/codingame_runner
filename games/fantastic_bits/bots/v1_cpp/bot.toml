@@ -1,5 +1,4 @@
 name = "v1"
 lang = "cpp"
-created_at = "2026-06-01T22:09:04Z"
 description = "post-aware Flipendo (perpendicular-distance check vs each goal post)"
 champion = true

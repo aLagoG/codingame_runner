@@ -3,16 +3,12 @@
 // Port of games/tron/bots/baseline_cpp/v2/tron.cpp onto the workspace's
 // bot template. Strategy is intact line-for-line; the only differences
 // from the snapshot are:
-//   * Wrapped in `namespace tron_v2_cpp` so the cdylib + bin builds in
-//     this crate don't ODR-collide with v1 (and so a future tron bot
-//     crate can keep its own namespace).
-//   * `on_init` (called once per match by the runner) resets the
-//     per-match globals and (re-)builds the Zobrist tables. Without it
-//     the dylib's match-N state would leak into match-N+1.
-//   * `decide(TurnRef)` replaces the snapshot's `main()` per-tick body —
-//     same wire format, but reading from a `cgio::TurnRef` instead of
-//     stdin and returning a `::TurnOutput` instead of writing to
-//     stdout.
+//   * Wrapped in `namespace tron_v2_cpp` so the bin doesn't ODR-collide
+//     with v1's identically-named functions if both ever link together.
+//   * `on_init` (called once per match) builds the Zobrist tables.
+//   * `decide(TurnInput)` replaces the snapshot's `main()` per-tick body —
+//     same wire format, but called by `main.cpp` once per tick instead
+//     of looping on stdin itself.
 //
 // See the snapshot's prologue for the design notes (TT, move ordering,
 // isolation detection, terminal-score scaling).
@@ -75,12 +71,12 @@ inline bool passable(int x, int y) {
     return c == 0 || players[c].dead;
 }
 
-struct Move { int dx, dy; const char* name; ::Direction dir; };
+struct Move { int dx, dy; const char* name; Direction dir; };
 inline constexpr Move MOVES[4] = {
-    {0, -1, "UP",    ::Direction::Up},
-    {1,  0, "RIGHT", ::Direction::Right},
-    {0,  1, "DOWN",  ::Direction::Down},
-    {-1, 0, "LEFT",  ::Direction::Left},
+    {0, -1, "UP",    Direction::Up},
+    {1,  0, "RIGHT", Direction::Right},
+    {0,  1, "DOWN",  Direction::Down},
+    {-1, 0, "LEFT",  Direction::Left},
 };
 
 // ============================================================
@@ -274,8 +270,7 @@ inline int terminal_score(int depth) {
 }
 
 // ============================================================
-//  Time check + search globals (exposed so bot.cpp can read
-//  nodes_searched as a per-turn counter).
+//  Time check + search globals.
 // ============================================================
 
 inline steady_clock::time_point deadline;
@@ -465,17 +460,16 @@ inline int iterative_search() {
 //  Bot entry points
 // ============================================================
 
-// Tron has no per-match init payload (`InitialInput = NoInitialInput`)
-// and the runner reloads the dylib per match — `Library::new` → drop
-// in `make_player` actually dlcloses + reopens, which re-runs C++
-// initializers — so all the inline globals start fresh every match.
-// Zobrist tables need to be populated once (constructors don't fill
-// `z_cell` etc); doing it here keeps the lifecycle obvious.
-inline void on_init(const cgio::InitialInputRef& /*init*/) {
+// Tron has no per-match init payload. The runner spawns a fresh
+// subprocess per match, so all the inline globals above start fresh
+// every match. Zobrist tables need to be populated once
+// (constructors don't fill `z_cell` etc); doing it here keeps the
+// lifecycle obvious.
+inline void on_init(const cgio::InitialInput& /*init*/) {
     init_zobrist();
 }
 
-inline ::TurnOutput decide(const cgio::TurnRef& turn) {
+inline TurnOutput decide(const cgio::TurnInput& turn) {
     int N = turn.number_of_players;
     int P = turn.player_number;
 
@@ -509,8 +503,8 @@ inline ::TurnOutput decide(const cgio::TurnRef& turn) {
     recompute_hash(my_id);
 
     int best = iterative_search();
-    ::TurnOutput out{};
-    out.direction = (best < 0) ? ::Direction::Up : MOVES[best].dir;
+    TurnOutput out{};
+    out.direction = (best < 0) ? Direction::Up : MOVES[best].dir;
     return out;
 }
 

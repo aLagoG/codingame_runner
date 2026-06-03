@@ -1,18 +1,15 @@
 use std::{fmt::Debug, path::PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use clap::Parser;
-use codingame_runner::make_player;
-use common::engine::{FfiGame, MatchResult, Player, RunConfig, run_match, write_replay};
-use fantastic_bits_game::FantasticBitsGame;
-use tron_game::TronGame;
+use codingame_runner::{for_each_game, make_player};
+use common::engine::{Game, MatchResult, Player, RunConfig, run_match, write_replay};
 
 #[derive(Parser)]
 #[command(
     about = "Run a CodinGame-style match between two or more bots.",
-    long_about = "Bots can be either dynamic libraries (.so/.dylib/.dll, \
-                  loaded via FFI) or standalone binaries (spawned as a \
-                  subprocess that talks over stdin/stdout)."
+    long_about = "Each bot is a standalone binary; the runner spawns it as a \
+                  subprocess and talks the game's wire format over stdin/stdout."
 )]
 struct Args {
     /// Which game to run.
@@ -23,35 +20,37 @@ struct Args {
     #[arg(long, value_name = "PATH")]
     save_replay: Option<PathBuf>,
 
-    /// Bot binaries or dynamic libraries. One per player.
+    /// Bot binaries — one per player.
     #[arg(required = true)]
     bots: Vec<PathBuf>,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    match args.game.as_str() {
-        "tron" => run_for_game::<TronGame>(args.bots, args.save_replay),
-        "fantastic_bits" => run_for_game::<FantasticBitsGame>(args.bots, args.save_replay),
-        // Keep this catch-all generic — `xtask new-game` patches the
-        // arms above; no need to enumerate known games here.
-        other => bail!("unknown game: {other}"),
+    let game = args.game.as_str();
+    macro_rules! dispatch {
+        ($name:literal, $ty:ty) => {
+            if game == $name {
+                return run_for_game::<$ty>(args.bots, args.save_replay);
+            }
+        };
     }
+    for_each_game!(dispatch);
+    bail!("unknown game: {game}");
 }
 
-fn run_for_game<G: FfiGame + 'static>(
-    paths: Vec<PathBuf>,
-    save_replay: Option<PathBuf>,
-) -> Result<()>
+fn run_for_game<G: Game>(paths: Vec<PathBuf>, save_replay: Option<PathBuf>) -> Result<()>
 where
     G::Outcome: Debug,
 {
+    use anyhow::Context;
+
     let num_players = paths.len() as u32;
     let seed: u64 = 0;
 
-    let mut players: Vec<Box<dyn Player<G>>> = Vec::with_capacity(paths.len());
+    let mut players: Vec<Player<G>> = Vec::with_capacity(paths.len());
     for path in &paths {
-        players.push(make_player::<G>(path, false)?);
+        players.push(make_player::<G>(path)?);
     }
 
     let MatchResult {

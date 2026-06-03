@@ -1,23 +1,11 @@
-// Treat `improper_ctypes` as an error. The `unsafe extern "C" { ... }` block
-// below references `TurnInputFFI<'_>` and `TurnResult<TurnOutput>`; if either
-// drops `#[repr(C)]` (or gains a non-FFI-safe field) the lint fires at the
-// extern block — the closest thing Rust has to a "must be repr(C)" check.
-#![deny(improper_ctypes)]
-
 use std::{
     fmt::Display,
     io::{BufRead, Write},
-    marker::PhantomData,
     str::FromStr,
 };
 
 use anyhow::{Context, bail};
-use bot_common::{
-    Defs, ReadFrom, SingleLine, TurnResult, WireInput, WireInputFfi, WireOutput, WriteTo,
-};
-
-/// Bumped on any wire-type change. v2 added [`InitialInput::my_team_id`].
-pub const ABI_VERSION: u32 = 2;
+use bot_common::{ReadFrom, SingleLine, WriteTo};
 
 // ============================================================
 //  Initial input
@@ -29,56 +17,6 @@ pub const ABI_VERSION: u32 = 2;
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct InitialInput {
     pub my_team_id: i32,
-}
-
-#[repr(C)]
-#[derive(Debug, Default, Clone, Copy)]
-pub struct InitialInputFFI<'a> {
-    my_team_id: i32,
-    _marker: PhantomData<&'a InitialInput>,
-}
-
-impl InitialInputFFI<'_> {
-    pub fn my_team_id(&self) -> i32 {
-        self.my_team_id
-    }
-}
-
-/// Borrowed view of [`InitialInput`] — what `on_init` actually sees.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct InitialInputRef<'a> {
-    pub my_team_id: i32,
-    _marker: PhantomData<&'a InitialInput>,
-}
-
-impl WireInput for InitialInput {
-    type Ffi<'a> = InitialInputFFI<'a>;
-    type Ref<'a> = InitialInputRef<'a>;
-
-    fn as_ffi(&self) -> InitialInputFFI<'_> {
-        InitialInputFFI {
-            my_team_id: self.my_team_id,
-            _marker: PhantomData,
-        }
-    }
-
-    fn as_ref(&self) -> InitialInputRef<'_> {
-        InitialInputRef {
-            my_team_id: self.my_team_id,
-            _marker: PhantomData,
-        }
-    }
-}
-
-impl<'a> WireInputFfi<'a> for InitialInputFFI<'a> {
-    type Ref = InitialInputRef<'a>;
-
-    fn as_ref(&self) -> InitialInputRef<'a> {
-        InitialInputRef {
-            my_team_id: self.my_team_id,
-            _marker: PhantomData,
-        }
-    }
 }
 
 impl Display for InitialInput {
@@ -103,7 +41,6 @@ impl SingleLine for InitialInput {}
 // ============================================================
 
 /// Tags for entities the engine emits per tick.
-#[repr(u8)]
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum EntityKind {
     /// One of the receiving player's own wizards (perspective-relative —
@@ -119,7 +56,6 @@ pub enum EntityKind {
 ///   * Wizard: `1` if grabbing a Snaffle, else `0`.
 ///   * Snaffle: `1` if grabbed by a Wizard, else `0`.
 ///   * Bludger: `entityId` of last victim (-1 if none).
-#[repr(C)]
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
 pub struct Entity {
     pub id: i32,
@@ -133,7 +69,6 @@ pub struct Entity {
 
 /// What kind of action a wizard is taking this tick. Together with the
 /// numeric fields on [`WizardAction`] this is the full output schema.
-#[repr(u8)]
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
 pub enum ActionKind {
     /// `MOVE x y thrust` — apply thrust toward (x, y); thrust in [0, 150].
@@ -158,7 +93,6 @@ pub enum ActionKind {
 /// Constructor helpers ([`WizardAction::move_to`], `throw_to`, `cast`)
 /// build the right shape so callers don't need to remember which fields
 /// each kind uses.
-#[repr(C)]
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
 pub struct WizardAction {
     pub kind: ActionKind,
@@ -211,16 +145,11 @@ impl WizardAction {
 /// Output for one tick: the two actions for the player's two wizards, in
 /// wizard-id order (lower id first). Written/read as two lines on the
 /// wire — *not* `SingleLine`.
-#[repr(C)]
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
 pub struct TurnOutput {
     pub primary: WizardAction,
     pub secondary: WizardAction,
 }
-
-/// Asserts `TurnOutput` satisfies the full bundled contract — see
-/// [`common::WireOutput`].
-impl WireOutput for TurnOutput {}
 
 /// Per-tick input the engine hands each player. `entities` shrinks as
 /// snaffles get scored; outer length matches `<num_entities>` on the wire.
@@ -230,127 +159,6 @@ pub struct TurnInput {
     pub opp_score: i32,
     pub opp_magic: i32,
     pub entities: Vec<Entity>,
-}
-
-/// Borrowed view of [`TurnInput`] — what `decide` actually sees.
-pub struct TurnRef<'a> {
-    pub my_score: i32,
-    pub my_magic: i32,
-    pub opp_score: i32,
-    pub opp_magic: i32,
-    pub entities: &'a [Entity],
-}
-
-/// `#[repr(C)]` FFI mirror of [`TurnInput`]. Fields are private — the only
-/// way to obtain a `TurnInputFFI<'a>` is via `TurnInput::as_ffi`, which
-/// establishes the invariants `as_ref` relies on:
-///   1. `entities` is a valid, properly-aligned pointer to a contiguous
-///      array of `Entity`s.
-///   2. The array has at least `num_entities` elements.
-///   3. The memory is live for `'a` (enforced by lifetime + PhantomData).
-#[repr(C)]
-#[derive(Debug)]
-pub struct TurnInputFFI<'a> {
-    my_score: i32,
-    my_magic: i32,
-    opp_score: i32,
-    opp_magic: i32,
-    entities: *const Entity,
-    num_entities: usize,
-    _marker: PhantomData<&'a [Entity]>,
-}
-
-impl TurnInputFFI<'_> {
-    pub fn my_score(&self) -> i32 {
-        self.my_score
-    }
-    pub fn my_magic(&self) -> i32 {
-        self.my_magic
-    }
-    pub fn opp_score(&self) -> i32 {
-        self.opp_score
-    }
-    pub fn opp_magic(&self) -> i32 {
-        self.opp_magic
-    }
-    pub fn num_entities(&self) -> usize {
-        self.num_entities
-    }
-}
-
-// ============================================================
-//  FFI surface
-// ============================================================
-
-/// Marker type. Implementing [`common::Defs`] on it is the single line that
-/// ratifies this crate's FFI surface — all of `WireInput`, `WireInputFfi`,
-/// `WireOutput`, and `ABI_VERSION` are checked at this exact site.
-pub struct Ffi;
-
-impl Defs for Ffi {
-    type InitialInput = InitialInput;
-    type Input = TurnInput;
-    type Output = TurnOutput;
-    const ABI_VERSION: u32 = ABI_VERSION;
-}
-
-// cbindgen reachability root — generates the `extern "C" { ... }` block in
-// the C++ header. No symbols introduced into `_defs.rlib`; the real
-// `initialize` / `take_turn` / `abi_version` are emitted by
-// `common::ffi_bot!` in the bot crate. Keep in sync with that macro.
-// `TurnResult` is generic over the per-game output; cbindgen monomorphises
-// it into a concrete C++ struct.
-unsafe extern "C" {
-    pub fn initialize(input: InitialInputFFI<'_>);
-    pub fn take_turn(input: TurnInputFFI<'_>) -> TurnResult<TurnOutput>;
-    pub fn abi_version() -> u32;
-}
-
-// ============================================================
-//  Wire-input glue
-// ============================================================
-
-impl WireInput for TurnInput {
-    type Ffi<'a> = TurnInputFFI<'a>;
-    type Ref<'a> = TurnRef<'a>;
-
-    fn as_ffi(&self) -> TurnInputFFI<'_> {
-        TurnInputFFI {
-            my_score: self.my_score,
-            my_magic: self.my_magic,
-            opp_score: self.opp_score,
-            opp_magic: self.opp_magic,
-            entities: self.entities.as_ptr(),
-            num_entities: self.entities.len(),
-            _marker: PhantomData,
-        }
-    }
-
-    fn as_ref(&self) -> TurnRef<'_> {
-        TurnRef {
-            my_score: self.my_score,
-            my_magic: self.my_magic,
-            opp_score: self.opp_score,
-            opp_magic: self.opp_magic,
-            entities: &self.entities,
-        }
-    }
-}
-
-impl<'a> WireInputFfi<'a> for TurnInputFFI<'a> {
-    type Ref = TurnRef<'a>;
-
-    /// Safe because every `TurnInputFFI<'a>` is constructed by `as_ffi`,
-    /// which establishes the documented invariants.
-    fn as_ref(&self) -> TurnRef<'a> {
-        TurnRef {
-            my_score: self.my_score,
-            my_magic: self.my_magic,
-            opp_score: self.opp_score,
-            opp_magic: self.opp_magic,
-            entities: unsafe { std::slice::from_raw_parts(self.entities, self.num_entities) },
-        }
-    }
 }
 
 // ============================================================

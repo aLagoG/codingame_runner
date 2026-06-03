@@ -3,27 +3,8 @@ name = "tron_v2_cpp"
 version.workspace = true
 edition.workspace = true
 
-# Two artifacts share this crate:
-#   * `cdylib`  — `bot.cpp` compiled with FFI exports, loaded by the
-#                 runner's `PluginPlayer`.
-#   * `[[bin]]` — `main.cpp` compiled with an `int main()`-style loop
-#                 reading from stdin / writing to stdout, spawned by the
-#                 runner's `SubprocessPlayer`. Same file is the entry
-#                 point cpp_flatten bundles for CodinGame submission.
-# Both compilations share `strategy.h` (single source of truth for
-# the per-turn logic) and are driven by `cgio_build::build` in
-# `build.rs`.
-[lib]
-crate-type = ["cdylib"]
-
-[[bin]]
-name = "tron_v2_cpp_stdio"
-path = "src/main.rs"
-
-[dependencies]
-# Pure ordering dep — ensures `tron_defs/build.rs` regenerates the C++
-# header before `build.rs` here tries to include it.
-tron_defs.workspace = true
-
+# Default-discovered bin (`src/main.rs` → `tron_v2_cpp`). The tiny
+# Rust shim in `src/main.rs` links the static archive `main.cpp`
+# produces via `cgio_build`.
 [build-dependencies]
 cgio_build.workspace = true

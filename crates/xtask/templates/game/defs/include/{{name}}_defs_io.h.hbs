@@ -1,12 +1,12 @@
-// Hand-written stdio wire-format helpers for {{name}} — paired with
-// the cbindgen-generated `{{name}}_defs.h`. Stays in sync with the
-// Rust `Display` / `FromStr` impls in `{{name}}_defs/src/lib.rs` by
-// hand; if you change the format in one place, change the other.
+// Stdio wire-format helpers for {{name}}. Paired with `{{name}}_defs.h`
+// (the type definitions). Stays in sync with the Rust `Display` /
+// `FromStr` / `ReadFrom` impls in `{{name}}_defs/src/lib.rs` by hand;
+// if you change the format in one place, change the other.
 //
-// SKELETON: the C++ `TurnInput` / `TurnRef` and the operator>>/<<
-// definitions below are placeholders that let the bot compile. Fill
-// them in with your real wire format before the bot does anything
-// useful — see `tron/defs/include/tron_defs_io.h` for a worked example.
+// SKELETON: the `TurnInput` / operator>> below are placeholders that
+// let the bot compile. Fill them in with your real wire format before
+// the bot does anything useful — see `tron/defs/include/tron_defs_io.h`
+// for a worked example.
 
 #pragma once
 
@@ -16,60 +16,24 @@
 
 namespace cgio {
 
-// ---- InitialInput (empty by default; uses `NoInitialInput`) ----
+// ---- InitialInput ----
 //
-// Three names every `_defs_io.h` exposes regardless of whether the
-// game has a real init:
-//   * `cgio::InitialInput`     — owning struct read by `main.cpp` from stdin.
-//   * `cgio::InitialInputRef`  — borrowed view passed to `strategy.h::on_init`.
-//   * `cgio::InitialInputFfi`  — alias to whatever cbindgen named the
-//                                 FFI struct, so `bot.cpp::initialize`
-//                                 stays game-agnostic.
-// Keeping these names stable means the bot template's `bot.cpp` /
-// `main.cpp` / `strategy.h` are invariant across the NoInitialInput→
-// real-init upgrade — when you grow a real init, edit ONLY this file
-// (and the Rust defs). See `fantastic_bits/defs/include/...` for a
-// worked example with a non-empty init.
-
-using InitialInputFfi = ::NoInitialInputFfi;
+// Empty by default. When the game grows per-player init data, fill
+// in fields here + an operator>> that reads them. The bot's
+// `on_init(const cgio::InitialInput&)` signature stays the same.
 
 struct InitialInput {};
-struct InitialInputRef {};
 
-inline InitialInputRef as_ref(const InitialInput&)    { return {}; }
-inline InitialInputRef as_ref(const InitialInputFfi&) { return {}; }
 inline std::istream& operator>>(std::istream& in, InitialInput&) { return in; }
 
 // ---- TurnInput / TurnOutput ----
 
-// Per-turn input view handed to `decide(const TurnRef&)`. Add fields
-// as you flesh out the Rust `TurnRef` in `{{name}}_defs/src/lib.rs`.
-// Both transports converge here: the stdio loop owns a `TurnInput`
-// and calls `input.as_ref()`; the FFI bot has a `::TurnInputFFI` and
-// calls the free `cgio::as_ref(ffi)` overload below.
-struct TurnRef {
-    // TODO: borrowed views of TurnInput's fields.
-};
-
-// C++ owner type for the wire format. cbindgen only emits the flat
-// `TurnInputFFI` repr; this wrapper mirrors the Rust `TurnInput` so
-// the stdio loop can `cin >> input` and call `input.as_ref()`.
+// C++ owner type for the per-tick wire format. The stdio loop calls
+// `cin >> input` once per tick and hands `input` to
+// `strategy.h::decide`.
 struct TurnInput {
-    // TODO: owned copies of TurnInput's fields.
-
-    TurnRef as_ref() const {
-        return TurnRef{};
-    }
+    // TODO: TurnInput's fields.
 };
-
-// Borrowed view of the cbindgen FFI struct. Free function (not a
-// method) because `::TurnInputFFI` is regenerated and we can't add
-// members to it. The bot's `strategy.h::decide(const TurnRef&)` runs
-// against this view in the FFI transport.
-inline TurnRef as_ref(const ::TurnInputFFI& /*ffi*/) {
-    // TODO: borrow `ffi`'s fields into a `TurnRef`.
-    return TurnRef{};
-}
 
 inline std::istream& operator>>(std::istream& in, TurnInput& /*input*/) {
     // TODO: read TurnInput's fields from `in`. The skeleton sets

@@ -1,10 +1,9 @@
 // Fantastic Bits — v1.5 strategy.
 //
-// Single source of truth for the bot's per-turn logic, shared by:
-//   * `bot.cpp` — FFI wrapper consumed by the runner / tournament.
-//   * `main.cpp` — subprocess stdio loop AND the file that
-//     `cpp_flatten` bundles for CodinGame submission (cpp_flatten
-//     inlines this header into the bundled output).
+// Single source of truth for the bot's per-turn logic. `main.cpp`
+// includes this header for the stdio loop, and `cpp_flatten` bundles
+// the same file for CodinGame submission (inlining this header into
+// the bundled output).
 //
 // Started as a line-by-line port of the original C# v1 bot. Diffs
 // from the C# original (preserve when porting further fixes):
@@ -42,18 +41,17 @@
 namespace fantastic_bits_v1_cpp {
 
 // Bot-wide state, set by `on_init` (called once at match start) and
-// read by `decide` every tick. Owned by the strategy so both bot.cpp
-// and main.cpp see the same values without re-declaring globals.
+// read by `decide` every tick.
 inline int32_t g_my_team_id = 0;
 inline int g_petr = 0;  // two-tick Petrificus guard, preserved across turns.
 
-inline void on_init(const cgio::InitialInputRef& init) {
+inline void on_init(const cgio::InitialInput& init) {
     g_my_team_id = init.my_team_id;
     g_petr = 0;
 }
 
 // Internal mirror of the v1 `Entity` struct so the strategy code below
-// stays a line-for-line port of v1. Built from the FFI `Entity` at the
+// stays a line-for-line port of v1. Built from `cgio::Entity` at the
 // top of `decide`.
 struct LocalEntity {
     int id = -1;
@@ -476,10 +474,10 @@ inline TurnOutput decide_from_entities(std::vector<LocalEntity>& wizards,
     return TurnOutput{*wizards[0].action, *wizards[1].action};
 }
 
-// Single bot entry point — both `bot.cpp` (FFI) and `main.cpp`
-// (subprocess stdio) call this. Builds the per-kind entity vectors
-// from `turn.entities` then delegates to `decide_from_entities`.
-inline TurnOutput decide(const cgio::TurnRef& turn) {
+// Per-tick entry point called by `main.cpp`. Builds the per-kind
+// entity vectors from `turn.entities` then delegates to
+// `decide_from_entities`.
+inline TurnOutput decide(const cgio::TurnInput& turn) {
     std::vector<LocalEntity> wizards;
     std::vector<LocalEntity> opponents;
     std::vector<LocalEntity> snaffles;

@@ -3,7 +3,6 @@ resolver = "3"
 members = [
     # Shared infrastructure crates — engine, runner, tools.
     "crates/runner",
-    "crates/macros",
     "crates/common",
     "crates/cgio_build",
     "crates/xtask",
@@ -47,14 +46,34 @@ edition = "2024"
 # Instruments, perf) can map sampled addresses back to function +
 # line. Near-zero binary-size cost vs full debug info; absolutely
 # essential for flamegraphs to be useful. cargo also propagates this
-# to cc-rs via `DEBUG=true`, so C++ FFI bots get `-g1` automatically.
+# to cc-rs via `DEBUG=true`, so C++ bots get `-g1` automatically.
 [profile.release]
 debug = "line-tables-only"
+
+# `cargo xtask profile` builds bots + tournament under this profile.
+# `debug = 2` is what makes samply attribute samples to source lines
+# AND resolve inlined helpers (e.g. `passable()` inside
+# `leaf_heuristic()`) as their own call-tree frames — the difference
+# between "96% in leaf_heuristic" and "60% in passable, 30% in
+# cell_idx". Bigger debug sections + slower link; intentionally a
+# separate target dir (`target/profiling/`) so normal `cargo build
+# --release` runs stay lean.
+#
+# `split-debuginfo = "packed"`: on macOS the release default drops
+# DWARF from the final binary (function names survive via STAB but
+# `.debug_line` is gone), so samply's source view shows nothing.
+# Packed mode runs `dsymutil` to produce a `<bin>.dSYM` bundle next
+# to each binary; samply auto-discovers it and gets per-line +
+# inlined-function info. Harmless on Linux (already produces inline
+# DWARF; the setting is a no-op).
+[profile.profiling]
+inherits = "release"
+debug = 2
+split-debuginfo = "packed"
 
 [workspace.dependencies]
 anyhow = "1.0.102"
 clap = { version = "4.6.1", features = ["derive"] }
-libloading = "0.9.0"
 thiserror = "2.0.18"
 macroquad = "0.4"
 egui-macroquad = "0.17"
@@ -62,9 +81,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 bincode = "1.3"
 cc = "1"
+libc = "0.2"
 rand = "0.10.1"
 
-codingame_macros = { path = "crates/macros" }
 common = { path = "crates/common" }
 viz = { path = "crates/viz" }
 cgio_build = { path = "crates/cgio_build" }

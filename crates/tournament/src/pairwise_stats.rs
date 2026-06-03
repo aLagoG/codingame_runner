@@ -116,16 +116,6 @@ pub enum Verdict {
     Inconclusive,
 }
 
-impl Verdict {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Verdict::Better => "significant (BETTER)",
-            Verdict::Worse => "significant (WORSE)",
-            Verdict::Inconclusive => "inconclusive",
-        }
-    }
-}
-
 /// One pair's bundled stats. Convenience for renderers that want
 /// every number at once.
 #[derive(Debug, Clone, Copy)]

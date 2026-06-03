@@ -1,112 +1,25 @@
-// Treat `improper_ctypes` as an error. The `unsafe extern "C" { ... }` block
-// below references `TurnInputFFI<'_>` and `TurnResult<TurnOutput>`; if either
-// drops `#[repr(C)]` (or gains a non-FFI-safe field) the lint fires at the
-// extern block — the closest thing Rust has to a "must be repr(C)" check.
-#![deny(improper_ctypes)]
-
 use std::{
     fmt::Display,
     io::{BufRead, Write},
-    marker::PhantomData,
     str::FromStr,
 };
 
-use bot_common::{
-    Defs, NoInitialInput, NoInitialInputFfi, ReadFrom, SingleLine, TurnResult, WireInput,
-    WireInputFfi, WireOutput, WriteTo,
-};
+use bot_common::{ReadFrom, SingleLine, WriteTo};
 
-/// Bumped on any wire-type change. Plugins built against an older
-/// `{{name}}_defs` export an older value; `PluginPlayer::load` reads it and
-/// refuses mismatches before any UB-prone call lands.
-pub const ABI_VERSION: u32 = 1;
+/// Per-match init payload. Default to `()` (no init). If your game
+/// ships per-player setup data before turn 1, replace the alias with
+/// a struct + `Display`/`FromStr`/`SingleLine` impls — see
+/// `fantastic_bits_defs::InitialInput` for a worked example.
+pub type InitialInput = ();
 
-/// Marker type. Implementing [`bot_common::Defs`] on it is the single line that
-/// ratifies this crate's FFI surface — all of `WireInput`, `WireInputFfi`,
-/// `WireOutput`, and `ABI_VERSION` are checked at this exact site.
-pub struct Ffi;
-
-impl Defs for Ffi {
-    /// Default for games that don't send per-player initial data. To use
-    /// real init data, define your own `InitialInput` struct + its
-    /// `InitialInputFFI<'a>` mirror + `WireInput`/`WireInputFfi` impls
-    /// (same shape as `TurnInput` below) and reference it here.
-    type InitialInput = NoInitialInput;
-    type Input = TurnInput;
-    type Output = TurnOutput;
-    const ABI_VERSION: u32 = ABI_VERSION;
-}
-
-// TODO: define your game's per-tick input fields. The engine constructs this;
-// the bot's `decide(turn: TurnRef<'_>)` reads from it through `as_ref`.
+// TODO: define your game's per-tick input fields. The engine
+// constructs this; the bot's `decide(&TurnInput)` reads from it.
 #[derive(Debug, Clone, Default)]
 pub struct TurnInput {}
 
-/// Borrowed view of [`TurnInput`] — what `decide` actually sees.
-pub struct TurnRef<'a> {
-    _marker: PhantomData<&'a TurnInput>,
-}
-
-/// `#[repr(C)]` mirror of [`TurnInput`] for FFI. Fields are private — the only
-/// constructor is `TurnInput::as_ffi`, which establishes the invariants
-/// `as_ref` relies on.
-#[repr(C)]
-#[derive(Debug)]
-pub struct TurnInputFFI<'a> {
-    _marker: PhantomData<&'a TurnInput>,
-}
-
 // TODO: define your game's per-tick output fields.
-#[repr(C)]
 #[derive(Debug, Default, PartialEq, Eq, Copy, Clone)]
 pub struct TurnOutput {}
-
-/// Asserts `TurnOutput` satisfies the full bundled contract — see
-/// [`bot_common::WireOutput`]. Per-game `TurnOutput` types deliberately
-/// don't derive `serde` (the runner serialises outputs as their
-/// wire-format text, not as serde objects), which keeps the defs free
-/// of `serde_derive` and therefore vendorable for CodinGame submission.
-impl WireOutput for TurnOutput {}
-
-// cbindgen reachability root — generates the `extern "C" { ... }` block in
-// the C++ header. No symbols introduced into `_defs.rlib`; the real
-// `initialize` / `take_turn` / `abi_version` are emitted by
-// `common::ffi_bot!` in the bot crate. Keep in sync with that macro.
-// `TurnResult` is generic over the per-game output; cbindgen monomorphises
-// it into a concrete C++ struct.
-//
-// TODO: remove the `#[allow]` once `TurnInputFFI` / `TurnOutput` have real
-// fields. The crate-level `deny(improper_ctypes)` will then start catching
-// any future regression — e.g. dropping `#[repr(C)]`.
-#[allow(improper_ctypes)]
-unsafe extern "C" {
-    pub fn initialize(input: NoInitialInputFfi<'_>);
-    pub fn take_turn(input: TurnInputFFI<'_>) -> TurnResult<TurnOutput>;
-    pub fn abi_version() -> u32;
-}
-
-impl WireInput for TurnInput {
-    type Ffi<'a> = TurnInputFFI<'a>;
-    type Ref<'a> = TurnRef<'a>;
-
-    fn as_ffi(&self) -> TurnInputFFI<'_> {
-        TurnInputFFI { _marker: PhantomData }
-    }
-
-    fn as_ref(&self) -> TurnRef<'_> {
-        TurnRef { _marker: PhantomData }
-    }
-}
-
-impl<'a> WireInputFfi<'a> for TurnInputFFI<'a> {
-    type Ref = TurnRef<'a>;
-
-    /// Safe because every `TurnInputFFI<'a>` is constructed by `as_ffi`,
-    /// which establishes the documented invariants.
-    fn as_ref(&self) -> TurnRef<'a> {
-        TurnRef { _marker: PhantomData }
-    }
-}
 
 // region: stdio wire format (Display / FromStr / ReadFrom / WriteTo)
 //

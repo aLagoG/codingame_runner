@@ -1,25 +1,14 @@
-// C++ subprocess bot for {{game}} ({{bot}} variant): reads
-// `InitialInput` once (empty no-op for games without per-player
-// init), then `TurnInput` per tick from stdin and writes a
-// `TurnOutput` to stdout until EOF.
+// C++ stdio bot for {{game}} ({{bot}} variant).
 //
-// Two ways this file gets compiled:
+// Two compilation contexts:
 //   * Local cargo build: `build.rs` (via `cgio_build`) defines
-//     `CGIO_RUST_SHIM`, so the entry point is `extern "C" int
-//     cgio_main()`. The Rust binary in `src/main.rs` links the
-//     static lib and calls it.
-//   * CodinGame paste: no define, so the entry point is `int main()`
-//     — `cargo xtask bundle {{game}} {{bot}} --lang cpp` runs
-//     `cpp_flatten` on this file, inlining `strategy.h` and the
-//     transitive `..._defs_io.h` / `..._defs.h` headers into a single
-//     paste-ready source.
-//
-// This file is invariant across the NoInitialInput→real-init upgrade:
-// `cgio::InitialInput` is always defined (empty for games without
-// init; real fields after upgrade), `operator>>` reads the right
-// amount, and `strategy.h::on_init` takes the same `InitialInputRef`
-// signature regardless. Tune the strategy in `strategy.h`; both
-// transports and the CG bundle pick it up.
+//     `CGIO_RUST_SHIM`, so the entry point is renamed
+//     `extern "C" int cgio_main()`. The Rust binary in `src/main.rs`
+//     links the static archive and calls it.
+//   * CodinGame paste: no define, so the entry point is `int main()` —
+//     `cargo xtask bundle {{game}} {{bot}} --lang cpp` runs cpp_flatten
+//     on this file, inlining `strategy.h` + the transitive `_defs_io.h`
+//     / `_defs.h` headers into a single paste-ready source.
 
 #include "strategy.h"
 
@@ -35,17 +24,13 @@ int main()
 {
     std::ios_base::sync_with_stdio(false);
 
-    // Read the init line (no-op for `NoInitialInput` games — the empty
-    // `operator>>` doesn't touch the stream). The `if (!cin)` guard
-    // catches a closed-stdin case for games with a real init; for
-    // empty init it's just defensive.
     InitialInput init;
     if (!(std::cin >> init)) return 0;
-    {{crate_name}}::on_init(cgio::as_ref(init));
+    {{crate_name}}::on_init(init);
 
     TurnInput input;
     while (std::cin >> input) {
-        std::cout << {{crate_name}}::decide(input.as_ref()) << std::endl;
+        std::cout << {{crate_name}}::decide(input) << std::endl;
     }
     return 0;
 }

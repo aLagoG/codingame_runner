@@ -1,9 +1,9 @@
-// Hand-written stdio wire-format helpers for tron — paired with the
-// cbindgen-generated `tron_defs.h`. Stays in sync with the Rust impls
-// in `tron_defs/src/lib.rs` by hand; if you change the format in one
-// place, change the other.
+// Stdio wire-format helpers for tron. Paired with `tron_defs.h` (the
+// type definitions). Stays in sync with the Rust impls in
+// `tron_defs/src/lib.rs` by hand — change the format in one place,
+// change the other.
 //
-// Wire format (matches the Rust `Display`/`FromStr` impls):
+// Wire format:
 //
 //   <number_of_players> <player_number>     ← header line
 //   <x1> <y1> <x2> <y2>                     ← one line per player, N total
@@ -12,9 +12,6 @@
 // Output:
 //
 //   <UP|DOWN|LEFT|RIGHT>                    ← single token on its own line
-//
-// See `docs/wire-codegen.md` for the plan to autogenerate this header
-// from a shared schema once the count of games justifies it.
 
 #pragma once
 
@@ -22,37 +19,21 @@
 
 #include <cstdint>
 #include <iostream>
-#include <span>
 #include <string>
 #include <vector>
 
 namespace cgio {
 
-// ---- InitialInput (empty for tron — uses `NoInitialInput`) ----
+// ---- InitialInput (empty for tron — no per-match init payload) ----
 //
-// Three names every `_defs_io.h` exposes regardless of whether the
-// game has a real init:
-//   * `cgio::InitialInput`     — owning struct read by `main.cpp` from stdin.
-//   * `cgio::InitialInputRef`  — borrowed view passed to `strategy.h::on_init`.
-//   * `cgio::InitialInputFfi`  — alias to whatever cbindgen named the
-//                                 FFI struct, so `bot.cpp::initialize`
-//                                 stays game-agnostic.
-// Tron doesn't ship per-player init data, so the structs are empty and
-// `operator>>` is a no-op (the stream isn't touched, so an unconsumed
-// init line — there shouldn't be one anyway — stays available for the
-// per-turn loop). When you grow a real `InitialInput`, mirror
-// fantastic_bits's `_defs_io.h` and update the typedef.
-
-using InitialInputFfi = ::NoInitialInputFfi;
+// Empty struct + no-op operator>> so main.cpp can read it uniformly
+// with games that DO have an init step (fantastic_bits).
 
 struct InitialInput {};
-struct InitialInputRef {};
 
-inline InitialInputRef as_ref(const InitialInput&)    { return {}; }
-inline InitialInputRef as_ref(const InitialInputFfi&) { return {}; }
 inline std::istream& operator>>(std::istream& in, InitialInput&) { return in; }
 
-// ---- TurnInput / TurnOutput ----
+// ---- Pos / Line / Direction / TurnOutput ----
 
 inline std::istream& operator>>(std::istream& in, Pos& p) {
     return in >> p.x >> p.y;
@@ -103,39 +84,13 @@ inline std::ostream& operator<<(std::ostream& out, const TurnOutput& o) {
     return out << o.direction;
 }
 
-/// Borrowed view shared between the owning `TurnInput` (subprocess
-/// transport) and the cbindgen-generated `::TurnInputFFI` (plugin
-/// transport). Bot logic should take `const TurnRef&` so the same
-/// `decide(...)` function works in both transports — mirrors the
-/// `TurnRef`/`as_ref` pattern on the Rust side.
-struct TurnRef {
-    int32_t              number_of_players;
-    int32_t              player_number;
-    std::span<const Line> player_lines;
-};
+// ---- TurnInput (owning) ----
 
-/// Owning C++ form of the per-tick input — the FFI-facing `TurnInputFFI`
-/// is a borrowed view, which doesn't fit the subprocess transport. This
-/// type is what subprocess bots actually read from stdin.
 struct TurnInput {
     int32_t           number_of_players;
     int32_t           player_number;
     std::vector<Line> player_lines;
-
-    TurnRef as_ref() const {
-        return TurnRef{number_of_players, player_number, std::span<const Line>(player_lines)};
-    }
 };
-
-/// Borrowed view of the cbindgen FFI struct. Free function (not a method)
-/// because `::TurnInputFFI` is regenerated and we can't add members to it.
-inline TurnRef as_ref(const ::TurnInputFFI& ffi) {
-    return TurnRef{
-        ffi.number_of_players,
-        ffi.player_number,
-        std::span<const Line>(ffi.player_lines, static_cast<size_t>(ffi.number_of_players)),
-    };
-}
 
 inline std::istream& operator>>(std::istream& in, TurnInput& v) {
     if (!(in >> v.number_of_players >> v.player_number)) return in;

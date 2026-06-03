@@ -14,9 +14,10 @@ path = "src/lib.rs"
 anyhow.workspace = true
 clap.workspace = true
 common.workspace = true
+# `codingame_runner` re-exports the game types via the
+# `for_each_game!` macro, so tournament doesn't need direct
+# `tron_game` / `fantastic_bits_game` deps.
 codingame_runner = { path = "../runner" }
-tron_game.workspace = true
-fantastic_bits_game.workspace = true
 bot_manifest.workspace = true
 rand.workspace = true
 serde = { workspace = true, features = ["derive"] }

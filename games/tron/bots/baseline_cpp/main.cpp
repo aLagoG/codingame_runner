@@ -1,17 +1,16 @@
-// C++ subprocess bot for tron (baseline): reads `InitialInput` once
-// (empty no-op for tron — uses `NoInitialInput`), then `TurnInput`
-// per tick from stdin and writes a `TurnOutput` to stdout until EOF.
+// C++ stdio entry point for tron baseline. Reads `InitialInput` once,
+// then `TurnInput` per tick from stdin and writes a `TurnOutput` to
+// stdout until EOF.
 //
-// Two ways this file gets compiled:
+// Two compilation contexts:
 //   * Local cargo build: `build.rs` (via `cgio_build`) defines
-//     `CGIO_RUST_SHIM`, so the entry point is `extern "C" int
-//     cgio_main()`. The Rust binary in `src/main.rs` links the
-//     static lib and calls it.
-//   * CodinGame paste: no define, so the entry point is `int main()`
-//     — `cargo xtask bundle tron baseline --lang cpp` runs cpp_flatten
-//     on this file, inlining `strategy.h` and the transitive
-//     `tron_defs_io.h` / `tron_defs.h` headers into a single
-//     paste-ready source.
+//     `CGIO_RUST_SHIM`, so the entry point is renamed
+//     `extern "C" int cgio_main()`. The Rust binary in `src/main.rs`
+//     links the static archive and calls it.
+//   * CodinGame paste: no define, so the entry point is `int main()` —
+//     `cargo xtask bundle tron --lang cpp` runs cpp_flatten on this
+//     file, inlining `strategy.h` and the transitive `_defs_io.h` /
+//     `_defs.h` headers into a single paste-ready source.
 
 #include "strategy.h"
 
@@ -29,11 +28,11 @@ int main()
 
     InitialInput init;
     if (!(std::cin >> init)) return 0;
-    tron_baseline_cpp::on_init(cgio::as_ref(init));
+    tron_baseline_cpp::on_init(init);
 
     TurnInput input;
     while (std::cin >> input) {
-        std::cout << tron_baseline_cpp::decide(input.as_ref()) << std::endl;
+        std::cout << tron_baseline_cpp::decide(input) << std::endl;
     }
     return 0;
 }

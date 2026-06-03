@@ -1,17 +1,10 @@
 use std::{
-    cell::RefCell,
-    collections::HashMap,
-    ffi::CStr,
     io::{self, BufRead, BufReader, Write},
     marker::PhantomData,
-    os::raw::c_char,
-    panic::AssertUnwindSafe,
-    path::Path,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     time::{Duration, Instant},
 };
 
-use libloading::{Library, Symbol};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use serde::{Deserialize, Serialize};
@@ -19,11 +12,7 @@ use tracing::warn;
 
 // Bot-facing surface — moved to `bot_common`. Re-import the names we
 // need locally so the rest of this file reads the same as before.
-use bot_common::{
-    BotStatus, CounterFn, Defs, ReadFrom, TurnResult, WireInput, WireOutput, WriteTo,
-};
-// The top of `crates/common`'s `lib.rs` re-exports these so engine-
-// side callers can keep writing `common::WireInput` etc.
+use bot_common::{ReadFrom, WriteTo};
 
 /// The RNG type every game receives in [`Game::new`]. Concrete (not
 /// `<R: Rng>` generic) so the `Game` trait stays object-safe — we
@@ -41,12 +30,10 @@ pub type PlayerId = u32;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PlayerError {
-    #[error("player panicked")]
-    Panic,
     #[error("player produced malformed output: {0}")]
     InvalidOutput(String),
-    #[error("player timed out")]
-    Timeout,
+    #[error("player exceeded the per-turn time budget ({budget_ms} ms)")]
+    Timeout { budget_ms: u64 },
     #[error("player closed its output (eof)")]
     Eof,
     #[error("io error talking to player: {0}")]
@@ -54,12 +41,20 @@ pub enum PlayerError {
 }
 
 impl PlayerError {
-    /// True for failures that mean the player isn't going to recover — the
-    /// engine should stop trying to call them.
+    /// True for failures that mean the player isn't going to recover —
+    /// the engine should stop trying to call them. All variants count
+    /// as fatal today: a bot that emits garbage, times out, hits EOF,
+    /// or fails an I/O syscall doesn't get retried — it's marked dead
+    /// and the game decides what that means (forfeit, no-op, etc.).
     fn is_fatal(&self) -> bool {
+        // Listed explicitly (vs. `true`) so a future non-fatal variant
+        // would force you to think about its retry semantics.
         matches!(
             self,
-            PlayerError::Eof | PlayerError::Io(_) | PlayerError::Panic
+            PlayerError::InvalidOutput(_)
+                | PlayerError::Timeout { .. }
+                | PlayerError::Eof
+                | PlayerError::Io(_)
         )
     }
 }
@@ -81,16 +76,27 @@ pub trait Game: Sized {
     /// the wrong game's replay errors loudly instead of decoding garbage.
     const NAME: &'static str;
 
+    /// Wall-clock budget for a player's first turn, in milliseconds.
+    /// Mirrors CodinGame's per-game per-tick budget for tick 1 (the
+    /// extra leeway some games give for one-time bot setup). Engine
+    /// kills a bot that doesn't produce its first move within this
+    /// window and marks it dead via `PlayerError::Timeout`.
+    const INITIAL_TURN_TIMEOUT_MS: u64;
+
+    /// Wall-clock budget for every subsequent turn, in milliseconds.
+    /// Engine kills a bot that exceeds it and marks it dead.
+    const TURN_TIMEOUT_MS: u64;
+
     /// One-time per-player input sent before the match starts (e.g. world
-    /// parameters). Use `()` if not needed — `()` impls `WireInput`
+    /// parameters). Use `()` if not needed — `()` impls `ReadFrom`+`WriteTo`
     /// trivially.
-    type InitialInput: WireInput;
+    type InitialInput: ReadFrom + WriteTo;
 
     /// Per-turn input sent to each active player.
-    type Input: WireInput;
+    type Input: ReadFrom + WriteTo;
 
     /// Per-turn output collected from each active player.
-    type Output: WireOutput;
+    type Output: ReadFrom + WriteTo;
 
     /// Final result of the match (winner, scores, …).
     type Outcome;
@@ -123,11 +129,11 @@ pub trait Game: Sized {
     /// out right. Returned vector has length `num_players` (one
     /// entry per player, in player-id order).
     ///
-    /// For binary win/loss games (e.g. tic-tac-toe), the natural
-    /// mapping is winner = rank 1, loser = rank 2, draw = all
-    /// rank 1. For tron, the implementation tracks death tick and
-    /// ranks survivors first, then dead players in reverse death
-    /// order (later death = better rank, ties allowed).
+    /// For binary win/loss games, the natural mapping is winner =
+    /// rank 1, loser = rank 2, draw = all rank 1. For tron, the
+    /// implementation tracks death tick and ranks survivors first,
+    /// then dead players in reverse death order (later death =
+    /// better rank, ties allowed).
     fn standings(outcome: &Self::Outcome) -> Vec<u32>;
 
     /// The unique winner of a finished match, or `None` if no single
@@ -151,9 +157,8 @@ pub trait Game: Sized {
 
     /// Per-player numeric scores from a finished match, in player-id
     /// order. `None` if score isn't a meaningful concept for this
-    /// game (tic-tac-toe is binary — winner / not). `Some` for
-    /// games that track a continuous metric: trail length in tron,
-    /// points in a scored game, etc.
+    /// game. `Some` for games that track a continuous metric: trail
+    /// length in tron, points in a scored game, etc.
     ///
     /// Scores are *informational*; standings is the authoritative
     /// ranking. They exist so tournaments can surface tiebreakers
@@ -164,21 +169,6 @@ pub trait Game: Sized {
     /// Default returns `None` so games opt in.
     fn scores(_outcome: &Self::Outcome) -> Option<Vec<f64>> {
         None
-    }
-}
-
-/// Anything that can act as a player for game `G`. Implemented by the FFI
-/// plugin wrapper and the subprocess wrapper.
-pub trait Player<G: Game> {
-    fn initialize(&mut self, input: &G::InitialInput) -> Result<(), PlayerError>;
-    fn take_turn(&mut self, input: &G::Input) -> Result<G::Output, PlayerError>;
-
-    /// Return the counter map this player accumulated during the
-    /// most recent `take_turn`, then clear its internal slot.
-    /// Default is empty — subprocess players and FFI bots that
-    /// don't opt into the counter callback report nothing.
-    fn drain_counters(&mut self) -> HashMap<String, f64> {
-        HashMap::new()
     }
 }
 
@@ -202,12 +192,11 @@ pub struct RunConfig {
 /// (inactive / failed).
 ///
 /// Outputs are stored as the wire-format text each bot emitted (the
-/// same string that ran across the subprocess pipe or that `WriteTo`
-/// produces on the FFI path). That keeps per-game `TurnOutput` types
-/// free of `Serialize`/`Deserialize` derives — important because
-/// those would pull `serde_derive` (a proc-macro) into the bot's
-/// dependency closure and make flattened CodinGame submissions
-/// unvendorable.
+/// same string that ran across the subprocess pipe). That keeps per-
+/// game `TurnOutput` types free of `Serialize`/`Deserialize` derives —
+/// important because those would pull `serde_derive` (a proc-macro)
+/// into the bot's dependency closure and make flattened CodinGame
+/// submissions unvendorable.
 ///
 /// Reconstruct typed outputs via [`Replay::parse_outputs`] /
 /// build the runner side via [`Replay::from_typed_outputs`].
@@ -326,11 +315,6 @@ pub fn read_replay<G: Game>(r: &mut impl io::Read) -> anyhow::Result<Replay> {
 #[derive(Debug, Default, Clone)]
 pub struct PlayerStats {
     pub turn_times: Vec<Duration>,
-    /// Per-turn map of counter name → value the bot reported via the
-    /// FFI counter callback. Length is parallel to `turn_times`; an
-    /// empty inner map means "the bot didn't emit anything that
-    /// turn" (or counters are disabled / unsupported).
-    pub turn_counters: Vec<HashMap<String, f64>>,
 }
 
 impl PlayerStats {
@@ -347,67 +331,16 @@ impl PlayerStats {
     }
 }
 
-// ============================================================
-//  Counter accumulator (FFI-only)
-// ============================================================
-//
-// FFI bots opt in to runtime instrumentation by exporting a
-// `set_counter_callback` symbol. The runner (PluginPlayer) looks it
-// up and registers `cgr_emit_counter` as the callback. The bot then
-// calls the callback during `take_turn` with `(key, value)` pairs.
-//
-// Storage is a thread-local `RefCell<HashMap>`. Each worker process
-// is single-threaded for match execution, so a thread-local is
-// sufficient and cheaper than a `Mutex`. `PluginPlayer::take_turn`
-// clears the accumulator before the FFI call and drains it
-// immediately after — that's what binds the values to the right
-// player's tick.
-//
-// The function's address is what bots store; it does NOT need to
-// be #[no_mangle] / exported, because nothing ever looks it up by
-// name. We hand the pointer over inside the process.
-
-thread_local! {
-    static COUNTER_ACCUMULATOR: RefCell<HashMap<String, f64>> =
-        RefCell::new(HashMap::new());
-}
-
-/// FFI callback the runner hands plugins via `set_counter_callback`.
-///
-/// # Safety
-/// `key` must be a valid pointer to a NUL-terminated UTF-8 string that
-/// lives for the duration of the call. Bots that pass bad pointers get
-/// their counter silently dropped — we never dereference past the NUL.
-pub unsafe extern "C" fn cgr_emit_counter(key: *const c_char, value: f64) {
-    if key.is_null() {
-        return;
-    }
-    // SAFETY: caller's contract per above.
-    let cstr = unsafe { CStr::from_ptr(key) };
-    let Ok(s) = cstr.to_str() else { return };
-    let owned = s.to_string();
-    COUNTER_ACCUMULATOR.with(|a| {
-        a.borrow_mut().insert(owned, value);
-    });
-}
-
-/// Empty the accumulator (used right before each instrumented
-/// `take_turn`).
-pub(crate) fn counter_take() -> HashMap<String, f64> {
-    COUNTER_ACCUMULATOR.with(|a| std::mem::take(&mut *a.borrow_mut()))
-}
-
 pub struct MatchResult<G: Game> {
     pub outcome: G::Outcome,
     pub stats: Vec<PlayerStats>,
     pub replay: Replay,
-    _game: PhantomData<G>,
 }
 
 pub fn run_match<G: Game>(
     num_players: u32,
     seed: u64,
-    mut players: Vec<Box<dyn Player<G>>>,
+    mut players: Vec<Player<G>>,
     config: RunConfig,
 ) -> Result<MatchResult<G>, MatchError> {
     // Build the RNG from the seed and hand it to the game. The
@@ -417,10 +350,14 @@ pub fn run_match<G: Game>(
     let mut game = G::new(num_players, &mut rng);
     let mut stats: Vec<PlayerStats> = (0..players.len()).map(|_| PlayerStats::default()).collect();
     let mut outputs_per_tick: Vec<Vec<Option<G::Output>>> = Vec::new();
-    // Players that hit a fatal error (panic, EOF, IO). We stop calling them
-    // entirely — otherwise we keep banging on a closed pipe / crashed plugin
-    // and the timing stats fill with garbage.
+    // Players that hit a fatal error (timeout, invalid output, EOF, IO).
+    // We stop calling them entirely — otherwise we keep banging on a
+    // closed/misbehaving pipe and the timing stats fill with garbage.
     let mut dead: Vec<bool> = vec![false; players.len()];
+    // Tracks whether each player has played their first turn yet so
+    // we can apply `INITIAL_TURN_TIMEOUT_MS` (CG's looser tick-1
+    // budget) once and `TURN_TIMEOUT_MS` from then on.
+    let mut first_turn: Vec<bool> = vec![true; players.len()];
 
     // Per-player one-time init.
     for (i, player) in players.iter_mut().enumerate() {
@@ -447,12 +384,16 @@ pub fn run_match<G: Game>(
                 continue;
             }
             let input = game.input_for(p);
+            let budget_ms = if first_turn[p as usize] {
+                G::INITIAL_TURN_TIMEOUT_MS
+            } else {
+                G::TURN_TIMEOUT_MS
+            };
+            first_turn[p as usize] = false;
             let start = Instant::now();
-            let result = players[p as usize].take_turn(&input);
+            let result = players[p as usize].take_turn(&input, budget_ms);
             let elapsed = start.elapsed();
-            let counters = players[p as usize].drain_counters();
             stats[p as usize].turn_times.push(elapsed);
-            stats[p as usize].turn_counters.push(counters);
 
             match result {
                 Ok(out) => outputs[p as usize] = Some(out),
@@ -480,20 +421,15 @@ pub fn run_match<G: Game>(
                 outcome,
                 stats,
                 replay,
-                _game: PhantomData,
             });
         }
     }
 }
 
-/// A `Player` backed by a spawned subprocess that talks over stdin/stdout.
-pub struct SubprocessPlayer<G>
-where
-    G: Game,
-    G::InitialInput: WriteTo,
-    G::Input: WriteTo,
-    G::Output: ReadFrom,
-{
+/// A bot the engine drives by talking the game's wire format over a
+/// spawned subprocess's stdin/stdout. The only player transport in
+/// the workspace.
+pub struct Player<G: Game> {
     // Order matters for drop: stdin/stdout drop before the child handle so the
     // pipes close cleanly first, then the child is reaped.
     stdin: ChildStdin,
@@ -502,12 +438,12 @@ where
     _marker: PhantomData<G>,
 }
 
-/// Time `SubprocessPlayer::spawn` waits after `fork+exec` before
-/// returning. Absorbs dynamic-linker / libc / C++ static-init time
-/// so it isn't billed against the bot's first `take_turn` call. The
-/// alternative (a `READY` handshake on stdout) would be cleaner but
-/// requires per-bot cooperation; a fixed sleep works for any bot and
-/// is the right default until we know we need finer control.
+/// Time `Player::spawn` waits after `fork+exec` before returning.
+/// Absorbs dynamic-linker / libc / C++ static-init time so it isn't
+/// billed against the bot's first `take_turn` call. The alternative
+/// (a `READY` handshake on stdout) would be cleaner but requires
+/// per-bot cooperation; a fixed sleep works for any bot and is the
+/// right default until we know we need finer control.
 ///
 /// 100 ms is enough for our tron/fantastic_bits bots' startup on
 /// macOS/Linux even with a cold filesystem cache (50 ms left rare
@@ -524,7 +460,7 @@ fn subprocess_warmup() -> Duration {
         .unwrap_or(SUBPROCESS_WARMUP_DEFAULT)
 }
 
-impl<G: Game> SubprocessPlayer<G> {
+impl<G: Game> Player<G> {
     pub fn spawn(cmd: &mut Command) -> io::Result<Self> {
         let mut child = cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).spawn()?;
         let stdin = child.stdin.take().expect("piped stdin missing");
@@ -540,33 +476,37 @@ impl<G: Game> SubprocessPlayer<G> {
             _marker: PhantomData,
         })
     }
-}
 
-impl<G: Game> Drop for SubprocessPlayer<G> {
-    fn drop(&mut self) {
-        // SIGKILL first, then reap. Without `wait()` the child becomes a zombie
-        // and a long-running runner leaks PIDs. After `kill()` the wait should
-        // be ~immediate; if it isn't, something's wrong and we log it.
-        let _ = self.child.kill();
-        let start = Instant::now();
-        let _ = self.child.wait();
-        let elapsed = start.elapsed();
-        if elapsed >= Duration::from_secs(1) {
-            warn!("waiting for killed child took {elapsed:?}");
-        }
-    }
-}
-
-impl<G: Game> Player<G> for SubprocessPlayer<G> {
-    fn initialize(&mut self, input: &G::InitialInput) -> Result<(), PlayerError> {
+    pub fn initialize(&mut self, input: &G::InitialInput) -> Result<(), PlayerError> {
         input.write_to(&mut self.stdin)?;
         self.stdin.flush()?;
         Ok(())
     }
 
-    fn take_turn(&mut self, input: &G::Input) -> Result<G::Output, PlayerError> {
+    /// Run one turn and enforce a wall-clock budget. Writes `input`,
+    /// waits up to `budget_ms` for the bot to produce a line of
+    /// output, then reads + parses it. If the budget expires before
+    /// any output arrives, kills the child and returns
+    /// `PlayerError::Timeout` — the bot is dead for the rest of the
+    /// match.
+    pub fn take_turn(
+        &mut self,
+        input: &G::Input,
+        budget_ms: u64,
+    ) -> Result<G::Output, PlayerError> {
         input.write_to(&mut self.stdin)?;
         self.stdin.flush()?;
+
+        match wait_readable(&self.stdout, budget_ms) {
+            WaitOutcome::Ready => {}
+            WaitOutcome::Eof => return Err(PlayerError::Eof),
+            WaitOutcome::Timeout => {
+                let _ = self.child.kill();
+                return Err(PlayerError::Timeout { budget_ms });
+            }
+            WaitOutcome::Io(e) => return Err(PlayerError::Io(e)),
+        }
+
         // Peek at the read buffer to distinguish EOF (child crashed / closed
         // its stdout) from a parse error on actual bytes. Without this both
         // collapse into `InvalidOutput` and the engine keeps calling a dead
@@ -580,175 +520,71 @@ impl<G: Game> Player<G> for SubprocessPlayer<G> {
     }
 }
 
-/// A `Game` that can be played by a bot loaded from a dynamic library.
-///
-/// The implementing crate just points at its `_defs` crate's [`Defs`]
-/// marker; everything else (the FFI fn-pointer shapes, the ABI version,
-/// the symbol names) is derived from there. With this trait,
-/// `PluginPlayer<G>` becomes fully generic.
-pub trait FfiGame: Game {
-    /// The `_defs` crate's marker (e.g. `tron_defs::Ffi`). The
-    /// `InitialInput = Self::InitialInput, Input = Self::Input,
-    /// Output = Self::Output` bound ties this game's I/O types to the FFI
-    /// surface that backs them.
-    type Defs: Defs<InitialInput = Self::InitialInput, Input = Self::Input, Output = Self::Output>;
+enum WaitOutcome {
+    Ready,
+    Eof,
+    Timeout,
+    Io(io::Error),
 }
 
-/// The `extern "C"` `take_turn` function pointer type for a given
-/// `FfiGame` — derived from the game's `Defs` so per-game `_game` crates
-/// never have to spell it out themselves.
-pub type FfiTakeTurn<G> =
-    for<'a> unsafe extern "C" fn(
-        <<<G as FfiGame>::Defs as Defs>::Input as WireInput>::Ffi<'a>,
-    ) -> TurnResult<<<G as FfiGame>::Defs as Defs>::Output>;
+/// Wait up to `budget_ms` for `reader`'s underlying fd to become
+/// readable. Returns `Ready` (data or EOF visible to the next read),
+/// `Timeout` (budget elapsed with no data), or `Io` on a syscall
+/// error. Unix-only via `libc::poll`; on other platforms it returns
+/// `Ready` immediately, meaning the timeout is unenforced and the
+/// subsequent `fill_buf` will block.
+#[cfg(unix)]
+fn wait_readable(reader: &BufReader<ChildStdout>, budget_ms: u64) -> WaitOutcome {
+    use std::os::unix::io::AsRawFd;
 
-/// The `extern "C"` `initialize` function pointer type for a given
-/// `FfiGame`. Called once per player at match start with the FFI mirror of
-/// `<G::Defs as Defs>::InitialInput`. Bots that don't care about init
-/// (games whose `InitialInput = ()`) get a no-op stub from the default
-/// `ffi_bot!` invocation.
-pub type FfiInitialize<G> = for<'a> unsafe extern "C" fn(
-    <<<G as FfiGame>::Defs as Defs>::InitialInput as WireInput>::Ffi<'a>,
-);
+    // BufReader's internal buffer might already have data from a
+    // previous `fill_buf` call; if so, poll would block waiting for
+    // *new* bytes that never come. Caller checks `buffer().is_empty()`
+    // via the public method to short-circuit before calling us.
+    if !reader.buffer().is_empty() {
+        return WaitOutcome::Ready;
+    }
 
-/// Symbol names every `ffi_bot!`-generated plugin exports. Free constants
-/// (not `FfiGame` associated consts) because the macro hardcodes them and
-/// nothing per-game can vary them.
-const TAKE_TURN_SYMBOL: &[u8] = b"take_turn";
-const INITIALIZE_SYMBOL: &[u8] = b"initialize";
-const ABI_VERSION_SYMBOL: &[u8] = b"abi_version";
-/// Optional. Bots that export this take a `CounterFn` and store it
-/// internally, then call it during `take_turn`. Absence is fine —
-/// PluginPlayer just falls back to "no counters reported".
-const SET_COUNTER_CALLBACK_SYMBOL: &[u8] = b"set_counter_callback";
-
-/// Signature of the plugin-side hook the runner calls to wire the
-/// counter callback. Plugins that don't define it simply don't
-/// participate in counter capture.
-type SetCounterCallback = unsafe extern "C" fn(CounterFn);
-
-pub struct PluginPlayer<G: FfiGame> {
-    init: FfiInitialize<G>,
-    take_turn: FfiTakeTurn<G>,
-    /// True iff `enable_counters` succeeded for this player. Drives
-    /// whether `take_turn` clears + drains the thread-local
-    /// accumulator into `last_counters`.
-    counters_enabled: bool,
-    /// Counters drained from the accumulator after the last
-    /// `take_turn`. Replaced (not merged) per turn.
-    last_counters: HashMap<String, f64>,
-    _lib: Library,
+    let mut pfd = libc::pollfd {
+        fd: reader.get_ref().as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // i32-max is ~24 days; clamp to that and round up so a 1 ms
+    // budget doesn't collapse to 0 (which means "no wait" to poll).
+    let timeout_ms = budget_ms.min(i32::MAX as u64) as i32;
+    let ret = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
+    if ret < 0 {
+        return WaitOutcome::Io(io::Error::last_os_error());
+    }
+    if ret == 0 {
+        return WaitOutcome::Timeout;
+    }
+    if pfd.revents & libc::POLLHUP != 0 && pfd.revents & libc::POLLIN == 0 {
+        return WaitOutcome::Eof;
+    }
+    WaitOutcome::Ready
 }
 
-impl<G: FfiGame> PluginPlayer<G> {
-    /// # Safety
-    /// `path` must point to a dynamic library produced by
-    /// `common::ffi_bot!(<defs>::Ffi, decide)` for a `_defs` crate whose
-    /// `Defs::ABI_VERSION` matches this binary's. The ABI handshake below
-    /// refuses mismatches before any UB-prone call lands.
-    pub unsafe fn load(path: &Path) -> anyhow::Result<Self> {
-        use anyhow::{Context, bail};
+#[cfg(not(unix))]
+fn wait_readable(_reader: &BufReader<ChildStdout>, _budget_ms: u64) -> WaitOutcome {
+    // No portable std-only mechanism; fall back to "trust the read
+    // will return promptly" until someone wires WaitForSingleObject
+    // on Windows.
+    WaitOutcome::Ready
+}
 
-        let lib = unsafe { Library::new(path) }?;
-
-        let abi: Symbol<unsafe extern "C" fn() -> u32> = unsafe { lib.get(ABI_VERSION_SYMBOL) }
-            .context("plugin missing `abi_version` symbol — was it built with `ffi_bot!`?")?;
-        let plugin_abi = unsafe { abi() };
-        let expected = <G::Defs as Defs>::ABI_VERSION;
-        if plugin_abi != expected {
-            bail!(
-                "ABI mismatch loading {}: plugin reports v{plugin_abi}, runner expects v{expected}",
-                path.display(),
-            );
+impl<G: Game> Drop for Player<G> {
+    fn drop(&mut self) {
+        // SIGKILL first, then reap. Without `wait()` the child becomes a zombie
+        // and a long-running runner leaks PIDs. After `kill()` the wait should
+        // be ~immediate; if it isn't, something's wrong and we log it.
+        let _ = self.child.kill();
+        let start = Instant::now();
+        let _ = self.child.wait();
+        let elapsed = start.elapsed();
+        if elapsed >= Duration::from_secs(1) {
+            warn!("waiting for killed child took {elapsed:?}");
         }
-
-        let init: Symbol<FfiInitialize<G>> = unsafe { lib.get(INITIALIZE_SYMBOL) }
-            .context("plugin missing `initialize` symbol — was it built with `ffi_bot!`?")?;
-        let init = *init;
-        let take_turn: Symbol<FfiTakeTurn<G>> = unsafe { lib.get(TAKE_TURN_SYMBOL) }?;
-        let take_turn = *take_turn;
-        Ok(PluginPlayer {
-            init,
-            take_turn,
-            counters_enabled: false,
-            last_counters: HashMap::new(),
-            _lib: lib,
-        })
-    }
-
-    /// Register the runner's counter callback with the plugin (if
-    /// the plugin exports `set_counter_callback`). Returns `true` if
-    /// the plugin opted in, `false` if the symbol is absent. Either
-    /// case is fine — counters are purely informational.
-    pub fn enable_counters(&mut self) -> bool {
-        let set_cb: Symbol<SetCounterCallback> =
-            match unsafe { self._lib.get(SET_COUNTER_CALLBACK_SYMBOL) } {
-                Ok(s) => s,
-                Err(_) => return false,
-            };
-        // SAFETY: we just looked the symbol up out of the same
-        // library; calling it with our own `cgr_emit_counter` is
-        // ABI-safe — both sides agree on the `CounterFn` signature.
-        unsafe { set_cb(cgr_emit_counter) };
-        self.counters_enabled = true;
-        true
-    }
-}
-
-impl<G: FfiGame> Player<G> for PluginPlayer<G> {
-    fn initialize(&mut self, input: &G::InitialInput) -> Result<(), PlayerError> {
-        let init = self.init;
-        let ffi = input.as_ffi();
-        catch_into_player_err(AssertUnwindSafe(move || {
-            // SAFETY: `init` was obtained by `load`, which verified the
-            // plugin's ABI version. The macro-generated `initialize` on
-            // the bot side catches its own panics.
-            unsafe { init(ffi) };
-            Ok(())
-        }))
-    }
-
-    fn take_turn(&mut self, input: &G::Input) -> Result<G::Output, PlayerError> {
-        let take_turn = self.take_turn;
-        let ffi = input.as_ffi();
-        // If counters are on, drop anything left over from a prior
-        // call (defensive — should already be drained) so this
-        // turn's accumulator starts clean.
-        if self.counters_enabled {
-            let _ = counter_take();
-        }
-        let result = catch_into_player_err(AssertUnwindSafe(move || {
-            // SAFETY: `take_turn` was obtained by `load`, which verified
-            // the plugin's ABI version. The macro-generated `take_turn`
-            // on the bot side catches its own panics — so a Panic status
-            // here is the bot's, not UB unwinding.
-            let result = unsafe { take_turn(ffi) };
-            match result.status {
-                BotStatus::Ok => Ok(result.output),
-                BotStatus::Panic => Err(PlayerError::Panic),
-            }
-        }));
-        if self.counters_enabled {
-            self.last_counters = counter_take();
-        }
-        result
-    }
-
-    fn drain_counters(&mut self) -> HashMap<String, f64> {
-        std::mem::take(&mut self.last_counters)
-    }
-}
-
-/// Defense in depth around the FFI call: bots SHOULD wrap their own panics
-/// (the `*_bot!` macros do), but if one slips through and the Rust runtime
-/// propagates it back to us, catching here turns it into a graceful
-/// `PlayerError::Panic` instead of cross-FFI unwinding UB. Zero measurable
-/// overhead on the no-panic path — see `docs/code-review.md` §4C.
-fn catch_into_player_err<T>(
-    f: AssertUnwindSafe<impl FnOnce() -> Result<T, PlayerError>>,
-) -> Result<T, PlayerError> {
-    match std::panic::catch_unwind(f) {
-        Ok(r) => r,
-        Err(_) => Err(PlayerError::Panic),
     }
 }

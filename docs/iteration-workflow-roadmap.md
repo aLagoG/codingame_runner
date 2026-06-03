@@ -7,9 +7,11 @@ What's still missing from the bot-iteration loop, ordered by my read of value-pe
 For grounding when you return to this:
 
 - **Lineage primitives**: `bot_manifest` crate with `BotManifest` schema (`name`, `lang`, `parent`, `description`, `champion`, `codingame_league`/`standing`, `[[history]]`); `remove_workspace_member` helper; backfilled bot.toml for all existing bots.
-- **Verbs**: `cargo xtask new-bot` (with `--from-existing`), `retire` (with `--force`, champion + has-children safety), `promote` (with `--archive`, `--cleanup-siblings`, champion propagation), `bundle` (defaults to champion when bot omitted), `champion`, `history`, `compact-history`, `doctor`.
-- **Tournament**: `tournament compare <bot> <bot> ...` (focused 2-bot verdict OR N-bot ranking + pairwise table); `tournament run --until-confident` (Bonferroni-corrected wave-by-wave); `tournament report` + `compare` print Wilson 95% CI + LOS + two-sided p-value; `--record-history` on both `run` and `compare`.
-- **Tests**: 9 in xtask, 25 in tournament lib, 9 in pairwise_stats, 3 in bot_manifest. Read-only lineage helpers refactored to take `bots_dir: &Path` for tempdir testability.
+- **Verbs**: `cargo xtask new-bot` (with `--from-existing`), `retire` (with `--force`, champion + has-children safety), `promote` (with `--archive`, `--cleanup-siblings`, champion propagation), `bundle` (defaults to champion when bot omitted), `champion`, `history`, `compact-history`, `doctor`, `profile`.
+- **Tournament**: `tournament compare <bot> <bot> ...` (focused 2-bot verdict OR N-bot ranking + pairwise table); `tournament run --until-confident` (Bonferroni-corrected wave-by-wave); `tournament report` + `compare` print Wilson 95% CI + LOS + two-sided p-value; `--record-history` on both `run` and `compare`; `--profile profiling` on both for samply runs; auto-disambiguates self-vs-self (`v1 v1` → `v1#1` vs `v1#2`).
+- **Engine**: FFI/PluginPlayer removed — every bot is a subprocess, runner has one transport. `Player<G>` is a concrete struct (no trait), `--counters` flag and the FFI counter-callback machinery are gone. `cgio_build` is arg-free and emits the C++ runtime link directive itself (no per-bot `#[link(name="c++")]`). Per-bot `_stdio` bin suffix dropped; bin name matches the crate name.
+- **Tests**: ~50 binaries total across xtask, tournament lib, pairwise_stats, bot_manifest, flatten, cpp_flatten. Read-only lineage helpers refactored to take `bots_dir: &Path` for tempdir testability.
+- **Profiling**: `cargo xtask profile` records under the `profiling` cargo profile (release + full DWARF + dSYM on macOS) and opens the samply UI; auto-follows child processes so bot subprocesses appear as separate threads. `--rate` flag passes through.
 
 ## Tier A — `cargo xtask iterate` (the headline missing verb)
 
@@ -139,15 +141,14 @@ Walk every `games/*/bots/` instead of one. Tiny extension, useful for CI integra
 
 ## Tier E — Documentation refresh
 
-`docs/bot-submission.md` covers the old flow (write a bot → bundle). None of the new verbs (`retire`, `promote`, `compare`, `champion`, `history`, `doctor`, `compact-history`, `tournament compare --until-confident`, `--record-history`) are documented.
+`docs/bot-submission.md` was rewritten alongside the FFI removal — it now reflects the subprocess-only Rust + C++ flow and points at the current verbs (`bundle`, `new-bot`, etc.). What's still missing is a lineage-and-verbs guide:
 
-Specifically missing:
 - The lineage model (parent / champion / history) and what each verb does.
 - The clone-and-edit loop (currently relies on the user remembering all the verbs).
 - How to read a `compare` verdict (LOS, p-value, "need ≈ N more games").
 - How to interpret a `doctor` report.
 
-**Cost**: 2-3 hours of writing. Easy to defer until iterate ships — the iterate verb is the natural anchor for "here's how to actually use this."
+**Cost**: 1-2 hours of writing. Easy to defer until `iterate` ships — the iterate verb is the natural anchor for "here's how to actually use this."
 
 ## Suggested attack order
 
@@ -176,4 +177,4 @@ If picking back up:
 - `crates/tournament/src/main.rs` — `cmd_compare`, `cmd_run` (now with `--until-confident` adaptive path), `record_history`, `print_pairwise_verdicts`, `lang_for_bot_in_dir`.
 - `crates/tournament/src/pairwise_stats.rs` — Wilson CI / LOS / p-value math + `PairStats::rounds_needed_for_significance`.
 - `crates/bot_manifest/src/lib.rs` — the schema. Add fields here as optional with `#[serde(default, skip_serializing_if = "Option::is_none")]` for forward compat.
-- `docs/bot-submission.md` — current state of the workflow docs (stale relative to the new verbs).
+- `docs/bot-submission.md` — current state of the bot-writing + bundling flow (covers per-bot mechanics; doesn't yet cover the lineage verbs — see Tier E).
