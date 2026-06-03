@@ -16,6 +16,7 @@ use std::thread;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
+use common::engine::RunConfig;
 use tournament::{
     BotSpec, MatchRecord, ScheduleConfig, ScheduledMatch, build_report, build_schedule,
     play_schedule,
@@ -102,6 +103,21 @@ struct CompareArgs {
     /// timing, but `record_history` carries it forward).
     #[arg(long, default_value_t = default_parallel())]
     parallel: usize,
+
+    /// Triple every per-turn time budget so weakly-tuned or debug-
+    /// mode bots don't get killed before they can respond. Default
+    /// is the game's CodinGame-equivalent budget; use this for local
+    /// iteration only.
+    #[arg(long)]
+    allow_slow_bots: bool,
+
+    /// Treat any per-turn player error (timeout, malformed output,
+    /// EOF, IO) as a hard match failure instead of just marking that
+    /// bot dead and letting the game continue. Useful while debugging
+    /// a new bot — the runner surfaces the first error instead of
+    /// silently swallowing it.
+    #[arg(long)]
+    abort_on_player_error: bool,
 }
 
 #[derive(Parser)]
@@ -209,6 +225,14 @@ struct RunArgs {
     /// stat checks (cheaper) but coarser early-stop granularity.
     #[arg(long, default_value_t = 50)]
     wave_size: usize,
+
+    /// See `compare --allow-slow-bots` — same semantics.
+    #[arg(long)]
+    allow_slow_bots: bool,
+
+    /// See `compare --abort-on-player-error` — same semantics.
+    #[arg(long)]
+    abort_on_player_error: bool,
 }
 
 #[derive(Parser)]
@@ -217,6 +241,24 @@ struct WorkerArgs {
     game: String,
     #[arg(long = "bot", value_parser = parse_bot_spec, required = true)]
     bots: Vec<BotSpec>,
+    /// Mirror of the parent's `--allow-slow-bots` flag — propagated
+    /// through the worker spawn so the per-turn budget multiplier
+    /// matches.
+    #[arg(long)]
+    allow_slow_bots: bool,
+    /// Mirror of the parent's `--abort-on-player-error` flag.
+    #[arg(long)]
+    abort_on_player_error: bool,
+}
+
+/// Builds the `RunConfig` passed into every match from the CLI flags
+/// that affect it. One source of truth so the `3.0` multiplier and the
+/// abort-on-error bool aren't sprinkled across every callsite.
+fn run_config(allow_slow_bots: bool, abort_on_player_error: bool) -> RunConfig {
+    RunConfig {
+        timeout_multiplier: if allow_slow_bots { 3.0 } else { 1.0 },
+        abort_on_player_error,
+    }
 }
 
 fn default_parallel() -> usize {
@@ -270,6 +312,8 @@ fn cmd_run(args: RunArgs) -> Result<()> {
         .with_context(|| format!("creating {}", args.output.display()))?;
     let out = BufWriter::new(file);
 
+    let config = run_config(args.allow_slow_bots, args.abort_on_player_error);
+
     // Clamp `--parallel` to something useful: at most one worker
     // per match, and at least 1.
     let parallel = args.parallel.clamp(1, total).max(1);
@@ -308,6 +352,7 @@ fn cmd_run(args: RunArgs) -> Result<()> {
             &schedule,
             args.wave_size,
             args.alpha,
+            config,
             out,
         )?
     } else {
@@ -316,9 +361,9 @@ fn cmd_run(args: RunArgs) -> Result<()> {
             args.game
         );
         if parallel == 1 {
-            run_sequential(&args.game, &bot_specs, &schedule, out, total)?;
+            run_sequential(&args.game, &bot_specs, &schedule, config, out, total)?;
         } else {
-            run_parallel(&args.game, &bot_specs, schedule, out, parallel)?;
+            run_parallel(&args.game, &bot_specs, schedule, config, out, parallel)?;
         }
         total
     };
@@ -349,6 +394,7 @@ fn run_sequential(
     game: &str,
     bots: &[BotSpec],
     schedule: &[ScheduledMatch],
+    config: RunConfig,
     mut out: BufWriter<File>,
     total: usize,
 ) -> Result<()> {
@@ -362,7 +408,7 @@ fn run_sequential(
             m.seed,
             names.join(" vs ")
         );
-        let rec = tournament::run_match_named(game, &entries, m.seed)
+        let rec = tournament::run_match_named(game, &entries, m.seed, config.clone())
             .with_context(|| format!("match {} ({})", i + 1, names.join(" vs ")))?;
         serde_json::to_writer(&mut out, &rec)?;
         writeln!(out)?;
@@ -388,6 +434,7 @@ fn run_adaptive(
     schedule: &[ScheduledMatch],
     wave_size: usize,
     alpha: f64,
+    config: RunConfig,
     mut out: BufWriter<File>,
 ) -> Result<usize> {
     let total = schedule.len();
@@ -410,9 +457,10 @@ fn run_adaptive(
                 m.seed,
                 names.join(" vs ")
             );
-            let rec = tournament::run_match_named(game, &entries, m.seed).with_context(|| {
-                format!("match in wave {} ({})", wave_idx + 1, names.join(" vs "))
-            })?;
+            let rec = tournament::run_match_named(game, &entries, m.seed, config.clone())
+                .with_context(|| {
+                    format!("match in wave {} ({})", wave_idx + 1, names.join(" vs "))
+                })?;
             serde_json::to_writer(&mut out, &rec)?;
             writeln!(out)?;
             out.flush()?;
@@ -463,10 +511,11 @@ fn run_parallel(
     game: &str,
     bots: &[BotSpec],
     schedule: Vec<ScheduledMatch>,
+    config: RunConfig,
     mut out: BufWriter<File>,
     parallel: usize,
 ) -> Result<()> {
-    play_schedule_parallel(game, bots, schedule, parallel, |line| {
+    play_schedule_parallel(game, bots, schedule, config, parallel, |line| {
         writeln!(out, "{line}")?;
         out.flush()?;
         Ok(())
@@ -483,6 +532,7 @@ fn play_schedule_parallel<F>(
     game: &str,
     bots: &[BotSpec],
     schedule: Vec<ScheduledMatch>,
+    config: RunConfig,
     parallel: usize,
     mut on_line: F,
 ) -> Result<()>
@@ -508,6 +558,17 @@ where
     for _ in 0..parallel {
         let mut cmd = ProcCommand::new(&exe);
         cmd.args(["worker", "--game", game]);
+        // Forward RunConfig flags so the worker's `play_schedule`
+        // call applies the same multiplier and abort behavior.
+        // Mapping back to the boolean flags keeps the worker CLI
+        // surface narrow (no `--timeout-multiplier 3.0` to squint
+        // at).
+        if config.timeout_multiplier != 1.0 {
+            cmd.arg("--allow-slow-bots");
+        }
+        if config.abort_on_player_error {
+            cmd.arg("--abort-on-player-error");
+        }
         for bot in bots {
             cmd.arg("--bot")
                 .arg(format!("{}={}", bot.name, bot.path.display()));
@@ -593,7 +654,13 @@ fn cmd_worker(args: WorkerArgs) -> Result<()> {
     // Play it and stream JSONL on stdout. Each line is one
     // MatchRecord; main's reader thread picks them up by line.
     let stdout = std::io::stdout();
-    play_schedule(&args.game, &args.bots, &schedule, stdout.lock())
+    play_schedule(
+        &args.game,
+        &args.bots,
+        &schedule,
+        run_config(args.allow_slow_bots, args.abort_on_player_error),
+        stdout.lock(),
+    )
 }
 
 /// Build the final seed list for the scheduler. `explicit` is the
@@ -976,6 +1043,7 @@ fn cmd_compare(args: CompareArgs) -> Result<()> {
 
     let parallel = args.parallel.clamp(1, schedule.len()).max(1);
     eprintln!("  (--parallel {parallel})");
+    let config = run_config(args.allow_slow_bots, args.abort_on_player_error);
     let mut records: Vec<MatchRecord> = Vec::with_capacity(schedule.len());
     if parallel == 1 {
         // Sequential path keeps the per-match "[i/N] seed=... a vs b"
@@ -992,12 +1060,12 @@ fn cmd_compare(args: CompareArgs) -> Result<()> {
                 m.seed,
                 names.join(" vs "),
             );
-            let rec = tournament::run_match_named(&args.game, &entries, m.seed)
+            let rec = tournament::run_match_named(&args.game, &entries, m.seed, config.clone())
                 .with_context(|| format!("match {} ({})", i + 1, names.join(" vs ")))?;
             records.push(rec);
         }
     } else {
-        play_schedule_parallel(&args.game, &bot_specs, schedule, parallel, |line| {
+        play_schedule_parallel(&args.game, &bot_specs, schedule, config, parallel, |line| {
             let rec: MatchRecord = serde_json::from_str(&line)
                 .with_context(|| format!("parsing worker record `{line}`"))?;
             records.push(rec);

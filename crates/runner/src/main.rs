@@ -20,6 +20,21 @@ struct Args {
     #[arg(long, value_name = "PATH")]
     save_replay: Option<PathBuf>,
 
+    /// Triple the per-turn time budgets so weakly-tuned or
+    /// debug-mode bots don't get killed by the engine before they
+    /// can respond. Default is the game's CodinGame-equivalent
+    /// budget; this flag is for local iteration only.
+    #[arg(long)]
+    allow_slow_bots: bool,
+
+    /// Treat any per-turn player error (timeout, malformed output,
+    /// EOF, IO) as a hard match failure instead of just marking that
+    /// bot dead and letting the game continue. Useful while debugging
+    /// a new bot — the runner surfaces the first error instead of
+    /// silently swallowing it.
+    #[arg(long)]
+    abort_on_player_error: bool,
+
     /// Bot binaries — one per player.
     #[arg(required = true)]
     bots: Vec<PathBuf>,
@@ -28,10 +43,14 @@ struct Args {
 fn main() -> Result<()> {
     let args = Args::parse();
     let game = args.game.as_str();
+    let config = RunConfig {
+        timeout_multiplier: if args.allow_slow_bots { 3.0 } else { 1.0 },
+        abort_on_player_error: args.abort_on_player_error,
+    };
     macro_rules! dispatch {
         ($name:literal, $ty:ty) => {
             if game == $name {
-                return run_for_game::<$ty>(args.bots, args.save_replay);
+                return run_for_game::<$ty>(args.bots, args.save_replay, config);
             }
         };
     }
@@ -39,7 +58,11 @@ fn main() -> Result<()> {
     bail!("unknown game: {game}");
 }
 
-fn run_for_game<G: Game>(paths: Vec<PathBuf>, save_replay: Option<PathBuf>) -> Result<()>
+fn run_for_game<G: Game>(
+    paths: Vec<PathBuf>,
+    save_replay: Option<PathBuf>,
+    config: RunConfig,
+) -> Result<()>
 where
     G::Outcome: Debug,
 {
@@ -58,7 +81,7 @@ where
         stats,
         replay,
         ..
-    } = run_match::<G>(num_players, seed, players, RunConfig::default())?;
+    } = run_match::<G>(num_players, seed, players, config)?;
 
     println!("outcome: {outcome:?}");
     println!("ticks: {}", replay.outputs.len());

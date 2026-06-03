@@ -172,12 +172,27 @@ pub trait Game: Sized {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct RunConfig {
     /// If true, the first player error fails the whole match. If false, the
     /// failing player just submits `None` for that tick — the game decides
     /// what that means (elimination, no-op, etc.).
     pub abort_on_player_error: bool,
+    /// Multiplier applied to `G::INITIAL_TURN_TIMEOUT_MS` and
+    /// `G::TURN_TIMEOUT_MS` when the engine enforces deadlines. The
+    /// CLI's `--allow-slow-bots` flag sets this to 3.0 so weakly-tuned
+    /// bots get triple time without us changing the per-game budget
+    /// constants. Default 1.0 = the game's own budget unchanged.
+    pub timeout_multiplier: f64,
+}
+
+impl Default for RunConfig {
+    fn default() -> Self {
+        Self {
+            abort_on_player_error: false,
+            timeout_multiplier: 1.0,
+        }
+    }
 }
 
 /// Compact recording of a finished match: the seed, the player count, and the
@@ -384,11 +399,12 @@ pub fn run_match<G: Game>(
                 continue;
             }
             let input = game.input_for(p);
-            let budget_ms = if first_turn[p as usize] {
+            let base_budget = if first_turn[p as usize] {
                 G::INITIAL_TURN_TIMEOUT_MS
             } else {
                 G::TURN_TIMEOUT_MS
             };
+            let budget_ms = (base_budget as f64 * config.timeout_multiplier) as u64;
             first_turn[p as usize] = false;
             let start = Instant::now();
             let result = players[p as usize].take_turn(&input, budget_ms);

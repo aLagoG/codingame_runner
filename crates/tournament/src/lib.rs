@@ -248,11 +248,12 @@ pub fn play_schedule<W: std::io::Write>(
     game: &str,
     bots: &[BotSpec],
     schedule: &[ScheduledMatch],
+    config: RunConfig,
     mut writer: W,
 ) -> Result<()> {
     for m in schedule {
         let bots: Vec<BotSpec> = m.bot_idx.iter().map(|&j| bots[j].clone()).collect();
-        let rec = run_match_named(game, &bots, m.seed)?;
+        let rec = run_match_named(game, &bots, m.seed, config.clone())?;
         serde_json::to_writer(&mut writer, &rec)
             .map_err(|e| anyhow::anyhow!("serialize match record: {e}"))?;
         writeln!(writer)?;
@@ -262,14 +263,22 @@ pub fn play_schedule<W: std::io::Write>(
 }
 
 /// Run one match. `game` selects the dispatch arm; `bots` lists the
-/// entrants in seat order. Game registry is shared with the runner
-/// via `codingame_runner::for_each_game!` — see that macro for the
-/// list.
-pub fn run_match_named(game: &str, bots: &[BotSpec], seed: u64) -> Result<MatchRecord> {
+/// entrants in seat order. `config` carries the per-turn timeout
+/// multiplier (1.0 = CodinGame-equivalent; the CLI's
+/// `--allow-slow-bots` flag sets it to 3.0) and whether to abort the
+/// whole match on a player error vs. just marking that bot dead.
+/// Game registry is shared with the runner via
+/// `codingame_runner::for_each_game!`.
+pub fn run_match_named(
+    game: &str,
+    bots: &[BotSpec],
+    seed: u64,
+    config: RunConfig,
+) -> Result<MatchRecord> {
     macro_rules! dispatch {
         ($name:literal, $ty:ty) => {
             if game == $name {
-                return run_match_typed::<$ty>(game, bots, seed);
+                return run_match_typed::<$ty>(game, bots, seed, config);
             }
         };
     }
@@ -281,6 +290,7 @@ fn run_match_typed<G: Game>(
     game_name: &str,
     bots: &[BotSpec],
     seed: u64,
+    config: RunConfig,
 ) -> Result<MatchRecord> {
     let num_players = bots.len() as u32;
     let mut players: Vec<Player<G>> = Vec::with_capacity(bots.len());
@@ -296,7 +306,7 @@ fn run_match_typed<G: Game>(
         stats,
         replay,
         ..
-    } = run_match::<G>(num_players, seed, players, RunConfig::default())
+    } = run_match::<G>(num_players, seed, players, config)
         .with_context(|| format!("running match for game {game_name}"))?;
 
     Ok(MatchRecord {
