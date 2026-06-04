@@ -1,12 +1,13 @@
 use {{game}}_defs::{InitialInput, TurnInput, TurnOutput};
 
+#[derive(Default)]
+pub struct GameState {}
+
 // Match-start hook. For games without per-player init, `init` is the
-// empty `()` struct and this is a no-op; stash whatever you need
-// from `init` into a `static OnceLock` here if the game ships init
-// data.
-pub fn on_init(_init: &InitialInput) {}
+// empty `()` struct and this is a no-op;
+pub fn on_init(_init: &InitialInput, _state: &mut GameState) {}
 
 // TODO: replace with your strategy.
-pub fn decide(_turn: &TurnInput) -> TurnOutput {
+pub fn decide(turn: &TurnInput, _state: &mut GameState) -> TurnOutput {
     TurnOutput::default()
 }
