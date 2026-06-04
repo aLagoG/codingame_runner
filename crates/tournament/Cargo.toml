@@ -13,7 +13,7 @@ path = "src/lib.rs"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
-common.workspace = true
+common = { workspace = true, features = ["cli"] }
 # `codingame_runner` re-exports the game types via the
 # `for_each_game!` macro, so tournament doesn't need direct
 # `tron_game` / `fantastic_bits_game` deps.

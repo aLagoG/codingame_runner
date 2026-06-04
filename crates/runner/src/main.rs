@@ -3,7 +3,7 @@ use std::{fmt::Debug, path::PathBuf};
 use anyhow::{Result, bail};
 use clap::Parser;
 use codingame_runner::{for_each_game, make_player};
-use common::engine::{Game, MatchResult, Player, RunConfig, run_match, write_replay};
+use common::engine::{EngineFlags, Game, MatchResult, Player, RunConfig, run_match, write_replay};
 
 #[derive(Parser)]
 #[command(
@@ -20,20 +20,8 @@ struct Args {
     #[arg(long, value_name = "PATH")]
     save_replay: Option<PathBuf>,
 
-    /// Triple the per-turn time budgets so weakly-tuned or
-    /// debug-mode bots don't get killed by the engine before they
-    /// can respond. Default is the game's CodinGame-equivalent
-    /// budget; this flag is for local iteration only.
-    #[arg(long)]
-    allow_slow_bots: bool,
-
-    /// Treat any per-turn player error (timeout, malformed output,
-    /// EOF, IO) as a hard match failure instead of just marking that
-    /// bot dead and letting the game continue. Useful while debugging
-    /// a new bot — the runner surfaces the first error instead of
-    /// silently swallowing it.
-    #[arg(long)]
-    abort_on_player_error: bool,
+    #[command(flatten)]
+    engine: EngineFlags,
 
     /// Bot binaries — one per player.
     #[arg(required = true)]
@@ -43,10 +31,7 @@ struct Args {
 fn main() -> Result<()> {
     let args = Args::parse();
     let game = args.game.as_str();
-    let config = RunConfig {
-        timeout_multiplier: if args.allow_slow_bots { 3.0 } else { 1.0 },
-        abort_on_player_error: args.abort_on_player_error,
-    };
+    let config: RunConfig = args.engine.into();
     macro_rules! dispatch {
         ($name:literal, $ty:ty) => {
             if game == $name {

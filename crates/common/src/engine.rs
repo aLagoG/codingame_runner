@@ -195,6 +195,59 @@ impl Default for RunConfig {
     }
 }
 
+/// Engine-tuning flags shared by every CLI that runs matches (runner,
+/// tournament run/compare, tournament worker). Behind the `cli` feature
+/// so bot + game crates that only need the engine traits don't pull
+/// clap in.
+///
+/// Convert to a `RunConfig` via `RunConfig::from(flags)` at the match
+/// boundary; forward to a child worker process via `flags.to_argv()`.
+#[cfg(feature = "cli")]
+#[derive(clap::Args, Debug, Clone, Copy, Default)]
+pub struct EngineFlags {
+    /// Triple every per-turn time budget so weakly-tuned or debug-
+    /// mode bots don't get killed before they can respond. Default
+    /// is the game's CodinGame-equivalent budget; use this for local
+    /// iteration only.
+    #[arg(long)]
+    pub allow_slow_bots: bool,
+
+    /// Treat any per-turn player error (timeout, malformed output,
+    /// EOF, IO) as a hard match failure instead of just marking that
+    /// bot dead and letting the game continue. Useful while debugging
+    /// a new bot — the runner surfaces the first error instead of
+    /// silently swallowing it.
+    #[arg(long)]
+    pub abort_on_player_error: bool,
+}
+
+#[cfg(feature = "cli")]
+impl From<EngineFlags> for RunConfig {
+    fn from(f: EngineFlags) -> Self {
+        Self {
+            timeout_multiplier: if f.allow_slow_bots { 3.0 } else { 1.0 },
+            abort_on_player_error: f.abort_on_player_error,
+        }
+    }
+}
+
+#[cfg(feature = "cli")]
+impl EngineFlags {
+    /// Render the flags back to their CLI form so a parent process can
+    /// forward them to a child worker invocation. Skips defaults so the
+    /// argv stays minimal.
+    pub fn to_argv(self) -> Vec<&'static str> {
+        let mut argv = Vec::new();
+        if self.allow_slow_bots {
+            argv.push("--allow-slow-bots");
+        }
+        if self.abort_on_player_error {
+            argv.push("--abort-on-player-error");
+        }
+        argv
+    }
+}
+
 /// Compact recording of a finished match: the seed, the player count, and the
 /// outputs each player submitted on each tick. Combined with a deterministic
 /// [`Game`] implementation this is enough to reconstruct the whole match by

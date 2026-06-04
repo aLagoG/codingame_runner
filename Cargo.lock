@@ -440,6 +440,7 @@ dependencies = [
  "anyhow",
  "bincode",
  "bot_common",
+ "clap",
  "libc",
  "rand",
  "serde",

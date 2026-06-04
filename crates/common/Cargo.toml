@@ -15,5 +15,15 @@ bincode.workspace = true
 rand.workspace = true
 tracing = "0.1.44"
 
+# Optional — enabled by binaries that flatten `EngineFlags` into their
+# clap CLI (runner, tournament). Off by default so the bot crates +
+# game crates that pull in `common` for the engine traits don't drag
+# clap (+ syn/quote) into their compile graph.
+clap = { workspace = true, optional = true }
+
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
+
+[features]
+default = []
+cli = ["dep:clap"]

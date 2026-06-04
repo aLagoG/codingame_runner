@@ -57,6 +57,25 @@ struct Cli {
     command: Command,
 }
 
+/// `--game G --name N [--lang L]` cluster shared by every bot-targeting
+/// verb (promote, retire, history, compact-history). `lang` is optional
+/// because most callers auto-detect from which `<bot>_<lang>` dirs
+/// actually exist; `Both` explicitly operates on both variants.
+#[derive(clap::Args)]
+struct BotTarget {
+    /// Game the bot belongs to.
+    #[arg(long)]
+    game: String,
+    /// Bot stem (e.g. `v1`, `baseline`) — without the `_<lang>` suffix.
+    #[arg(long)]
+    name: String,
+    /// Which language variant. Auto-detected when only one exists;
+    /// required when both rs and cpp variants exist. Pass `both` to
+    /// operate on each language in turn.
+    #[arg(long, value_enum)]
+    lang: Option<BotLang>,
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Scaffold a new game (engine + viz + a baseline_rs + baseline_cpp bot).
@@ -99,17 +118,8 @@ enum Command {
     /// them — plus any descendants of those siblings, so you don't end
     /// up with orphans pointing at dead crates.
     Promote {
-        /// Game the candidate belongs to.
-        #[arg(long)]
-        game: String,
-        /// Candidate bot stem to promote (without `_<lang>` suffix).
-        #[arg(long)]
-        name: String,
-        /// Which language variant to promote. Required when the
-        /// candidate has both `_rs` and `_cpp` variants; auto-detected
-        /// otherwise. `both` promotes each independently.
-        #[arg(long, value_enum)]
-        lang: Option<BotLang>,
+        #[command(flatten)]
+        target: BotTarget,
         /// Keep the old parent as `<parent>_archived_<ts>_<lang>`
         /// instead of deleting it. The promoted bot's `parent` field
         /// points at this archived name so the lineage chain is
@@ -130,17 +140,8 @@ enum Command {
     /// any other bot lists as its `parent` (would orphan descendants).
     /// Pass `--force` to skip these safety checks.
     Retire {
-        /// Game the bot belongs to.
-        #[arg(long)]
-        game: String,
-        /// Bot stem (e.g. `v1`, `baseline`) — without the `_<lang>` suffix.
-        #[arg(long)]
-        name: String,
-        /// Which language variant to retire. Required when the bot has
-        /// both `_rs` and `_cpp` variants; auto-detected otherwise.
-        /// Pass `both` to wipe both languages in one go.
-        #[arg(long, value_enum)]
-        lang: Option<BotLang>,
+        #[command(flatten)]
+        target: BotTarget,
         /// Skip the champion + has-children safety checks.
         #[arg(long)]
         force: bool,
@@ -160,16 +161,8 @@ enum Command {
     /// Print a bot's `[[history]]` chronologically — the tournament
     /// outcomes recorded by `tournament compare --record-history`.
     History {
-        /// Game the bot belongs to.
-        #[arg(long)]
-        game: String,
-        /// Bot stem (e.g. `v1`, `baseline`).
-        #[arg(long)]
-        name: String,
-        /// Which language variant. Auto-detected when only one
-        /// exists; required when both rs and cpp variants exist.
-        #[arg(long, value_enum)]
-        lang: Option<BotLang>,
+        #[command(flatten)]
+        target: BotTarget,
     },
     /// Health-check every bot in a game and flag inconsistencies:
     /// multiple champions per lang, orphan parent refs, history
@@ -186,16 +179,8 @@ enum Command {
     /// of iteration. Older entries are dropped silently — no undo, so
     /// commit first if you might want them back.
     CompactHistory {
-        /// Game the bot belongs to.
-        #[arg(long)]
-        game: String,
-        /// Bot stem.
-        #[arg(long)]
-        name: String,
-        /// Which language variant. Auto-detected when only one
-        /// exists; required when both rs and cpp variants exist.
-        #[arg(long, value_enum)]
-        lang: Option<BotLang>,
+        #[command(flatten)]
+        target: BotTarget,
         /// Keep only the most recent K history entries; drop older.
         #[arg(long, default_value_t = 10)]
         keep_last: usize,
@@ -361,27 +346,25 @@ fn main() -> Result<()> {
             lang,
             from_existing,
         } => new_bot(&game, &name, lang, from_existing.as_deref())?,
-        Command::Retire {
-            game,
-            name,
-            lang,
-            force,
-        } => retire(&game, &name, lang, force)?,
+        Command::Retire { target, force } => {
+            retire(&target.game, &target.name, target.lang, force)?
+        }
         Command::Promote {
-            game,
-            name,
-            lang,
+            target,
             archive,
             cleanup_siblings,
-        } => promote(&game, &name, lang, archive, cleanup_siblings)?,
+        } => promote(
+            &target.game,
+            &target.name,
+            target.lang,
+            archive,
+            cleanup_siblings,
+        )?,
         Command::Champion { game, lang } => champion(&game, lang)?,
-        Command::History { game, name, lang } => history(&game, &name, lang)?,
-        Command::CompactHistory {
-            game,
-            name,
-            lang,
-            keep_last,
-        } => compact_history(&game, &name, lang, keep_last)?,
+        Command::History { target } => history(&target.game, &target.name, target.lang)?,
+        Command::CompactHistory { target, keep_last } => {
+            compact_history(&target.game, &target.name, target.lang, keep_last)?
+        }
         Command::Doctor { game } => doctor(&game)?,
         Command::Bundle {
             game,
@@ -697,7 +680,7 @@ fn bundle(
     vendor: bool,
     external: &[String],
 ) -> Result<()> {
-    let bots_dir = PathBuf::from("games").join(game).join("bots");
+    let bots_dir = bots_dir(game);
 
     // When no bot was named, resolve to the current champion(s) per
     // bot.toml. `--lang` filters which champion to pick when both langs
@@ -994,7 +977,7 @@ fn new_bot(game: &str, bot: &str, lang: BotLang, from_existing: Option<&str>) ->
 ///   * Some other bot in the same game+lang lane lists this bot as its
 ///     `parent` (would orphan descendants).
 fn retire(game: &str, bot: &str, lang_override: Option<BotLang>, force: bool) -> Result<()> {
-    let bots_dir = PathBuf::from("games").join(game).join("bots");
+    let bots_dir = bots_dir(game);
     anyhow::ensure!(
         bots_dir.exists(),
         "no game at {} — is `{game}` the right name?",
@@ -1019,7 +1002,7 @@ fn retire(game: &str, bot: &str, lang_override: Option<BotLang>, force: bool) ->
                     ));
                 }
             }
-            let children = find_children(game, bot, lang)?;
+            let children = find_children(&bots_dir, bot, lang)?;
             if !children.is_empty() {
                 blockers.push(format!(
                     "{bot}_{lang} is parent of: {} (would orphan; pass --force to proceed)",
@@ -1058,14 +1041,40 @@ fn retire(game: &str, bot: &str, lang_override: Option<BotLang>, force: bool) ->
     Ok(())
 }
 
+/// `games/<game>/bots/` — the per-game directory that holds every
+/// `<bot>_<lang>/` crate. One place that knows the layout so the
+/// `PathBuf::from("games").join(game).join("bots")` chain isn't
+/// spelled out at every call site.
+fn bots_dir(game: &str) -> PathBuf {
+    PathBuf::from("games").join(game).join("bots")
+}
+
+/// `<bots_dir>/<bot>_<lang>/bot.toml`. Pairs with `read_bot_manifest`
+/// at sites that need to write the manifest back later.
+fn bot_manifest_path(bots_dir: &Path, bot: &str, lang: &str) -> PathBuf {
+    bots_dir.join(format!("{bot}_{lang}")).join("bot.toml")
+}
+
+/// Read a bot's manifest. Returns a uniform error when the file is
+/// missing — some legacy bots predate `bot.toml` landing and need a
+/// hand-written one with at least `name`, `lang`, and (for promote)
+/// `parent` fields.
+fn read_bot_manifest(bots_dir: &Path, bot: &str, lang: &str) -> Result<BotManifest> {
+    let path = bot_manifest_path(bots_dir, bot, lang);
+    anyhow::ensure!(
+        path.exists(),
+        "no bot.toml at {} — was this bot scaffolded before bot.toml landed? \
+         (hand-write a minimal manifest with `name`, `lang`, and `parent` to repair)",
+        path.display(),
+    );
+    BotManifest::read(&path)
+}
+
 /// Find every bot under `bots_dir/*_<lang>/` whose `bot.toml` declares
 /// `parent = <parent>`. Used by `retire`'s safety check to flag
 /// orphans before they happen. Returns bare bot stems with their
 /// lang suffix (e.g. `["v1_5_cpp", "v1_some_algo_cpp"]`).
-///
-/// Takes `bots_dir` directly (rather than deriving from `game`) so
-/// tests can point it at a tempdir.
-fn find_children_in(bots_dir: &Path, parent: &str, lang: &str) -> Result<Vec<String>> {
+fn find_children(bots_dir: &Path, parent: &str, lang: &str) -> Result<Vec<String>> {
     let mut children = Vec::new();
     let Ok(entries) = fs::read_dir(bots_dir) else {
         return Ok(children);
@@ -1100,22 +1109,10 @@ fn find_children_in(bots_dir: &Path, parent: &str, lang: &str) -> Result<Vec<Str
     Ok(children)
 }
 
-/// `find_children_in` keyed by game name. Resolves the bots dir
-/// from the cwd-relative `games/<game>/bots/` path.
-fn find_children(game: &str, parent: &str, lang: &str) -> Result<Vec<String>> {
-    find_children_in(
-        &PathBuf::from("games").join(game).join("bots"),
-        parent,
-        lang,
-    )
-}
-
 /// Walk `bots_dir/*/bot.toml` and collect every manifest with
 /// `champion = true`. Returns `(name, lang)` pairs. Used by
 /// `find_champion` and the `champion` print verb.
-///
-/// Takes `bots_dir` directly so tests can point it at a tempdir.
-fn list_champions_in(bots_dir: &Path) -> Result<Vec<(String, String)>> {
+fn list_champions(bots_dir: &Path) -> Result<Vec<(String, String)>> {
     let mut out = Vec::new();
     let Ok(entries) = fs::read_dir(bots_dir) else {
         return Ok(out);
@@ -1140,15 +1137,10 @@ fn list_champions_in(bots_dir: &Path) -> Result<Vec<(String, String)>> {
     Ok(out)
 }
 
-/// `list_champions_in` keyed by game name.
-fn list_champions(game: &str) -> Result<Vec<(String, String)>> {
-    list_champions_in(&PathBuf::from("games").join(game).join("bots"))
-}
-
 /// Resolve the bot name to bundle when none was passed. `--lang` filter
 /// disambiguates when more than one lang has a champion.
 fn find_champion(game: &str, lang_filter: Option<BotLang>) -> Result<String> {
-    let champions = list_champions(game)?;
+    let champions = list_champions(&bots_dir(game))?;
     anyhow::ensure!(
         !champions.is_empty(),
         "no bot in `{game}` has `champion = true` in its bot.toml — \
@@ -1189,13 +1181,13 @@ fn find_champion(game: &str, lang_filter: Option<BotLang>) -> Result<String> {
 /// description + last `[[history]]` entry inline so the user can see
 /// what they'd be shipping at a glance.
 fn champion(game: &str, lang_filter: Option<BotLang>) -> Result<()> {
-    let bots_dir = PathBuf::from("games").join(game).join("bots");
+    let bots_dir = bots_dir(game);
     anyhow::ensure!(
         bots_dir.exists(),
         "no game at {} — is `{game}` the right name?",
         bots_dir.display(),
     );
-    let champions = list_champions(game)?;
+    let champions = list_champions(&bots_dir)?;
     let lang_str: Option<&str> = match lang_filter {
         Some(BotLang::Rust) => Some("rs"),
         Some(BotLang::Cpp) => Some("cpp"),
@@ -1258,7 +1250,7 @@ fn champion(game: &str, lang_filter: Option<BotLang>) -> Result<()> {
 ///   6. Bot dirs not registered in [workspace.members].
 fn doctor(game: &str) -> Result<()> {
     use std::collections::{BTreeMap, BTreeSet};
-    let bots_dir = PathBuf::from("games").join(game).join("bots");
+    let bots_dir = bots_dir(game);
     anyhow::ensure!(
         bots_dir.exists(),
         "no game at {} — is `{game}` the right name?",
@@ -1414,7 +1406,7 @@ fn doctor(game: &str) -> Result<()> {
 /// --record-history`. Empty history is a clean "no runs recorded
 /// yet" message.
 fn history(game: &str, bot: &str, lang_override: Option<BotLang>) -> Result<()> {
-    let bots_dir = PathBuf::from("games").join(game).join("bots");
+    let bots_dir = bots_dir(game);
     anyhow::ensure!(
         bots_dir.exists(),
         "no game at {} — is `{game}` the right name?",
@@ -1423,13 +1415,7 @@ fn history(game: &str, bot: &str, lang_override: Option<BotLang>) -> Result<()> 
     let langs = resolve_bot_langs(&bots_dir, bot, lang_override)?;
     let s = Style::new();
     for lang in &langs {
-        let manifest_path = bots_dir.join(format!("{bot}_{lang}")).join("bot.toml");
-        anyhow::ensure!(
-            manifest_path.exists(),
-            "no bot.toml at {} — was this bot scaffolded before bot.toml landed?",
-            manifest_path.display(),
-        );
-        let manifest = BotManifest::read(&manifest_path)?;
+        let manifest = read_bot_manifest(&bots_dir, bot, lang)?;
         println!(
             "{} {}_{}  {}",
             s.heading("⏱"),
@@ -1476,7 +1462,7 @@ fn compact_history(
     lang_override: Option<BotLang>,
     keep_last: usize,
 ) -> Result<()> {
-    let bots_dir = PathBuf::from("games").join(game).join("bots");
+    let bots_dir = bots_dir(game);
     anyhow::ensure!(
         bots_dir.exists(),
         "no game at {} — is `{game}` the right name?",
@@ -1485,13 +1471,8 @@ fn compact_history(
     let langs = resolve_bot_langs(&bots_dir, bot, lang_override)?;
     let s = Style::new();
     for lang in &langs {
-        let manifest_path = bots_dir.join(format!("{bot}_{lang}")).join("bot.toml");
-        anyhow::ensure!(
-            manifest_path.exists(),
-            "no bot.toml at {}",
-            manifest_path.display(),
-        );
-        let mut manifest = BotManifest::read(&manifest_path)?;
+        let mut manifest = read_bot_manifest(&bots_dir, bot, lang)?;
+        let manifest_path = bot_manifest_path(&bots_dir, bot, lang);
         let before = manifest.history.len();
         if before <= keep_last {
             println!(
@@ -1598,7 +1579,7 @@ fn rewrite_dir_contents(dir: &Path, from: &str, to: &str) -> Result<()> {
 /// legitimate state, but we guard regardless). Returns the bot stems
 /// in topological order: deepest first, so retire-by-iteration safely
 /// removes children before parents.
-fn find_descendants_in(bots_dir: &Path, ancestor: &str, lang: &str) -> Result<Vec<String>> {
+fn find_descendants(bots_dir: &Path, ancestor: &str, lang: &str) -> Result<Vec<String>> {
     const MAX_DEPTH: usize = 32;
     let mut out: Vec<String> = Vec::new();
     let mut frontier: Vec<(String, usize)> = vec![(ancestor.to_string(), 0)];
@@ -1609,7 +1590,7 @@ fn find_descendants_in(bots_dir: &Path, ancestor: &str, lang: &str) -> Result<Ve
                  cycle in bot.toml parent fields?",
             );
         }
-        let children = find_children_in(bots_dir, &cur, lang)?;
+        let children = find_children(bots_dir, &cur, lang)?;
         for child in children {
             // child is "v1_5_cpp" form; strip the suffix to get the stem
             let stem = child
@@ -1627,22 +1608,12 @@ fn find_descendants_in(bots_dir: &Path, ancestor: &str, lang: &str) -> Result<Ve
     Ok(out)
 }
 
-/// `find_descendants_in` keyed by game name.
-fn find_descendants(game: &str, ancestor: &str, lang: &str) -> Result<Vec<String>> {
-    find_descendants_in(
-        &PathBuf::from("games").join(game).join("bots"),
-        ancestor,
-        lang,
-    )
-}
-
 /// Run the retire path on a single bot+lang variant, bypassing the
 /// champion/parent safety checks (promote is the one deciding to
 /// remove these). Thin wrapper for clarity — promote calls this
 /// during sibling cleanup and during non-archive parent removal.
 fn force_retire_one(game: &str, bot: &str, lang: &str) -> Result<()> {
-    let bots_dir = PathBuf::from("games").join(game).join("bots");
-    let dir = bots_dir.join(format!("{bot}_{lang}"));
+    let dir = bots_dir(game).join(format!("{bot}_{lang}"));
     if !dir.exists() {
         return Ok(());
     }
@@ -1692,7 +1663,7 @@ fn promote(
     archive: bool,
     cleanup_siblings: bool,
 ) -> Result<()> {
-    let bots_dir = PathBuf::from("games").join(game).join("bots");
+    let bots_dir = bots_dir(game);
     anyhow::ensure!(
         bots_dir.exists(),
         "no game at {} — is `{game}` the right name?",
@@ -1712,16 +1683,9 @@ fn promote_one_lang(
     archive: bool,
     cleanup_siblings: bool,
 ) -> Result<()> {
-    let bots_dir = PathBuf::from("games").join(game).join("bots");
+    let bots_dir = bots_dir(game);
     let candidate_dir = bots_dir.join(format!("{candidate}_{lang}"));
-    let candidate_manifest_path = candidate_dir.join("bot.toml");
-    anyhow::ensure!(
-        candidate_manifest_path.exists(),
-        "{candidate}_{lang} has no bot.toml — can't determine its parent (was it scaffolded \
-         before bot.toml landed? hand-write one with `name = \"{candidate}\"`, `lang = \"{lang}\"`, \
-         `parent = \"<old baseline>\"`)",
-    );
-    let candidate_manifest = BotManifest::read(&candidate_manifest_path)?;
+    let candidate_manifest = read_bot_manifest(&bots_dir, candidate, lang)?;
     let parent_name = candidate_manifest.parent.clone().ok_or_else(|| {
         anyhow::anyhow!(
             "{candidate}_{lang}'s bot.toml has `parent = null` — nothing to promote into. \
@@ -1759,7 +1723,7 @@ fn promote_one_lang(
     // Compute sibling sweep set (if requested).
     let mut to_retire: Vec<String> = Vec::new();
     if cleanup_siblings {
-        let siblings = find_children(game, &parent_name, lang)?
+        let siblings = find_children(&bots_dir, &parent_name, lang)?
             .into_iter()
             .filter_map(|s| s.strip_suffix(&format!("_{lang}")).map(str::to_string))
             .filter(|stem| stem != candidate)
@@ -1767,7 +1731,7 @@ fn promote_one_lang(
         for sibling in &siblings {
             // Descendants first (deepest), then the sibling itself —
             // matches retire's "remove leaves first" ordering.
-            to_retire.extend(find_descendants(game, sibling, lang)?);
+            to_retire.extend(find_descendants(&bots_dir, sibling, lang)?);
             to_retire.push(sibling.clone());
         }
     }
@@ -2237,8 +2201,8 @@ fn wire_game_registry(lib_rs_path: &str, name: &str, name_pascal: &str) -> Resul
 //  Tests
 // ============================================================
 //
-// Tests target the read-only lineage helpers (`find_children_in`,
-// `find_descendants_in`, `list_champions_in`, `find_champion`) and
+// Tests target the read-only lineage helpers (`find_children`,
+// `find_descendants`, `list_champions`, `find_champion`) and
 // the content-rewriting helper (`rewrite_dir_contents`). The verb
 // orchestrators themselves (retire/promote/compare) shell out to
 // `cargo clean` and mutate workspace files, which is awkward to
@@ -2276,12 +2240,12 @@ mod tests {
         s
     }
 
-    // ---- find_children_in -----------------------------------------
+    // ---- find_children -----------------------------------------
 
     #[test]
     fn find_children_empty() {
         let t = fixture(&[("baseline_cpp", &manifest("baseline", "cpp", None, true))]);
-        let kids = find_children_in(t.path(), "baseline", "cpp").unwrap();
+        let kids = find_children(t.path(), "baseline", "cpp").unwrap();
         assert!(kids.is_empty());
     }
 
@@ -2300,7 +2264,7 @@ mod tests {
             ("v1_rs", &manifest("v1", "rs", None, false)),
             ("v1_5_rs", &manifest("v1_5", "rs", Some("v1"), false)),
         ]);
-        let mut kids = find_children_in(t.path(), "v1", "cpp").unwrap();
+        let mut kids = find_children(t.path(), "v1", "cpp").unwrap();
         kids.sort();
         assert_eq!(kids, vec!["v1_5_cpp", "v1_some_algo_cpp"]);
     }
@@ -2317,11 +2281,11 @@ mod tests {
         // A directory matching the naming convention but with no bot.toml
         // — should be silently skipped, not error.
         std::fs::create_dir_all(t.path().join("orphan_cpp")).unwrap();
-        let kids = find_children_in(t.path(), "v1", "cpp").unwrap();
+        let kids = find_children(t.path(), "v1", "cpp").unwrap();
         assert!(kids.is_empty());
     }
 
-    // ---- find_descendants_in --------------------------------------
+    // ---- find_descendants --------------------------------------
 
     #[test]
     fn find_descendants_transitive_deepest_first() {
@@ -2337,7 +2301,7 @@ mod tests {
             ),
             ("v1_b_cpp", &manifest("v1_b", "cpp", Some("v1"), false)),
         ]);
-        let descs = find_descendants_in(t.path(), "v1", "cpp").unwrap();
+        let descs = find_descendants(t.path(), "v1", "cpp").unwrap();
         // Deepest-first ordering: v1_a_smaller must come before v1_a.
         let smaller = descs.iter().position(|s| s == "v1_a_smaller").unwrap();
         let a = descs.iter().position(|s| s == "v1_a").unwrap();
@@ -2352,7 +2316,7 @@ mod tests {
         assert!(set.contains("v1_b"));
     }
 
-    // ---- list_champions_in ----------------------------------------
+    // ---- list_champions ----------------------------------------
 
     #[test]
     fn list_champions_one_per_lang() {
@@ -2361,7 +2325,7 @@ mod tests {
             ("v1_cpp", &manifest("v1", "cpp", None, true)),
             ("v1_5_cpp", &manifest("v1_5", "cpp", Some("v1"), false)),
         ]);
-        let champs = list_champions_in(t.path()).unwrap();
+        let champs = list_champions(t.path()).unwrap();
         // Sorted lexicographically on (name, lang) — "baseline" < "v1".
         assert_eq!(
             champs,
@@ -2375,7 +2339,7 @@ mod tests {
     #[test]
     fn list_champions_none() {
         let t = fixture(&[("v1_cpp", &manifest("v1", "cpp", None, false))]);
-        let champs = list_champions_in(t.path()).unwrap();
+        let champs = list_champions(t.path()).unwrap();
         assert!(champs.is_empty());
     }
 

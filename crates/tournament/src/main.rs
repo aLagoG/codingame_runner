@@ -16,7 +16,7 @@ use std::thread;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use common::engine::RunConfig;
+use common::engine::{EngineFlags, RunConfig};
 use tournament::{
     BotSpec, MatchRecord, ScheduleConfig, ScheduledMatch, build_report, build_schedule,
     play_schedule,
@@ -45,41 +45,40 @@ enum Command {
     Worker(WorkerArgs),
 }
 
-#[derive(Parser)]
-#[command(
-    about = "Resolve N bots by name, build them, play a round-robin, print a focused verdict.",
-    long_about = "\
-Wraps `run` + `report` for the most common case: \"is candidate X better than baseline Y?\". \
-Bot names are stems (e.g. `v1`, `baseline`) — `compare` reads each bot's `bot.toml` to \
-figure out which language variant exists and resolves the bin under `target/release/`. \
-Re-runs `cargo build --release -p <crate>` for every bot (incremental, so a no-op when up-to-date). \
-For N=2 prints a single verdict line + a \"need ≈ X more games\" epilogue when inconclusive; \
-for N≥3 prints a ranked table + pairwise verdict block."
-)]
-struct CompareArgs {
-    /// Game to play.
+/// Flags shared by `run` and `compare` — both schedule a round-robin
+/// over the same set of bots, build them under the same profile, and
+/// run matches with the same per-turn budget / abort policy. Kept as a
+/// flattened struct so a new shared flag lands in one place instead of
+/// two.
+#[derive(clap::Args)]
+struct CommonRunArgs {
+    /// Game to play (`tron`, `fantastic_bits`).
     #[arg(long)]
     game: String,
 
-    /// Bot stems to compare (≥ 2). Each is auto-resolved to
+    /// Bot stems to enter (≥ 2). Each is auto-resolved to
     /// `games/<game>/bots/<bot>_<lang>/` via `bot.toml`. If both rs
     /// and cpp variants exist for the same stem, qualify the name
-    /// with `<bot>:rs` or `<bot>:cpp` to pick one.
+    /// with `<bot>:rs` or `<bot>:cpp` to pick one. Stems must be
+    /// unique (they double as the bot's identifier in the JSONL log).
     #[arg(required = true, num_args = 2..)]
     bots: Vec<String>,
 
-    /// Number of seeds to play. Each (bot-combination × seat
-    /// rotation) is played at every seed.
+    /// Number of seeds to play per (combination × seat rotation).
+    /// For `run`, `--seeds` guarantees inclusion of specific values;
+    /// everything else is filled from the sequential range or
+    /// `--random-seeds` up to this count.
     #[arg(long, default_value_t = 100)]
-    rounds: u32,
+    rounds: u64,
 
     /// Players per match. Default 2; pass `--bots-per-match 4` for
-    /// 4-player games like tron.
+    /// 4-player games like tron. Must be in `[2, num_bots]`.
     #[arg(long, default_value_t = 2)]
     bots_per_match: usize,
 
-    /// Skip the `cargo build --release` step. Useful when the bots
-    /// are already built and you want the fastest possible iteration.
+    /// Skip the bot build and trust whatever's already in
+    /// `target/<profile>/`. Useful when the bots are already built
+    /// and you want the fastest possible iteration.
     #[arg(long)]
     no_build: bool,
 
@@ -90,8 +89,8 @@ struct CompareArgs {
     #[arg(long, default_value = "release")]
     profile: String,
 
-    /// After the tournament, append a `[[history]]` entry to every
-    /// participant's `bot.toml` capturing this matchup's outcome
+    /// After the run completes, append a `[[history]]` entry to every
+    /// participant's `bot.toml` capturing this run's pairwise outcomes
     /// (pts vs each opponent, verdict). Opt-in to avoid noisy git
     /// churn from fast iteration loops.
     #[arg(long)]
@@ -104,20 +103,24 @@ struct CompareArgs {
     #[arg(long, default_value_t = default_parallel())]
     parallel: usize,
 
-    /// Triple every per-turn time budget so weakly-tuned or debug-
-    /// mode bots don't get killed before they can respond. Default
-    /// is the game's CodinGame-equivalent budget; use this for local
-    /// iteration only.
-    #[arg(long)]
-    allow_slow_bots: bool,
+    #[command(flatten)]
+    engine: EngineFlags,
+}
 
-    /// Treat any per-turn player error (timeout, malformed output,
-    /// EOF, IO) as a hard match failure instead of just marking that
-    /// bot dead and letting the game continue. Useful while debugging
-    /// a new bot — the runner surfaces the first error instead of
-    /// silently swallowing it.
-    #[arg(long)]
-    abort_on_player_error: bool,
+#[derive(Parser)]
+#[command(
+    about = "Resolve N bots by name, build them, play a round-robin, print a focused verdict.",
+    long_about = "\
+Wraps `run` + `report` for the most common case: \"is candidate X better than baseline Y?\". \
+Bot names are stems (e.g. `v1`, `baseline`) — `compare` reads each bot's `bot.toml` to \
+figure out which language variant exists and resolves the bin under `target/release/`. \
+Re-runs `cargo build --release -p <crate>` for every bot (incremental, so a no-op when up-to-date). \
+For N=2 prints a single verdict line + a \"need ≈ X more games\" epilogue when inconclusive; \
+for N≥3 prints a ranked table + pairwise verdict block."
+)]
+struct CompareArgs {
+    #[command(flatten)]
+    common: CommonRunArgs,
 }
 
 #[derive(Parser)]
@@ -132,31 +135,8 @@ For a focused \"is X better than Y\" answer instead of a log, use `compare` — 
 resolver, same scheduler, prints a verdict instead of writing JSONL."
 )]
 struct RunArgs {
-    /// Game to play (`tron`, `fantastic_bits`).
-    #[arg(long)]
-    game: String,
-
-    /// Bot stems to enter (≥ 2). Each is auto-resolved to
-    /// `games/<game>/bots/<bot>_<lang>/` via `bot.toml`. If both rs
-    /// and cpp variants exist for the same stem, qualify the name
-    /// with `<bot>:rs` or `<bot>:cpp` to pick one. Stems must be
-    /// unique (they double as the bot's identifier in the JSONL log).
-    #[arg(required = true, num_args = 2..)]
-    bots: Vec<String>,
-
-    /// Skip the bot build and trust whatever's already in
-    /// `target/<profile>/`. Mirrors `compare --no-build`.
-    #[arg(long)]
-    no_build: bool,
-
-    /// Cargo build profile for the bots. Defaults to `release`. See
-    /// `compare --profile` — same semantics.
-    #[arg(long, default_value = "release")]
-    profile: String,
-
-    /// Players per match. 2 by default. Must be in `[2, num_bots]`.
-    #[arg(long, default_value_t = 2)]
-    bots_per_match: usize,
+    #[command(flatten)]
+    common: CommonRunArgs,
 
     /// Comma-separated seeds that must appear in the schedule (e.g.
     /// `--seeds 0,17,42`). If fewer than `--rounds` values are
@@ -175,13 +155,6 @@ struct RunArgs {
     #[arg(long)]
     random_seeds: bool,
 
-    /// Number of seeds to play per (combination × seat rotation).
-    /// `--seeds` guarantees inclusion of specific values; everything
-    /// else is filled from the sequential range or `--random-seeds`
-    /// up to this count.
-    #[arg(long, default_value_t = 100)]
-    rounds: u64,
-
     /// By default every combination is played in all N cyclic seat
     /// rotations. Pass `--no-rotate-seats` to skip rotation entirely
     /// (only the combination's natural order is used).
@@ -191,19 +164,6 @@ struct RunArgs {
     /// Where to write the JSONL match log. Parent dirs are created.
     #[arg(short, long)]
     output: PathBuf,
-
-    /// Number of matches to run in parallel. Defaults to the number
-    /// of available logical cores. Set to 1 for clean per-turn
-    /// decision-time measurements; higher values trade timing
-    /// fidelity for wall-clock speedup.
-    #[arg(long, default_value_t = default_parallel())]
-    parallel: usize,
-
-    /// After the run completes, append a `[[history]]` entry to every
-    /// participant's `bot.toml` capturing this run's pairwise outcomes
-    /// (pts vs each opponent, verdict). Mirrors `compare --record-history`.
-    #[arg(long)]
-    record_history: bool,
 
     /// Stop early once every bot-pair's two-sided p-value drops
     /// below `--alpha`. `--rounds` becomes the cap (max matches to
@@ -225,14 +185,6 @@ struct RunArgs {
     /// stat checks (cheaper) but coarser early-stop granularity.
     #[arg(long, default_value_t = 50)]
     wave_size: usize,
-
-    /// See `compare --allow-slow-bots` — same semantics.
-    #[arg(long)]
-    allow_slow_bots: bool,
-
-    /// See `compare --abort-on-player-error` — same semantics.
-    #[arg(long)]
-    abort_on_player_error: bool,
 }
 
 #[derive(Parser)]
@@ -241,24 +193,11 @@ struct WorkerArgs {
     game: String,
     #[arg(long = "bot", value_parser = parse_bot_spec, required = true)]
     bots: Vec<BotSpec>,
-    /// Mirror of the parent's `--allow-slow-bots` flag — propagated
-    /// through the worker spawn so the per-turn budget multiplier
-    /// matches.
-    #[arg(long)]
-    allow_slow_bots: bool,
-    /// Mirror of the parent's `--abort-on-player-error` flag.
-    #[arg(long)]
-    abort_on_player_error: bool,
-}
-
-/// Builds the `RunConfig` passed into every match from the CLI flags
-/// that affect it. One source of truth so the `3.0` multiplier and the
-/// abort-on-error bool aren't sprinkled across every callsite.
-fn run_config(allow_slow_bots: bool, abort_on_player_error: bool) -> RunConfig {
-    RunConfig {
-        timeout_multiplier: if allow_slow_bots { 3.0 } else { 1.0 },
-        abort_on_player_error,
-    }
+    /// Mirrors of the parent's engine-tuning flags — forwarded through
+    /// the worker spawn via `EngineFlags::to_argv()` so per-turn budget
+    /// + abort behavior match the parent's.
+    #[command(flatten)]
+    engine: EngineFlags,
 }
 
 fn default_parallel() -> usize {
@@ -287,14 +226,36 @@ fn main() -> Result<()> {
 // ============================================================
 
 fn cmd_run(args: RunArgs) -> Result<()> {
-    let resolved = resolve_and_build(&args.game, &args.bots, args.no_build, &args.profile)?;
+    let RunArgs {
+        common,
+        seeds: explicit_seeds,
+        random_seeds,
+        no_rotate_seats,
+        output,
+        until_confident,
+        alpha,
+        wave_size,
+    } = args;
+    let CommonRunArgs {
+        game,
+        bots,
+        rounds,
+        bots_per_match,
+        no_build,
+        profile,
+        record_history: record_history_flag,
+        parallel: parallel_request,
+        engine,
+    } = common;
+
+    let resolved = resolve_and_build(&game, &bots, no_build, &profile)?;
     let bot_specs: Vec<BotSpec> = resolved.iter().map(|r| r.to_spec()).collect();
 
-    let seeds = assemble_seeds(&args.seeds, args.rounds as usize, args.random_seeds);
+    let seeds = assemble_seeds(&explicit_seeds, rounds as usize, random_seeds);
     let cfg = ScheduleConfig {
-        bots_per_match: args.bots_per_match,
+        bots_per_match,
         seeds,
-        rotate_seats: !args.no_rotate_seats,
+        rotate_seats: !no_rotate_seats,
     };
     let schedule = build_schedule(bot_specs.len(), &cfg)?;
     let total = schedule.len();
@@ -302,22 +263,22 @@ fn cmd_run(args: RunArgs) -> Result<()> {
         bail!("schedule is empty — check --bots-per-match / --seeds / --rounds");
     }
 
-    if let Some(parent) = args.output.parent()
+    if let Some(parent) = output.parent()
         && !parent.as_os_str().is_empty()
     {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
-    let file = File::create(&args.output)
-        .with_context(|| format!("creating {}", args.output.display()))?;
+    let file =
+        File::create(&output).with_context(|| format!("creating {}", output.display()))?;
     let out = BufWriter::new(file);
 
-    let config = run_config(args.allow_slow_bots, args.abort_on_player_error);
+    let config: RunConfig = engine.into();
 
     // Clamp `--parallel` to something useful: at most one worker
     // per match, and at least 1.
-    let parallel = args.parallel.clamp(1, total).max(1);
-    if parallel > 1 && !args.until_confident {
+    let parallel = parallel_request.clamp(1, total).max(1);
+    if parallel > 1 && !until_confident {
         eprintln!(
             "⚠ Running with --parallel {parallel}. Per-turn decision-time \
              numbers will be affected by CPU contention; use --parallel 1 \
@@ -325,67 +286,51 @@ fn cmd_run(args: RunArgs) -> Result<()> {
         );
     }
 
-    let actually_played: usize = if args.until_confident {
+    let actually_played: usize = if until_confident {
         if parallel > 1 {
             eprintln!(
                 "⚠ --until-confident currently runs sequentially (parallel mode \
                  doesn't compose with wave-by-wave checks); ignoring --parallel {parallel}."
             );
         }
+        anyhow::ensure!(wave_size >= 1, "--wave-size must be ≥ 1 (got {})", wave_size);
         anyhow::ensure!(
-            args.wave_size >= 1,
-            "--wave-size must be ≥ 1 (got {})",
-            args.wave_size
-        );
-        anyhow::ensure!(
-            args.alpha > 0.0 && args.alpha < 1.0,
+            alpha > 0.0 && alpha < 1.0,
             "--alpha must be in (0, 1) (got {})",
-            args.alpha
+            alpha
         );
         eprintln!(
-            "Running up to {total} matches of {} (adaptive: wave_size={}, α={})…",
-            args.game, args.wave_size, args.alpha,
+            "Running up to {total} matches of {game} (adaptive: wave_size={wave_size}, α={alpha})…"
         );
-        run_adaptive(
-            &args.game,
-            &bot_specs,
-            &schedule,
-            args.wave_size,
-            args.alpha,
-            config,
-            out,
-        )?
+        run_adaptive(&game, &bot_specs, &schedule, wave_size, alpha, config, out)?
     } else {
-        eprintln!(
-            "Running {total} matches of {} (--parallel {parallel})…",
-            args.game
-        );
+        eprintln!("Running {total} matches of {game} (--parallel {parallel})…");
         if parallel == 1 {
-            run_sequential(&args.game, &bot_specs, &schedule, config, out, total)?;
+            run_sequential(&game, &bot_specs, &schedule, config, out, total)?;
         } else {
-            run_parallel(&args.game, &bot_specs, schedule, config, out, parallel)?;
+            run_parallel(&game, &bot_specs, schedule, engine, out, parallel)?;
         }
         total
     };
 
-    eprintln!("Wrote {} → {}", actually_played, args.output.display());
+    eprintln!("Wrote {} → {}", actually_played, output.display());
 
     // Re-read the JSONL we just wrote so we can print the report (and
     // record history, when requested). Cheap — the file was just
     // flushed and its pages are hot in the page cache. Avoids forking
     // the sequential/parallel/adaptive code paths just to thread
     // records back through.
-    let records = read_jsonl_records(&args.output)?;
+    let records = read_jsonl_records(&output)?;
     let report = build_report(&records);
     println!();
     print_report(&report);
 
-    if args.record_history {
+    if record_history_flag {
         let participants: Vec<(String, String)> = resolved
             .iter()
             .map(|r| (r.name.clone(), r.lang.clone()))
             .collect();
-        record_history(&args.game, &participants, &report)?;
+        record_history(&game, &participants, &report)?;
     }
     Ok(())
 }
@@ -511,11 +456,11 @@ fn run_parallel(
     game: &str,
     bots: &[BotSpec],
     schedule: Vec<ScheduledMatch>,
-    config: RunConfig,
+    engine: EngineFlags,
     mut out: BufWriter<File>,
     parallel: usize,
 ) -> Result<()> {
-    play_schedule_parallel(game, bots, schedule, config, parallel, |line| {
+    play_schedule_parallel(game, bots, schedule, engine, parallel, |line| {
         writeln!(out, "{line}")?;
         out.flush()?;
         Ok(())
@@ -532,7 +477,7 @@ fn play_schedule_parallel<F>(
     game: &str,
     bots: &[BotSpec],
     schedule: Vec<ScheduledMatch>,
-    config: RunConfig,
+    engine: EngineFlags,
     parallel: usize,
     mut on_line: F,
 ) -> Result<()>
@@ -558,17 +503,10 @@ where
     for _ in 0..parallel {
         let mut cmd = ProcCommand::new(&exe);
         cmd.args(["worker", "--game", game]);
-        // Forward RunConfig flags so the worker's `play_schedule`
-        // call applies the same multiplier and abort behavior.
-        // Mapping back to the boolean flags keeps the worker CLI
-        // surface narrow (no `--timeout-multiplier 3.0` to squint
-        // at).
-        if config.timeout_multiplier != 1.0 {
-            cmd.arg("--allow-slow-bots");
-        }
-        if config.abort_on_player_error {
-            cmd.arg("--abort-on-player-error");
-        }
+        // Forward engine flags so the worker's `play_schedule` call
+        // applies the same per-turn budget + abort behavior as the
+        // parent.
+        cmd.args(engine.to_argv());
         for bot in bots {
             cmd.arg("--bot")
                 .arg(format!("{}={}", bot.name, bot.path.display()));
@@ -658,7 +596,7 @@ fn cmd_worker(args: WorkerArgs) -> Result<()> {
         &args.game,
         &args.bots,
         &schedule,
-        run_config(args.allow_slow_bots, args.abort_on_player_error),
+        args.engine.into(),
         stdout.lock(),
     )
 }
@@ -1011,17 +949,29 @@ impl ResolvedBot {
 }
 
 fn cmd_compare(args: CompareArgs) -> Result<()> {
-    anyhow::ensure!(args.bots.len() >= 2, "compare needs at least 2 bots");
+    let CommonRunArgs {
+        game,
+        bots,
+        rounds,
+        bots_per_match,
+        no_build,
+        profile,
+        record_history: record_history_flag,
+        parallel: parallel_request,
+        engine,
+    } = args.common;
 
-    let resolved = resolve_and_build(&args.game, &args.bots, args.no_build, &args.profile)?;
+    anyhow::ensure!(bots.len() >= 2, "compare needs at least 2 bots");
+
+    let resolved = resolve_and_build(&game, &bots, no_build, &profile)?;
     let bot_specs: Vec<BotSpec> = resolved.iter().map(|r| r.to_spec()).collect();
 
     // Build the schedule. Reuse the `tournament run` logic — same
     // seeds-and-rotations rules so `compare --rounds N` matches what
     // `run --rounds N` would have done.
-    let seeds = assemble_seeds(&[], args.rounds as usize, false);
+    let seeds = assemble_seeds(&[], rounds as usize, false);
     let cfg = ScheduleConfig {
-        bots_per_match: args.bots_per_match,
+        bots_per_match,
         seeds,
         rotate_seats: true,
     };
@@ -1029,21 +979,19 @@ fn cmd_compare(args: CompareArgs) -> Result<()> {
     anyhow::ensure!(
         !schedule.is_empty(),
         "empty schedule — check --bots-per-match (got {}) vs bot count ({})",
-        args.bots_per_match,
+        bots_per_match,
         bot_specs.len(),
     );
 
     eprintln!(
-        "Playing {} matches of {} ({} bots × {}-per-match)…",
+        "Playing {} matches of {game} ({} bots × {bots_per_match}-per-match)…",
         schedule.len(),
-        args.game,
         bot_specs.len(),
-        args.bots_per_match,
     );
 
-    let parallel = args.parallel.clamp(1, schedule.len()).max(1);
+    let parallel = parallel_request.clamp(1, schedule.len()).max(1);
     eprintln!("  (--parallel {parallel})");
-    let config = run_config(args.allow_slow_bots, args.abort_on_player_error);
+    let config: RunConfig = engine.into();
     let mut records: Vec<MatchRecord> = Vec::with_capacity(schedule.len());
     if parallel == 1 {
         // Sequential path keeps the per-match "[i/N] seed=... a vs b"
@@ -1060,12 +1008,12 @@ fn cmd_compare(args: CompareArgs) -> Result<()> {
                 m.seed,
                 names.join(" vs "),
             );
-            let rec = tournament::run_match_named(&args.game, &entries, m.seed, config.clone())
+            let rec = tournament::run_match_named(&game, &entries, m.seed, config.clone())
                 .with_context(|| format!("match {} ({})", i + 1, names.join(" vs ")))?;
             records.push(rec);
         }
     } else {
-        play_schedule_parallel(&args.game, &bot_specs, schedule, config, parallel, |line| {
+        play_schedule_parallel(&game, &bot_specs, schedule, engine, parallel, |line| {
             let rec: MatchRecord = serde_json::from_str(&line)
                 .with_context(|| format!("parsing worker record `{line}`"))?;
             records.push(rec);
@@ -1088,12 +1036,12 @@ fn cmd_compare(args: CompareArgs) -> Result<()> {
         print_compare_ranking(&report, &bot_specs);
     }
 
-    if args.record_history {
+    if record_history_flag {
         let participants: Vec<(String, String)> = resolved
             .iter()
             .map(|r| (r.name.clone(), r.lang.clone()))
             .collect();
-        record_history(&args.game, &participants, &report)?;
+        record_history(&game, &participants, &report)?;
     }
     Ok(())
 }
