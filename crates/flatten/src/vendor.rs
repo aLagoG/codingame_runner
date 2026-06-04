@@ -320,51 +320,6 @@ pub fn classify(pkg: &Package, build_outputs: Option<&BuildScriptOutput>) -> Cla
     Classification::Vendorable
 }
 
-/// Heuristic: does the dep's `src/lib.rs` (or `src/main.rs`) contain
-/// `include!(concat!(env!("OUT_DIR"), …))`? If so, capturing the
-/// build-script's `OUT_DIR` is enough to vendor the dep — the
-/// build-script-generated source gets spliced inline. If not, the
-/// build script's effects (linking native libs, setting RUSTC_LINK_*
-/// directives, etc.) aren't recoverable and we must refuse vendoring.
-fn dep_uses_out_dir_include(pkg: &Package) -> bool {
-    let Some(manifest_dir) = pkg.manifest_path.parent() else {
-        return false;
-    };
-    // Walk every `.rs` under src/ — env!("OUT_DIR") often lives in a
-    // submodule (e.g. windows-sys' generated bindings live in
-    // src/Windows.rs included from a sub-mod). Pre-fix only lib.rs/
-    // main.rs were checked, so deps with OUT_DIR include hidden in a
-    // submod were wrongly classified Unvendorable.
-    let src_dir = manifest_dir.join("src");
-    let needle = "env!(\"OUT_DIR\")";
-    walk_for_needle(src_dir.as_std_path(), needle)
-}
-
-/// Recursively walk `dir` returning true if any `.rs` file contains
-/// `needle`. Stops as soon as a hit is found. Silently skips IO errors.
-fn walk_for_needle(dir: &std::path::Path, needle: &str) -> bool {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return false;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Ok(meta) = entry.metadata() else {
-            continue;
-        };
-        if meta.is_dir() {
-            if walk_for_needle(&path, needle) {
-                return true;
-            }
-        } else if meta.is_file()
-            && path.extension().and_then(|e| e.to_str()) == Some("rs")
-            && let Ok(src) = std::fs::read_to_string(&path)
-            && src.contains(needle)
-        {
-            return true;
-        }
-    }
-    false
-}
 
 /// Names of every proc-macro crate in the dep graph (i.e. crates the
 /// classifier marked as `Unvendorable("proc-macro")`). Used by the
@@ -2991,7 +2946,7 @@ fn rewrite_for_vendoring(
         &mut edits,
     );
     collect_dollar_crate_rewrites(&file, crate_name, siblings, &deleted, &mut edits)?;
-    collect_macro_export_rewrites(&file, src, features, &deleted, &mut edits);
+    collect_macro_export_rewrites(&file, features, &deleted, &mut edits);
     collect_wrapper_macro_export_rewrites(&file, &deleted, &mut edits);
     // Cross-file companion to `walk_macro_export_rewrites`'s in-file
     // `pub use NAME;` demoter: catches `pub use NAME;` and
@@ -4033,12 +3988,11 @@ fn has_local_inner_macros(attrs: &[syn::Attribute]) -> bool {
 /// mod (without `#[macro_export]` lifting the macro to the wrong crate root).
 fn collect_macro_export_rewrites(
     file: &syn::File,
-    src: &str,
     features: &HashSet<String>,
     deleted: &[Range<usize>],
     edits: &mut Vec<(Range<usize>, String)>,
 ) {
-    walk_macro_export_rewrites(&file.items, src, features, deleted, edits);
+    walk_macro_export_rewrites(&file.items, features, deleted, edits);
 }
 
 /// Recursive walker — needs parent-scope context (the sibling items list)
@@ -4046,7 +4000,6 @@ fn collect_macro_export_rewrites(
 /// conflicting `pub(crate) use NAME;`.
 fn walk_macro_export_rewrites(
     items: &[syn::Item],
-    src: &str,
     features: &HashSet<String>,
     deleted: &[Range<usize>],
     edits: &mut Vec<(Range<usize>, String)>,
@@ -4056,7 +4009,7 @@ fn walk_macro_export_rewrites(
         if let syn::Item::Mod(m) = item
             && let Some((_, inner)) = &m.content
         {
-            walk_macro_export_rewrites(inner, src, features, deleted, edits);
+            walk_macro_export_rewrites(inner, features, deleted, edits);
         }
         let syn::Item::Macro(im) = item else { continue };
         if !im.mac.path.is_ident("macro_rules") {

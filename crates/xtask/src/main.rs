@@ -545,8 +545,8 @@ fn read_clipboard() -> Result<String> {
 }
 
 /// Build the workspace under the `profiling` cargo profile (release
-/// + full debug info), then drive the resulting tournament binary
-/// under `samply record`. samply's local server opens the
+/// optimizations + full debug info), then drive the resulting tournament
+/// binary under `samply record`. samply's local server opens the
 /// Firefox-profiler view for the recorded trace.
 ///
 /// We use a dedicated cargo profile rather than `release` for two
@@ -966,11 +966,10 @@ fn new_bot(game: &str, bot: &str, lang: BotLang, from_existing: Option<&str>) ->
 ///
 /// Resolution rules for which language(s) to retire:
 ///   * `--lang rust|cpp` — exactly that variant; errors if missing.
-///   * `--lang both`     — wipe both variants if present (each missing
-///                         one is silently skipped).
-///   * (no `--lang`)     — auto-detect: if exactly one variant exists
-///                         retire it; if both exist, error and demand
-///                         an explicit `--lang`.
+///   * `--lang both` — wipe both variants if present (each missing one
+///     is silently skipped).
+///   * (no `--lang`) — auto-detect: if exactly one variant exists retire
+///     it; if both exist, error and demand an explicit `--lang`.
 ///
 /// Safety checks (skip with `--force`):
 ///   * Bot's `bot.toml` has `champion = true`.

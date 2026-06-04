@@ -91,7 +91,7 @@ struct Player {
         }
     }
 
-    Player(char x, char y, char id, char index) : p(x, y), id(id), index(index) {}
+    Player(char x, char y, char id, char index) : id(id), index(index), p(x, y) {}
     bool can_move() {
         for (auto& move : MOVES) {
             p += move.delta;

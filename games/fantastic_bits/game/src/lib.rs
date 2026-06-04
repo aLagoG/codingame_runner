@@ -254,7 +254,6 @@ impl Game for FantasticBitsGame {
     const INITIAL_TURN_TIMEOUT_MS: u64 = 1000;
     const TURN_TIMEOUT_MS: u64 = 100;
 
-
     type InitialInput = InitialInput;
     type Input = TurnInput;
     type Output = TurnOutput;
@@ -1276,6 +1275,7 @@ fn push_wall_hit(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_disc_disc_toi(
     out: &mut Vec<CollisionEvent>,
     a_kind: EntityRef,
@@ -1302,6 +1302,7 @@ fn push_disc_disc_toi(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_disc_static_toi(
     out: &mut Vec<CollisionEvent>,
     kind: EntityRef,

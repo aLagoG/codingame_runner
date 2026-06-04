@@ -263,6 +263,7 @@ pub struct DynDynResolution {
 /// `DynamicEntityCollision.react`. Returns the velocity *deltas* and
 /// position-correction deltas (only non-zero when the two discs are
 /// already overlapping at call time).
+#[allow(clippy::too_many_arguments)]
 pub fn resolve_dyn_dyn(
     a_pos: V2,
     a_vel: V2,

@@ -269,8 +269,7 @@ fn cmd_run(args: RunArgs) -> Result<()> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
-    let file =
-        File::create(&output).with_context(|| format!("creating {}", output.display()))?;
+    let file = File::create(&output).with_context(|| format!("creating {}", output.display()))?;
     let out = BufWriter::new(file);
 
     let config: RunConfig = engine.into();
@@ -293,7 +292,11 @@ fn cmd_run(args: RunArgs) -> Result<()> {
                  doesn't compose with wave-by-wave checks); ignoring --parallel {parallel}."
             );
         }
-        anyhow::ensure!(wave_size >= 1, "--wave-size must be ≥ 1 (got {})", wave_size);
+        anyhow::ensure!(
+            wave_size >= 1,
+            "--wave-size must be ≥ 1 (got {})",
+            wave_size
+        );
         anyhow::ensure!(
             alpha > 0.0 && alpha < 1.0,
             "--alpha must be in (0, 1) (got {})",
