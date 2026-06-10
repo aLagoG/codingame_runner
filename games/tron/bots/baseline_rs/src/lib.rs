@@ -65,8 +65,14 @@ impl GameState {
                 .is_none_or(|owner| !self.alive[owner.get() as usize])
     }
 
+    fn alive_ids(&self) -> impl Iterator<Item = ID> + '_ {
+        (1..=MAX_PLAYERS as u8)
+            .filter(move |&i| self.alive[i as usize])
+            .map(|i| ID::new(i).unwrap())
+    }
+
     fn alive_count(&self) -> usize {
-        (1..=MAX_PLAYERS).filter(|&i| self.alive[i]).count()
+        self.alive_ids().count()
     }
 
     fn is_game_over(&self) -> bool {
@@ -74,13 +80,9 @@ impl GameState {
     }
 
     fn winner_id(&self) -> Option<ID> {
-        if self.alive_count() == 1 {
-            (1..=MAX_PLAYERS as u8)
-                .find(|&i| self.alive[i as usize])
-                .and_then(NonZeroU8::new)
-        } else {
-            None
-        }
+        let mut iter = self.alive_ids();
+        let first = iter.next()?;
+        iter.next().is_none().then_some(first)
     }
 
     // scores[id] for id in 1..=MAX_PLAYERS. v1-style multiplicative
@@ -327,12 +329,21 @@ fn search(
         let mut s = [0i32; MAX_PLAYERS + 1];
         let penalty = (WIDTH * HEIGHT) as i32 * 2 * (MAX_DEPTH - depth + 1);
         s[cp_idx] = -penalty;
-        for i in 1..=MAX_PLAYERS {
-            if i != cp_idx && state.alive[i] {
-                s[i] = penalty;
+        for id in state.alive_ids() {
+            if id != current_player {
+                s[id.get() as usize] = penalty;
             }
         }
-        return (s, None);
+        // Pick an in-bounds neighbour as the fallback direction. The
+        // engine still needs a valid string from us this turn even
+        // though we're about to die. At non-root depths the parent
+        // discards this, but returning it unconditionally lets
+        // `decide` skip its own fallback path.
+        let fallback = MOVES
+            .iter()
+            .find(|(_, mv)| is_valid_pos(&(head + mv)))
+            .map_or(Direction::Down, |(d, _)| *d);
+        return (s, Some(fallback));
     }
 
     // Opponent dies — flip them out of the alive set and recurse.
@@ -381,19 +392,13 @@ pub fn decide(turn: &TurnInput, state: &mut GameState) -> TurnOutput {
         }
     }
 
-    let (_, best_dir) = search(state, state.my_id, 0);
-
-    // `best_dir` is `None` only when we had no legal moves at depth
-    // 0. Pick an in-bounds direction so we still emit something the
-    // engine accepts (and crash into a wall instead of forfeiting).
-    let direction = best_dir.unwrap_or_else(|| {
-        let my_head = state.heads[state.my_id.get() as usize];
-        MOVES
-            .iter()
-            .find(|(_, mv)| is_valid_pos(&(my_head + mv)))
-            .map(|(d, _)| *d)
-            .unwrap_or(Direction::Down)
-    });
+    // At depth 0 `search` always returns Some: the for-loop sets it
+    // if any move is passable, and the suicide branch sets it as a
+    // fallback otherwise. The terminal branches (game-over, depth
+    // cap) can't fire at root.
+    let direction = search(state, state.my_id, 0)
+        .1
+        .expect("search at root always returns a direction");
 
     TurnOutput { direction }
 }
