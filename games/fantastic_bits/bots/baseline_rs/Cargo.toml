@@ -9,4 +9,3 @@ fantastic_bits_defs.workspace = true
 # thiserror / tracing via the runner side, which the flatten step
 # can't vendor. `bot_common` is the trimmed bot-facing surface.
 bot_common.workspace = true
-anyhow.workspace = true

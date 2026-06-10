@@ -3,13 +3,29 @@
 //!
 //! Just three traits — `ReadFrom`, `WriteTo`, and the `SingleLine`
 //! marker that auto-derives them for any `FromStr + Display` type.
-//! Plus `()` impls for games whose `InitialInput` is empty.
+//! Plus `()` impls for games whose `InitialInput` is empty, and the
+//! `invalid_data` helper for building `io::Error`s in `FromStr` impls.
 
 use std::{
     fmt::Display,
-    io::{self, BufRead, Write},
+    io::{self, BufRead, ErrorKind, Write},
     str::FromStr,
 };
+
+// ============================================================
+//  Error helper
+// ============================================================
+
+/// Build an `io::Error` with `ErrorKind::InvalidData` from anything
+/// printable. The bot wire format hand-rolls its parsing in each
+/// game's `defs` crate, and this is the one-liner that the resulting
+/// `FromStr` / `ReadFrom` impls use to surface "the engine sent us
+/// something we couldn't parse". Picking `io::Error` as the universal
+/// error type means bots take zero non-std deps — anyhow was the
+/// previous choice and accounted for ~75% of the bundled output.
+pub fn invalid_data<E: Display>(e: E) -> io::Error {
+    io::Error::new(ErrorKind::InvalidData, e.to_string())
+}
 
 // ============================================================
 //  Wire-format primitives (stdio bots)
@@ -22,18 +38,18 @@ use std::{
 pub trait SingleLine {}
 
 pub trait ReadFrom: Sized {
-    fn read_from(r: &mut impl BufRead) -> anyhow::Result<Self>;
+    fn read_from(r: &mut impl BufRead) -> io::Result<Self>;
 }
 
 impl<T> ReadFrom for T
 where
     T: FromStr + SingleLine,
-    T::Err: Into<anyhow::Error>,
+    T::Err: Display,
 {
-    fn read_from(r: &mut impl BufRead) -> anyhow::Result<Self> {
+    fn read_from(r: &mut impl BufRead) -> io::Result<Self> {
         let mut s = String::new();
         r.read_line(&mut s)?;
-        s.parse().map_err(Into::into)
+        s.parse().map_err(invalid_data)
     }
 }
 
@@ -67,7 +83,7 @@ where
 
 // `()` impls — useful for games whose `InitialInput` is empty.
 impl ReadFrom for () {
-    fn read_from(_: &mut impl BufRead) -> anyhow::Result<Self> {
+    fn read_from(_: &mut impl BufRead) -> io::Result<Self> {
         Ok(())
     }
 }

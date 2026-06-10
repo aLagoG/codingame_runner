@@ -1,6 +1,6 @@
 use std::{
     fmt::Display,
-    io::{BufRead, Write},
+    io::{self, BufRead, Write},
     str::FromStr,
 };
 
@@ -34,7 +34,7 @@ impl Display for TurnOutput {
 }
 
 impl FromStr for TurnOutput {
-    type Err = anyhow::Error;
+    type Err = io::Error;
     fn from_str(_s: &str) -> Result<Self, Self::Err> {
         Ok(TurnOutput::default())
     }
@@ -43,13 +43,13 @@ impl FromStr for TurnOutput {
 impl SingleLine for TurnOutput {}
 
 impl ReadFrom for TurnInput {
-    fn read_from(_r: &mut impl BufRead) -> anyhow::Result<Self> {
+    fn read_from(_r: &mut impl BufRead) -> io::Result<Self> {
         Ok(TurnInput::default())
     }
 }
 
 impl WriteTo for TurnInput {
-    fn write_to(&self, _w: &mut impl Write) -> std::io::Result<()> {
+    fn write_to(&self, _w: &mut impl Write) -> io::Result<()> {
         Ok(())
     }
 }

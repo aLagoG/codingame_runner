@@ -1,11 +1,10 @@
 use std::{
     fmt::Display,
-    io::{BufRead, Write},
+    io::{self, BufRead, Write},
     str::FromStr,
 };
 
-use anyhow::{Context, bail};
-use bot_common::{ReadFrom, SingleLine, WriteTo};
+use bot_common::{ReadFrom, SingleLine, WriteTo, invalid_data};
 
 // ============================================================
 //  Initial input
@@ -26,10 +25,10 @@ impl Display for InitialInput {
 }
 
 impl FromStr for InitialInput {
-    type Err = anyhow::Error;
+    type Err = io::Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(InitialInput {
-            my_team_id: s.trim().parse().context("parsing my_team_id")?,
+            my_team_id: s.trim().parse().map_err(invalid_data)?,
         })
     }
 }
@@ -229,43 +228,36 @@ impl Display for TurnInput {
 // ============================================================
 
 impl FromStr for EntityKind {
-    type Err = anyhow::Error;
+    type Err = io::Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s.trim() {
             "WIZARD" => EntityKind::Wizard,
             "OPPONENT_WIZARD" => EntityKind::OpponentWizard,
             "SNAFFLE" => EntityKind::Snaffle,
             "BLUDGER" => EntityKind::Bludger,
-            _ => bail!("Unrecognized entity kind {s:?}"),
+            other => return Err(invalid_data(format!("Unrecognized entity kind {other:?}"))),
         })
     }
 }
 
 impl FromStr for Entity {
-    type Err = anyhow::Error;
+    type Err = io::Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut it = s.split_whitespace();
-        let id: i32 = it.next().context("missing id")?.parse()?;
-        let kind: EntityKind = it.next().context("missing kind")?.parse()?;
-        let x: i32 = it.next().context("missing x")?.parse()?;
-        let y: i32 = it.next().context("missing y")?.parse()?;
-        let vx: i32 = it.next().context("missing vx")?.parse()?;
-        let vy: i32 = it.next().context("missing vy")?.parse()?;
-        let state: i32 = it.next().context("missing state")?.parse()?;
         Ok(Entity {
-            id,
-            kind,
-            x,
-            y,
-            vx,
-            vy,
-            state,
+            id: next_i32(&mut it, "id")?,
+            kind: next_field(&mut it, "kind")?.parse()?,
+            x: next_i32(&mut it, "x")?,
+            y: next_i32(&mut it, "y")?,
+            vx: next_i32(&mut it, "vx")?,
+            vy: next_i32(&mut it, "vy")?,
+            state: next_i32(&mut it, "state")?,
         })
     }
 }
 
 impl FromStr for ActionKind {
-    type Err = anyhow::Error;
+    type Err = io::Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s.trim() {
             "MOVE" => ActionKind::Move,
@@ -274,48 +266,52 @@ impl FromStr for ActionKind {
             "PETRIFICUS" => ActionKind::Petrificus,
             "ACCIO" => ActionKind::Accio,
             "FLIPENDO" => ActionKind::Flipendo,
-            _ => bail!("Unrecognized action kind {s:?}"),
+            other => return Err(invalid_data(format!("Unrecognized action kind {other:?}"))),
         })
     }
 }
 
 impl FromStr for WizardAction {
-    type Err = anyhow::Error;
+    type Err = io::Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut it = s.split_whitespace();
-        let kind: ActionKind = it.next().context("missing action kind")?.parse()?;
+        let kind: ActionKind = next_field(&mut it, "action kind")?.parse()?;
         match kind {
-            ActionKind::Move | ActionKind::Throw => {
-                let x: i32 = it.next().context("missing x")?.parse()?;
-                let y: i32 = it.next().context("missing y")?.parse()?;
-                let power: i32 = it.next().context("missing power/thrust")?.parse()?;
-                Ok(WizardAction {
-                    kind,
-                    x,
-                    y,
-                    power,
-                    target_id: 0,
-                })
-            }
-            _ => {
-                let target_id: i32 = it.next().context("missing target id")?.parse()?;
-                Ok(WizardAction {
-                    kind,
-                    x: 0,
-                    y: 0,
-                    power: 0,
-                    target_id,
-                })
-            }
+            ActionKind::Move | ActionKind::Throw => Ok(WizardAction {
+                kind,
+                x: next_i32(&mut it, "x")?,
+                y: next_i32(&mut it, "y")?,
+                power: next_i32(&mut it, "power/thrust")?,
+                target_id: 0,
+            }),
+            _ => Ok(WizardAction {
+                kind,
+                x: 0,
+                y: 0,
+                power: 0,
+                target_id: next_i32(&mut it, "target id")?,
+            }),
         }
     }
 }
 
 impl FromStr for TurnInput {
-    type Err = anyhow::Error;
+    type Err = io::Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::read_from(&mut s.as_bytes())
     }
+}
+
+// Helpers for the whitespace-split parsing pattern used by the
+// `FromStr` impls above. Without these, every field becomes a
+// 3-method chain (`.next().ok_or_else(…).?.parse().map_err(…)?`).
+fn next_field<'a>(it: &mut std::str::SplitWhitespace<'a>, field: &str) -> io::Result<&'a str> {
+    it.next()
+        .ok_or_else(|| invalid_data(format!("missing {field}")))
+}
+
+fn next_i32(it: &mut std::str::SplitWhitespace, field: &str) -> io::Result<i32> {
+    next_field(it, field)?.parse().map_err(invalid_data)
 }
 
 // ============================================================
@@ -332,19 +328,18 @@ impl SingleLine for WizardAction {}
 // ============================================================
 
 impl ReadFrom for TurnInput {
-    fn read_from(r: &mut impl BufRead) -> anyhow::Result<Self> {
-        let (my_score, my_magic) = read_two_ints(r).context("reading my score / magic")?;
-        let (opp_score, opp_magic) = read_two_ints(r).context("reading opp score / magic")?;
-        let num: i32 = read_one_int(r).context("reading entity count")?;
+    fn read_from(r: &mut impl BufRead) -> io::Result<Self> {
+        let (my_score, my_magic) = read_two_ints(r)?;
+        let (opp_score, opp_magic) = read_two_ints(r)?;
+        let num: i32 = read_one_int(r)?;
         if num < 0 {
-            bail!("negative entity count {num}");
+            return Err(invalid_data(format!("negative entity count {num}")));
         }
         let mut entities = Vec::with_capacity(num as usize);
-        for i in 0..num {
+        for _ in 0..num {
             let mut buf = String::new();
-            r.read_line(&mut buf)
-                .with_context(|| format!("reading entity {i}"))?;
-            entities.push(buf.parse().with_context(|| format!("parsing entity {i}"))?);
+            r.read_line(&mut buf)?;
+            entities.push(buf.parse()?);
         }
         Ok(TurnInput {
             my_score,
@@ -371,15 +366,14 @@ impl WriteTo for TurnInput {
 /// TurnOutput is two lines — explicitly not `SingleLine`, so we hand-roll
 /// the wire glue rather than getting the blanket impls.
 impl ReadFrom for TurnOutput {
-    fn read_from(r: &mut impl BufRead) -> anyhow::Result<Self> {
+    fn read_from(r: &mut impl BufRead) -> io::Result<Self> {
         let mut a = String::new();
-        r.read_line(&mut a).context("reading primary wizard line")?;
+        r.read_line(&mut a)?;
         let mut b = String::new();
-        r.read_line(&mut b)
-            .context("reading secondary wizard line")?;
+        r.read_line(&mut b)?;
         Ok(TurnOutput {
-            primary: a.parse().context("parsing primary wizard action")?,
-            secondary: b.parse().context("parsing secondary wizard action")?,
+            primary: a.parse()?,
+            secondary: b.parse()?,
         })
     }
 }
@@ -392,20 +386,20 @@ impl WriteTo for TurnOutput {
     }
 }
 
-fn read_one_int(r: &mut impl BufRead) -> anyhow::Result<i32> {
+fn read_one_int(r: &mut impl BufRead) -> io::Result<i32> {
     let mut buf = String::new();
     r.read_line(&mut buf)?;
-    Ok(buf.trim().parse()?)
+    buf.trim().parse().map_err(invalid_data)
 }
 
-fn read_two_ints(r: &mut impl BufRead) -> anyhow::Result<(i32, i32)> {
+fn read_two_ints(r: &mut impl BufRead) -> io::Result<(i32, i32)> {
     let mut buf = String::new();
     r.read_line(&mut buf)?;
     let (a, b) = buf
         .trim()
         .split_once(' ')
-        .with_context(|| format!("expected two ints, got {buf:?}"))?;
-    Ok((a.parse()?, b.parse()?))
+        .ok_or_else(|| invalid_data(format!("expected two ints, got {buf:?}")))?;
+    Ok((a.parse().map_err(invalid_data)?, b.parse().map_err(invalid_data)?))
 }
 
 // ============================================================
@@ -415,7 +409,7 @@ fn read_two_ints(r: &mut impl BufRead) -> anyhow::Result<(i32, i32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anyhow::Result;
+    use std::io::Result;
 
     #[test]
     fn initial_input_round_trip() -> Result<()> {

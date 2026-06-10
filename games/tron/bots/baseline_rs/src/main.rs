@@ -4,7 +4,7 @@ use bot_common::{ReadFrom, WriteTo};
 use tron_baseline_rs::{GameState, decide, on_init};
 use tron_defs::{InitialInput, TurnInput};
 
-fn main() -> anyhow::Result<()> {
+fn main() -> io::Result<()> {
     let mut input = io::stdin().lock();
     let mut output = io::BufWriter::new(io::stdout().lock());
 

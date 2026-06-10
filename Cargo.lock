@@ -206,9 +206,6 @@ dependencies = [
 [[package]]
 name = "bot_common"
 version = "0.1.0"
-dependencies = [
- "anyhow",
-]
 
 [[package]]
 name = "bot_manifest"
@@ -760,7 +757,6 @@ checksum = "dea2df4cf52843e0452895c455a1a2cfbb842a1e7329671acf418fdc53ed4c59"
 name = "fantastic_bits_baseline_rs"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "bot_common",
  "fantastic_bits_defs",
 ]
@@ -769,7 +765,6 @@ dependencies = [
 name = "fantastic_bits_defs"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "bot_common",
 ]
 
@@ -2166,7 +2161,6 @@ dependencies = [
 name = "tron_baseline_rs"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "bot_common",
  "tron_defs",
 ]
@@ -2175,7 +2169,6 @@ dependencies = [
 name = "tron_defs"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "bot_common",
 ]
 

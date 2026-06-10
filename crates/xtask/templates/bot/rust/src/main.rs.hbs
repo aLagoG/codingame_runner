@@ -4,7 +4,7 @@ use bot_common::{ReadFrom, WriteTo};
 use {{crate_name}}::{decide, on_init};
 use {{game}}_defs::{InitialInput, TurnInput};
 
-fn main() -> anyhow::Result<()> {
+fn main() -> io::Result<()> {
     let mut input = io::stdin().lock();
     let mut output = io::BufWriter::new(io::stdout().lock());
 

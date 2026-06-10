@@ -4,7 +4,6 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-anyhow.workspace = true
 # Bot-facing surface only — deliberately NOT `common`, which would
 # drag serde/thiserror into the flattened bot bundle and break
 # CodinGame submission.

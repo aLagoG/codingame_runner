@@ -4,7 +4,7 @@ use bot_common::{ReadFrom, WriteTo};
 use fantastic_bits_baseline_rs::{decide, on_init};
 use fantastic_bits_defs::{InitialInput, TurnInput};
 
-fn main() -> anyhow::Result<()> {
+fn main() -> io::Result<()> {
     let mut input = io::stdin().lock();
     let mut output = io::BufWriter::new(io::stdout().lock());
     let init = InitialInput::read_from(&mut input)?;
