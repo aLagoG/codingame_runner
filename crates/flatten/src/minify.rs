@@ -253,22 +253,29 @@ fn is_char_literal_byte(b: u8) -> bool {
 
 /// Collapse runs of 3+ consecutive newlines down to 2 (one blank line),
 /// and trim leading newlines so a file's first line is the first real line.
+// Collapse runs of blank lines to at most one. Lines that are
+// entirely whitespace count as blank — comment stripping leaves
+// behind the original leading indentation, and without this they'd
+// register as "non-blank" content and defeat the collapser. Trailing
+// whitespace on emitted lines is also trimmed.
 fn collapse_blank_lines(s: &str) -> String {
-    let trimmed = s.trim_start_matches('\n');
-    let mut result = String::with_capacity(trimmed.len());
-    let mut consecutive = 0usize;
-    for c in trimmed.chars() {
-        if c == '\n' {
-            consecutive += 1;
-            if consecutive <= 2 {
-                result.push(c);
-            }
+    let mut out = String::with_capacity(s.len());
+    let mut blank_pending = false;
+    let mut written_any = false;
+    for line in s.lines() {
+        if line.chars().all(char::is_whitespace) {
+            blank_pending = written_any;
         } else {
-            consecutive = 0;
-            result.push(c);
+            if blank_pending {
+                out.push('\n');
+                blank_pending = false;
+            }
+            out.push_str(line.trim_end());
+            out.push('\n');
+            written_any = true;
         }
     }
-    result
+    out
 }
 
 #[cfg(test)]
@@ -440,6 +447,22 @@ mod tests {
         // Comments stripped, newlines preserved (then collapsed if needed).
         assert!(!m.contains("comment"));
         assert!(!m.contains("another"));
+    }
+
+    #[test]
+    fn stripped_indented_comments_dont_leave_whitespace_blank_lines() {
+        // The scanner copies the leading whitespace of a comment line
+        // to the output buffer before recognising the `//`, so a
+        // stripped indented comment leaves behind a whitespace-only
+        // line. `collapse_blank_lines` must treat those as blank or
+        // runs of stripped doc comments survive as visual blank-line
+        // gaps in the bundled output.
+        let src = "fn a() {}\n    // c1\n    // c2\n    // c3\nfn b() {}\n";
+        let m = minify(src);
+        // The three stripped comment lines collapse to a single blank
+        // line between the two functions (max one blank between
+        // content runs, just like a real source-level blank).
+        assert_eq!(m, "fn a() {}\n\nfn b() {}\n");
     }
 
     #[test]

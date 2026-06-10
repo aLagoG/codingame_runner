@@ -189,9 +189,12 @@ enum Command {
     /// paste into CodinGame's web editor.
     ///
     /// * C++ bots → `cpp_flatten` on `<game>/bots/<bot>_cpp/main.cpp`.
-    /// * Rust bots → `flatten` on `<game>/bots/<bot>_rs/` with the
-    ///   `--bin <crate_name>` selector, optionally with `--vendor`
-    ///   to inline transitive deps.
+    /// * Rust bots → `flatten --vendor` on `<game>/bots/<bot>_rs/`
+    ///   with the `--bin <crate_name>` selector. Vendoring is always
+    ///   on for Rust bots: the bot's own `lib.rs`, workspace deps
+    ///   (`tron_defs`, `bot_common`, …), and any non-CodinGame-shipped
+    ///   transitive deps are inlined as `mod <crate>` blocks. The
+    ///   CodinGame preset (anyhow, serde, …) stays as plain `use`s.
     ///
     /// Language is auto-detected from which bot directory exists. If
     /// both `<bot>_rs/` and `<bot>_cpp/` exist, `--lang` is required.
@@ -212,13 +215,10 @@ enum Command {
         /// `target/codingame/<game>_<bot>_bot.{rs,cpp}` based on lang.
         #[arg(short, long)]
         output: Option<PathBuf>,
-        /// Rust only: inline transitive deps into the flat output via
-        /// `flatten --vendor`. Required for a CodinGame-ready single
-        /// file; will error loudly listing any unvendorable deps.
-        #[arg(long)]
-        vendor: bool,
-        /// Rust only: keep this dep as a `use foo::…` reference rather
-        /// than inlining it. Repeatable. Forwarded to `flatten --external`.
+        /// Rust only: additional dep to keep as a `use foo::…` reference
+        /// rather than inlining it. Repeatable. Forwarded to `flatten
+        /// --external`. The CodinGame preset is always applied, so this
+        /// is only needed for deps outside that preset.
         #[arg(long = "external", value_name = "NAME", action = clap::ArgAction::Append)]
         external: Vec<String>,
     },
@@ -371,16 +371,8 @@ fn main() -> Result<()> {
             bot,
             lang,
             output,
-            vendor,
             external,
-        } => bundle(
-            &game,
-            bot.as_deref(),
-            lang,
-            output.as_deref(),
-            vendor,
-            &external,
-        )?,
+        } => bundle(&game, bot.as_deref(), lang, output.as_deref(), &external)?,
         Command::Statement {
             game,
             input,
@@ -677,7 +669,6 @@ fn bundle(
     bot: Option<&str>,
     lang_override: Option<BotLang>,
     output_override: Option<&Path>,
-    vendor: bool,
     external: &[String],
 ) -> Result<()> {
     let bots_dir = bots_dir(game);
@@ -713,9 +704,9 @@ fn bundle(
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
     match lang {
         BotLang::Cpp => {
-            if vendor || !external.is_empty() {
+            if !external.is_empty() {
                 eprintln!(
-                    "{} `--vendor` / `--external` are Rust-only; ignored for C++ bundle.",
+                    "{} `--external` is Rust-only; ignored for C++ bundle.",
                     s.code("warn:"),
                 );
             }
@@ -735,29 +726,27 @@ fn bundle(
             anyhow::ensure!(status.success(), "cpp_flatten exited with {status}");
         }
         BotLang::Rust => {
-            // Rust bots are pure `[[bin]]` (the stdio loop). Flatten the
-            // bin target; package + bin both inherit the crate name.
+            // The bin is a thin stdio shim that calls into the bot's
+            // sibling `lib.rs`; `flatten --vendor` inlines that lib
+            // plus the workspace deps (`tron_defs`, `bot_common`, …)
+            // so the output compiles standalone. The CodinGame preset
+            // is always applied so anyhow/serde/etc. stay as `use`s
+            // (CG ships them).
             let crate_name = format!("{game}_{bot}_rs");
             let mut cmd = std::process::Command::new(&cargo);
             cmd.args(["run", "--quiet", "-p", "flatten", "--"])
                 .arg(&rs_dir)
                 .args(["--bin", &crate_name])
                 .arg("-o")
-                .arg(&output);
-            if vendor {
-                cmd.arg("--vendor");
-                // CG ships these out of the box — no need to inline.
-                // Keep them as `use foo::…` references in the flat output.
-                // See crates/flatten/presets/codingame.txt.
-                cmd.args(["--external-preset", "codingame"]);
-                for ext in external {
-                    cmd.args(["--external", ext]);
-                }
-            } else if !external.is_empty() {
-                eprintln!(
-                    "{} `--external` requires `--vendor`; ignored.",
-                    s.code("warn:"),
-                );
+                .arg(&output)
+                .arg("--vendor")
+                .args(["--external-preset", "codingame"])
+                // Strip line + block comments from the bundled output.
+                // The auto-generated banner at the top stays put
+                // (flatten prepends it AFTER minifying).
+                .arg("--minify");
+            for ext in external {
+                cmd.args(["--external", ext]);
             }
             let status = cmd.status().context("invoking flatten binary")?;
             anyhow::ensure!(status.success(), "flatten exited with {status}");
