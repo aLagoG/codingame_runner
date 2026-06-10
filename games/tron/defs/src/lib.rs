@@ -1,6 +1,7 @@
 use std::{
     fmt::Display,
     io::{BufRead, Write},
+    ops::{Add, AddAssign, Sub, SubAssign},
     str::FromStr,
 };
 
@@ -13,11 +14,85 @@ use bot_common::{ReadFrom, SingleLine, WriteTo};
 /// `WriteTo` as no-ops via `bot_common`'s blanket `()` impls.
 pub type InitialInput = ();
 
-#[derive(Debug, PartialEq, Eq, Copy, Clone, Hash)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone, Hash, Default)]
 pub struct Pos {
     pub x: i32,
     pub y: i32,
 }
+
+impl Pos {
+    pub const fn new(x: i32, y: i32) -> Self {
+        Self { x, y }
+    }
+}
+
+macro_rules! impl_op {
+    ($trait:ident, $method:ident, $op:tt) => {
+        impl $trait<Pos> for Pos {
+            type Output = Pos;
+            fn $method(self, rhs: Pos) -> Pos {
+                Pos {
+                    x: self.x $op rhs.x,
+                    y: self.y $op rhs.y,
+                }
+            }
+        }
+
+        impl $trait<Pos> for &Pos {
+            type Output = Pos;
+            fn $method(self, rhs: Pos) -> Pos {
+                Pos {
+                    x: self.x $op rhs.x,
+                    y: self.y $op rhs.y,
+                }
+            }
+        }
+
+        impl $trait<&Pos> for Pos {
+            type Output = Pos;
+            fn $method(self, rhs: &Pos) -> Pos {
+                Self {
+                    x: self.x $op rhs.x,
+                    y: self.y $op rhs.y,
+                }
+            }
+        }
+
+        impl $trait<&Pos> for &Pos {
+            type Output = Pos;
+            fn $method(self, rhs: &Pos) -> Pos {
+                Pos {
+                    x: self.x $op rhs.x,
+                    y: self.y $op rhs.y,
+                }
+            }
+        }
+    };
+}
+
+impl_op!(Add, add, +);
+impl_op!(Sub, sub, -);
+
+macro_rules! impl_assign_op {
+    ($trait:ident, $method:ident, $op:tt) => {
+        impl $trait<Pos> for Pos {
+            fn $method(&mut self, rhs: Pos) {
+                self.x $op rhs.x;
+                self.y $op rhs.y;
+            }
+        }
+
+        impl $trait<&Pos> for Pos {
+            fn $method(&mut self, rhs: &Pos) {
+                self.x $op rhs.x;
+                self.y $op rhs.y;
+            }
+        }
+    };
+}
+
+impl_assign_op!(AddAssign, add_assign, +=);
+impl_assign_op!(SubAssign, sub_assign, -=);
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub struct Line {
