@@ -14,6 +14,12 @@ int main()
 {
     std::ios_base::sync_with_stdio(false);
 
+    // Signal readiness to the runner so it can stop sleeping and start
+    // measuring turn-1 latency from a clean baseline. `std::endl`
+    // flushes; `std::cerr` is unbuffered anyway but the explicit flush
+    // is defensive.
+    std::cerr << "READY" << std::endl;
+
     InitialInput init;
     if (!(std::cin >> init)) return 0;
     tron_v2_cpp::on_init(init);

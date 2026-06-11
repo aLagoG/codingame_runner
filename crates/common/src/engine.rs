@@ -507,37 +507,70 @@ pub struct Player<G: Game> {
     _marker: PhantomData<G>,
 }
 
-/// Time `Player::spawn` waits after `fork+exec` before returning.
-/// Absorbs dynamic-linker / libc / C++ static-init time so it isn't
-/// billed against the bot's first `take_turn` call. The alternative
-/// (a `READY` handshake on stdout) would be cleaner but requires
-/// per-bot cooperation; a fixed sleep works for any bot and is the
-/// right default until we know we need finer control.
-///
-/// 100 ms is enough for our tron/fantastic_bits bots' startup on
-/// macOS/Linux even with a cold filesystem cache (50 ms left rare
-/// first-of-day outliers in the per-turn max). If a heavier bot ever
-/// shows tick-1 outliers in its stats, override via
-/// `CGR_SUBPROCESS_WARMUP_MS=<n>`.
-const SUBPROCESS_WARMUP_DEFAULT: Duration = Duration::from_millis(100);
+/// Upper bound on how long `Player::spawn` will wait for the bot's
+/// `READY\n` handshake on stderr. Generous because the wait is
+/// reactive — a bot that's actually ready in 10 ms only blocks for
+/// 10 ms; this limit only kicks in for hung / crashing bots. If
+/// anyone's legitimate cold start ever exceeds this, override via
+/// `CGR_READY_TIMEOUT_MS=<n>`.
+const READY_TIMEOUT_DEFAULT_MS: u64 = 5_000;
 
-fn subprocess_warmup() -> Duration {
-    std::env::var("CGR_SUBPROCESS_WARMUP_MS")
+fn ready_timeout_ms() -> u64 {
+    std::env::var("CGR_READY_TIMEOUT_MS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
-        .map(Duration::from_millis)
-        .unwrap_or(SUBPROCESS_WARMUP_DEFAULT)
+        .unwrap_or(READY_TIMEOUT_DEFAULT_MS)
 }
 
 impl<G: Game> Player<G> {
     pub fn spawn(cmd: &mut Command) -> io::Result<Self> {
-        let mut child = cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).spawn()?;
+        let mut child = cmd
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
         let stdin = child.stdin.take().expect("piped stdin missing");
         let stdout = BufReader::new(child.stdout.take().expect("piped stdout missing"));
-        // Wait out the bot's process-startup cost so it doesn't
-        // contaminate the first `take_turn` measurement. See
-        // `SUBPROCESS_WARMUP_DEFAULT` for the rationale.
-        std::thread::sleep(subprocess_warmup());
+        let mut stderr = BufReader::new(child.stderr.take().expect("piped stderr missing"));
+
+        // Wait for the bot's READY handshake (any line on stderr). This
+        // replaces the old fixed-100 ms warmup sleep — cold-start cost
+        // (dynamic linker, libc init, C++ static init) is now absorbed
+        // exactly instead of fudged, so turn-1 latency is measured from
+        // a clean baseline. Bots emit the signal at the top of `main`.
+        let timeout_ms = ready_timeout_ms();
+        match wait_readable(&stderr, timeout_ms) {
+            WaitOutcome::Ready => {
+                let mut line = String::new();
+                stderr.read_line(&mut line)?;
+                // Content is unchecked — any line is the signal.
+            }
+            WaitOutcome::Eof => {
+                return Err(io::Error::other(
+                    "bot stderr closed before READY signal — did it crash?",
+                ));
+            }
+            WaitOutcome::Timeout => {
+                let _ = child.kill();
+                return Err(io::Error::other(format!(
+                    "bot did not emit READY within {timeout_ms}ms",
+                )));
+            }
+            WaitOutcome::Io(e) => return Err(e),
+        }
+
+        // Forward subsequent stderr to the runner's stderr so bot
+        // debug output (eprintln!/std::cerr) still surfaces. One
+        // thread per bot — cheap; lives until the bot's stderr
+        // closes (which happens when the bot exits).
+        std::thread::spawn(move || {
+            let mut line = String::new();
+            while stderr.read_line(&mut line).map(|n| n > 0).unwrap_or(false) {
+                eprint!("{line}");
+                line.clear();
+            }
+        });
+
         Ok(Self {
             stdin,
             stdout,
@@ -601,11 +634,14 @@ enum WaitOutcome {
 /// `Timeout` (budget elapsed with no data), or `Io` on a syscall
 /// error. Unix-only via `libc::poll`; on other platforms it returns
 /// `Ready` immediately, meaning the timeout is unenforced and the
-/// subsequent `fill_buf` will block.
+/// subsequent `fill_buf` will block. Generic over the reader's
+/// underlying type so it works for both `ChildStdout` (turn budget)
+/// and `ChildStderr` (READY handshake on spawn).
 #[cfg(unix)]
-fn wait_readable(reader: &BufReader<ChildStdout>, budget_ms: u64) -> WaitOutcome {
-    use std::os::unix::io::AsRawFd;
-
+fn wait_readable<R: std::os::unix::io::AsRawFd>(
+    reader: &BufReader<R>,
+    budget_ms: u64,
+) -> WaitOutcome {
     // BufReader's internal buffer might already have data from a
     // previous `fill_buf` call; if so, poll would block waiting for
     // *new* bytes that never come. Caller checks `buffer().is_empty()`
@@ -636,7 +672,7 @@ fn wait_readable(reader: &BufReader<ChildStdout>, budget_ms: u64) -> WaitOutcome
 }
 
 #[cfg(not(unix))]
-fn wait_readable(_reader: &BufReader<ChildStdout>, _budget_ms: u64) -> WaitOutcome {
+fn wait_readable<R>(_reader: &BufReader<R>, _budget_ms: u64) -> WaitOutcome {
     // No portable std-only mechanism; fall back to "trust the read
     // will return promptly" until someone wires WaitForSingleObject
     // on Windows.
