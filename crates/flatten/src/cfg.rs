@@ -359,13 +359,28 @@ pub(crate) fn eval_cfg(expr: &CfgExpr, features: &HashSet<String>) -> CfgEval {
             }
         }
         CfgExpr::Bare(name) => {
-            // Compiler-set predicates (per the Rust reference: target_*
-            // family, unix/windows shorthands, debug_assertions, test,
-            // proc_macro, panic) MUST stay Unknown so they're preserved
-            // verbatim in the flat output and evaluated by rustc at
-            // user compile time. This is what makes the flat output
-            // target-portable — vendor on macOS, run on Linux, the
-            // user's compile picks the right target branches.
+            // `test` is compiler-set only when rustc runs with
+            // `--test` (i.e. `cargo test`). Vendored output is
+            // consumed by plain `rustc` / `cargo build`, so
+            // `cfg(test)` items are dead code at every downstream
+            // compilation. Evaluating to False lets the deletion
+            // pass strip them entirely (typically the inline
+            // `mod tests { ... }` blocks at the bottom of a crate)
+            // instead of letting them survive as Unknown and bloat
+            // the flat output. Folds correctly through `not`/`any`/
+            // `all` because the rest of the evaluator already knows
+            // how to propagate False.
+            if name == "test" {
+                return CfgEval::False;
+            }
+            // Other compiler-set predicates (per the Rust reference:
+            // target_* family, unix/windows shorthands,
+            // debug_assertions, proc_macro, panic) MUST stay Unknown
+            // so they're preserved verbatim in the flat output and
+            // evaluated by rustc at user compile time. This is what
+            // makes the flat output target-portable — vendor on
+            // macOS, run on Linux, the user's compile picks the
+            // right target branches.
             //
             // Critically, this also means we must NOT consult
             // `features` for these names. crossterm has a Cargo
@@ -682,14 +697,18 @@ mod tests {
         // target_arch, target_feature, target_os, target_family,
         // target_env, target_abi, target_endian, target_pointer_width,
         // target_vendor, target_has_atomic, panic, plus the
-        // unix/windows shorthands and debug_assertions/test/proc_macro.
+        // unix/windows shorthands and debug_assertions/proc_macro.
         // ALL must stay Unknown so the flat output is target-portable.
+        //
+        // `test` is also compiler-set per the reference, but vendored
+        // output is never compiled with `--test`, so we deliberately
+        // resolve it to False (see `eval_bare_test`). It's excluded
+        // from this "must be Unknown" list as a result.
         let f = features([]);
         for cfg_src in [
             "unix",
             "windows",
             "debug_assertions",
-            "test",
             "proc_macro",
             "target_arch = \"x86_64\"",
             "target_feature = \"avx\"",
@@ -766,6 +785,28 @@ mod tests {
         // An unknown bare cfg with no feature: depends on whether
         // it's in KNOWN_FALSE_BARE_CFGS.
         assert_eq!(eval_cfg(&parse("unrelated"), &f), CfgEval::Unknown);
+    }
+
+    #[test]
+    fn eval_bare_test() {
+        // `test` evaluates False at vendor time so the deletion pass
+        // strips inline `#[cfg(test)] mod tests { ... }` blocks from
+        // the flat output. Folds correctly through not/any/all.
+        let f = features([]);
+        assert_eq!(eval_cfg(&parse("test"), &f), CfgEval::False);
+        assert_eq!(eval_cfg(&parse("not(test)"), &f), CfgEval::True);
+        // any(test, feature=X): test=False, feature=X depends on
+        // whether X is enabled. With X enabled → True. Without →
+        // False (both arms False).
+        let f_with_x = features(["x"]);
+        assert_eq!(
+            eval_cfg(&parse("any(test, feature = \"x\")"), &f_with_x),
+            CfgEval::True
+        );
+        assert_eq!(
+            eval_cfg(&parse("any(test, feature = \"missing\")"), &f),
+            CfgEval::False
+        );
     }
 
     #[test]
