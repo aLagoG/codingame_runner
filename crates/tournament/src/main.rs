@@ -1180,11 +1180,20 @@ fn resolve_and_build(
     Ok(resolved)
 }
 
-/// Find the bin for `<game>/<bot>[:<lang>]` and read its `bot.toml`
-/// to recover the language. Accepts `<bot>:rs` or `<bot>:cpp` as an
-/// explicit qualifier when both variants exist. `cargo_profile` is
-/// the cargo build profile whose output dir we resolve from
-/// (`target/<cargo_profile>/<bin>`).
+/// Find the bin for `<game>/<bot>[:<lang>][@stable]` and read its
+/// `bot.toml` to recover the language. Accepts:
+///   * `<bot>` — auto-detected lang, working-tree binary.
+///   * `<bot>:rs` / `<bot>:cpp` — explicit lang.
+///   * `<bot>@stable` (and `<bot>:rs@stable` etc.) — resolves to
+///     `.snapshots/stable/<crate>` instead of `target/<profile>/<crate>`.
+///     The stable binary is captured by `cargo xtask snapshot-bots`
+///     (called automatically by the post-commit hook installed via
+///     `cargo xtask install-hooks`). Lets `tournament compare` mix
+///     working-tree and last-committed binaries in the same run.
+///
+/// `cargo_profile` is the cargo build profile whose output dir we
+/// resolve from for the working-tree case (`target/<cargo_profile>/<bin>`).
+/// Ignored for `@stable` — snapshots are always release builds.
 fn resolve_bot(game: &str, spec: &str, cargo_profile: &str) -> Result<ResolvedBot> {
     let bots_dir = PathBuf::from("games").join(game).join("bots");
     anyhow::ensure!(
@@ -1193,12 +1202,23 @@ fn resolve_bot(game: &str, spec: &str, cargo_profile: &str) -> Result<ResolvedBo
         bots_dir.display(),
     );
 
+    // Peel the `@stable` suffix first so the rest of the parser
+    // only sees `<bot>[:<lang>]`.
+    let (head, is_stable) = match spec.split_once('@') {
+        Some((h, "stable")) => (h, true),
+        Some((_, other)) => bail!(
+            "unknown `@{other}` qualifier (only `@stable` is supported; \
+             see `cargo xtask iterate`)",
+        ),
+        None => (spec, false),
+    };
+
     // Parse `<bot>:<lang>` qualifier if present.
-    let (bot, explicit_lang): (&str, Option<&str>) = match spec.split_once(':') {
+    let (bot, explicit_lang): (&str, Option<&str>) = match head.split_once(':') {
         Some((b, "rs")) => (b, Some("rs")),
         Some((b, "cpp")) => (b, Some("cpp")),
         Some((_, other)) => bail!("unknown lang qualifier `:{other}` (expected `:rs` or `:cpp`)"),
-        None => (spec, None),
+        None => (head, None),
     };
 
     let rs_dir = bots_dir.join(format!("{bot}_rs"));
@@ -1219,12 +1239,31 @@ fn resolve_bot(game: &str, spec: &str, cargo_profile: &str) -> Result<ResolvedBo
     // Both rs and cpp bots produce a default-discovered bin named
     // after the crate, so the resolver doesn't need to special-case
     // lang.
-    let bin_path = PathBuf::from("target")
-        .join(cargo_profile)
-        .join(format!("{crate_name}{}", std::env::consts::EXE_SUFFIX));
+    let exe_suffix = std::env::consts::EXE_SUFFIX;
+    let (bin_path, display_name, name) = if is_stable {
+        let path = PathBuf::from(".snapshots")
+            .join("stable")
+            .join(format!("{crate_name}{exe_suffix}"));
+        anyhow::ensure!(
+            path.exists(),
+            "no stable snapshot at {} — run `cargo xtask snapshot-bots` once \
+             (or install the hook via `cargo xtask install-hooks`) before using @stable.",
+            path.display(),
+        );
+        // `name` doubles as the dedup key; suffixing with `@stable`
+        // keeps the regular and stable variants distinct without
+        // hitting the `#N` collision path.
+        let display = format!("{bot}@stable");
+        (path, display.clone(), display)
+    } else {
+        let path = PathBuf::from("target")
+            .join(cargo_profile)
+            .join(format!("{crate_name}{exe_suffix}"));
+        (path, bot.to_string(), bot.to_string())
+    };
     Ok(ResolvedBot {
-        name: bot.to_string(),
-        display_name: bot.to_string(),
+        name,
+        display_name,
         lang: lang.to_string(),
         crate_name,
         bin_path,

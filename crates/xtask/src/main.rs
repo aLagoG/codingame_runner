@@ -276,6 +276,52 @@ enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         tournament_args: Vec<String>,
     },
+    /// Build every bot crate in release mode and copy each binary
+    /// into `.snapshots/stable/`, with a sidecar `.toml` recording
+    /// the HEAD commit. Idempotent — re-running with no source
+    /// changes is a no-op (cargo's incremental cache plus a binary-
+    /// mtime check skips the copy). The post-commit hook installed
+    /// by `cargo xtask install-hooks` calls this in the background.
+    SnapshotBots {
+        /// Suppress progress output. Used by the post-commit hook
+        /// (which logs to `.snapshots/snapshot.log`).
+        #[arg(long)]
+        quiet: bool,
+    },
+    /// Install the `.git/hooks/post-commit` hook that snapshots all
+    /// bots after each commit. Opt-in — refuses to overwrite an
+    /// existing hook. Remove with `rm .git/hooks/post-commit`.
+    InstallHooks {
+        /// Replace an existing post-commit hook instead of bailing.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Iteration loop: rebuild the working-tree copy of `<bot>` and
+    /// play a focused tournament against its snapshotted `stable`
+    /// counterpart (the binary the post-commit hook captured at
+    /// HEAD). Prints a verdict identical to `tournament compare`.
+    /// Requires `.snapshots/stable/<crate>` to exist — run
+    /// `cargo xtask snapshot-bots` once (or install the hook) to
+    /// populate it.
+    Iterate {
+        /// Game the bot belongs to.
+        #[arg(long)]
+        game: String,
+        /// Bot stem (e.g. `baseline`, `v1`). When both rs and cpp
+        /// variants exist, qualify with `--lang`.
+        bot: String,
+        /// Force a specific language when both variants exist.
+        #[arg(long, value_enum)]
+        lang: Option<BotLang>,
+        /// Seeds per (combination × seat rotation). Default keeps
+        /// the loop snappy; bump for tighter verdicts.
+        #[arg(long, default_value_t = 50)]
+        rounds: u32,
+        /// Players per match. Default 2 for the standard "did my
+        /// edit help" comparison.
+        #[arg(long, default_value_t = 2)]
+        bots_per_match: u32,
+    },
 }
 
 /// Variables available in game-scaffolding templates (`templates/game/`).
@@ -384,6 +430,15 @@ fn main() -> Result<()> {
             rate,
             tournament_args,
         } => profile(output.as_deref(), rate, &tournament_args)?,
+        Command::SnapshotBots { quiet } => snapshot_bots(quiet)?,
+        Command::InstallHooks { force } => install_hooks(force)?,
+        Command::Iterate {
+            game,
+            bot,
+            lang,
+            rounds,
+            bots_per_match,
+        } => iterate(&game, &bot, lang, rounds, bots_per_match)?,
     }
 
     Ok(())
@@ -2182,6 +2237,361 @@ fn wire_game_registry(lib_rs_path: &str, name: &str, name_pascal: &str) -> Resul
     }
 
     fs::write(lib_rs_path, out)?;
+    Ok(())
+}
+
+// ============================================================
+//  Tests
+// ============================================================
+//  Snapshot + iterate (the `cargo xtask iterate` workflow)
+// ============================================================
+//
+// Three commands cooperate to give a fast edit-build-compare loop:
+//   * `snapshot-bots`  — captures every bot binary as the "stable"
+//                        baseline (one set, always reflecting HEAD).
+//   * `install-hooks`  — opt-in post-commit hook that fires
+//                        `snapshot-bots --quiet` in the background.
+//   * `iterate`        — rebuilds the working-tree copy of one bot,
+//                        plays it against the stable counterpart.
+//
+// Storage layout (gitignored — see `.gitignore`):
+//   .snapshots/
+//   ├── stable/
+//   │   ├── <crate_name>           # release binary
+//   │   └── <crate_name>.toml      # commit + built_at sidecar
+//   └── snapshot.log               # background-hook output
+
+/// `<repo>/.snapshots/` — local-only cache. Lives outside `target/`
+/// so `cargo clean` doesn't blow the stable baseline away. Always
+/// repo-root-relative; the caller is expected to run from the
+/// workspace root (every other xtask verb assumes this too).
+fn snapshots_dir() -> PathBuf {
+    PathBuf::from(".snapshots")
+}
+
+/// `<repo>/.snapshots/stable/` — one binary + sidecar per bot crate.
+fn snapshots_stable_dir() -> PathBuf {
+    snapshots_dir().join("stable")
+}
+
+/// One discovered bot crate. `crate_name` (`<game>_<bot>_<lang>`)
+/// matches what cargo produces under `target/release/`. The
+/// game/name/lang fields are kept alongside even though only
+/// `crate_name` is read today — future verbs (per-game snapshots,
+/// filtering by lang, etc.) will want them.
+#[allow(dead_code)]
+struct BotCrate {
+    game: String,
+    name: String,
+    lang: String,
+    crate_name: String,
+}
+
+/// Walk `games/*/bots/*/bot.toml` and collect every well-formed bot
+/// crate. Used by `snapshot-bots` to build + copy the whole fleet in
+/// one pass. Manifests that fail to read are silently skipped — they
+/// surface as missing binaries in the snapshot output anyway.
+fn discover_bot_crates() -> Result<Vec<BotCrate>> {
+    let mut out = Vec::new();
+    let games_dir = Path::new("games");
+    let Ok(game_entries) = fs::read_dir(games_dir) else {
+        return Ok(out);
+    };
+    for game_entry in game_entries.flatten() {
+        let game_path = game_entry.path();
+        if !game_path.is_dir() {
+            continue;
+        }
+        let game = match game_path.file_name().and_then(|n| n.to_str()) {
+            Some(g) => g.to_string(),
+            None => continue,
+        };
+        let bots_dir = game_path.join("bots");
+        let Ok(bot_entries) = fs::read_dir(&bots_dir) else {
+            continue;
+        };
+        for bot_entry in bot_entries.flatten() {
+            let bot_path = bot_entry.path();
+            if !bot_path.is_dir() {
+                continue;
+            }
+            let manifest_path = bot_path.join("bot.toml");
+            if !manifest_path.exists() {
+                continue;
+            }
+            let Ok(m) = BotManifest::read(&manifest_path) else {
+                continue;
+            };
+            let crate_name = format!("{game}_{}_{}", m.name, m.lang);
+            out.push(BotCrate {
+                game: game.clone(),
+                name: m.name,
+                lang: m.lang,
+                crate_name,
+            });
+        }
+    }
+    out.sort_by(|a, b| a.crate_name.cmp(&b.crate_name));
+    Ok(out)
+}
+
+/// `git rev-parse --short HEAD`. Surfaces a recognisable short SHA
+/// in the snapshot sidecar so `iterate` can warn when the working
+/// tree's HEAD has moved past the snapshot.
+fn git_head_short() -> Result<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .context("running `git rev-parse --short HEAD`")?;
+    anyhow::ensure!(
+        output.status.success(),
+        "`git rev-parse --short HEAD` failed: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    Ok(String::from_utf8(output.stdout)?.trim().to_string())
+}
+
+/// Hand-rolled lookup against the trivial 2-key TOML sidecar (no
+/// need to drag in a TOML parser when we control both producer and
+/// consumer). Format: `key = "value"` per line.
+fn parse_meta_field(text: &str, key: &str) -> Option<String> {
+    let prefix = format!("{key} = \"");
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix(&prefix) {
+            return Some(rest.trim_end_matches('"').to_string());
+        }
+    }
+    None
+}
+
+fn snapshot_bots(quiet: bool) -> Result<()> {
+    let s = Style::new();
+    let crates = discover_bot_crates()?;
+    anyhow::ensure!(
+        !crates.is_empty(),
+        "no bots discovered under games/*/bots/ — nothing to snapshot",
+    );
+
+    let commit = git_head_short().unwrap_or_else(|_| "unknown".into());
+    let built_at = now_rfc3339();
+
+    let stable_dir = snapshots_stable_dir();
+    fs::create_dir_all(&stable_dir)
+        .with_context(|| format!("creating {}", stable_dir.display()))?;
+
+    if !quiet {
+        eprintln!("Building {} bot crates (release)...", crates.len());
+    }
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let mut cmd = std::process::Command::new(&cargo);
+    cmd.args(["build", "--release"]);
+    for c in &crates {
+        cmd.arg("-p").arg(&c.crate_name);
+    }
+    if quiet {
+        cmd.stdout(std::process::Stdio::null());
+        cmd.stderr(std::process::Stdio::null());
+    }
+    // Don't bail on a non-zero exit — partial success is normal
+    // when one bot's source is broken mid-iteration. We snapshot
+    // whatever binaries actually exist below.
+    let _ = cmd.status().context("invoking cargo build")?;
+
+    let target_release = PathBuf::from("target").join("release");
+    let mut copied = 0usize;
+    let mut skipped: Vec<String> = Vec::new();
+    for c in &crates {
+        let src = target_release.join(format!("{}{}", c.crate_name, std::env::consts::EXE_SUFFIX));
+        let dst = stable_dir.join(format!("{}{}", c.crate_name, std::env::consts::EXE_SUFFIX));
+        if !src.exists() {
+            skipped.push(c.crate_name.clone());
+            continue;
+        }
+        fs::copy(&src, &dst)
+            .with_context(|| format!("copying {} → {}", src.display(), dst.display()))?;
+        let meta = format!("commit = \"{commit}\"\nbuilt_at = \"{built_at}\"\n");
+        let meta_path = stable_dir.join(format!("{}.toml", c.crate_name));
+        fs::write(&meta_path, meta)
+            .with_context(|| format!("writing {}", meta_path.display()))?;
+        copied += 1;
+    }
+
+    if !quiet {
+        eprintln!(
+            "{} snapshotted {copied} bot(s) → {} (commit {commit})",
+            s.ok("✓"),
+            stable_dir.display(),
+        );
+        if !skipped.is_empty() {
+            eprintln!(
+                "{} skipped (binary missing — likely build failed): {}",
+                s.code("warn:"),
+                skipped.join(", "),
+            );
+        }
+    }
+    Ok(())
+}
+
+const POST_COMMIT_HOOK: &str = "\
+#!/bin/sh
+# `cargo xtask iterate` snapshot hook.
+# Installed by `cargo xtask install-hooks`.
+# Rebuilds every bot in release mode and copies the binaries to
+# .snapshots/stable/ so `iterate` can play the working tree against
+# the last committed version. Logs go to .snapshots/snapshot.log so
+# commits stay silent.
+mkdir -p .snapshots
+nohup cargo xtask snapshot-bots --quiet >> .snapshots/snapshot.log 2>&1 &
+exit 0
+";
+
+fn install_hooks(force: bool) -> Result<()> {
+    let s = Style::new();
+    let hook_path = PathBuf::from(".git").join("hooks").join("post-commit");
+    let parent = hook_path
+        .parent()
+        .expect("hook path always has a parent dir");
+    fs::create_dir_all(parent)
+        .with_context(|| format!("creating {}", parent.display()))?;
+
+    if hook_path.exists() && !force {
+        anyhow::bail!(
+            "{} already exists; pass --force to replace it (or rm it manually)",
+            hook_path.display(),
+        );
+    }
+    fs::write(&hook_path, POST_COMMIT_HOOK)
+        .with_context(|| format!("writing {}", hook_path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&hook_path)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&hook_path, perms)?;
+    }
+
+    println!(
+        "{} wrote {} (post-commit snapshot hook)",
+        s.ok("✓"),
+        s.path(&hook_path.display().to_string()),
+    );
+    println!(
+        "  Each commit triggers `cargo xtask snapshot-bots --quiet` in the background."
+    );
+    println!("  Logs: {}", s.path(".snapshots/snapshot.log"));
+    println!(
+        "  First snapshot doesn't run automatically — kick it off once with `cargo xtask snapshot-bots`.",
+    );
+    Ok(())
+}
+
+fn iterate(
+    game: &str,
+    bot: &str,
+    lang_override: Option<BotLang>,
+    rounds: u32,
+    bots_per_match: u32,
+) -> Result<()> {
+    let s = Style::new();
+    let bots_dir = bots_dir(game);
+    anyhow::ensure!(
+        bots_dir.exists(),
+        "no game at {} — is `{game}` the right name?",
+        bots_dir.display(),
+    );
+
+    // Resolve which lang to play with. Same precedence as `bundle`'s
+    // `resolve_bundle_lang` — explicit override wins, otherwise auto
+    // by directory existence; ambiguous demands `--lang`.
+    let rs_exists = bots_dir.join(format!("{bot}_rs")).exists();
+    let cpp_exists = bots_dir.join(format!("{bot}_cpp")).exists();
+    let lang = match (lang_override, rs_exists, cpp_exists) {
+        (Some(BotLang::Rust), true, _) => "rs",
+        (Some(BotLang::Cpp), _, true) => "cpp",
+        (Some(BotLang::Rust), false, _) => {
+            anyhow::bail!("{bot}:rs not found under {}", bots_dir.display())
+        }
+        (Some(BotLang::Cpp), _, false) => {
+            anyhow::bail!("{bot}:cpp not found under {}", bots_dir.display())
+        }
+        (Some(BotLang::Both), _, _) => anyhow::bail!("`--lang both` is invalid for iterate"),
+        (None, true, false) => "rs",
+        (None, false, true) => "cpp",
+        (None, true, true) => anyhow::bail!(
+            "{bot} has both rs and cpp variants — qualify with `--lang rust` or `--lang cpp`",
+        ),
+        (None, false, false) => anyhow::bail!(
+            "no bot at {bot}_rs or {bot}_cpp under {}",
+            bots_dir.display(),
+        ),
+    };
+
+    let crate_name = format!("{game}_{bot}_{lang}");
+    let stable_bin = snapshots_stable_dir().join(format!("{crate_name}{}", std::env::consts::EXE_SUFFIX));
+    anyhow::ensure!(
+        stable_bin.exists(),
+        "no stable snapshot at {} — run `cargo xtask snapshot-bots` once \
+         (or install the hook via `cargo xtask install-hooks`) before iterating.",
+        stable_bin.display(),
+    );
+
+    // Drift check — surfaces "hook didn't fire" / "you forgot to
+    // commit" / "stable is way behind" without forcing a specific
+    // rule. Just shows both SHAs and lets the user judge.
+    let meta_path = snapshots_stable_dir().join(format!("{crate_name}.toml"));
+    if let Ok(text) = fs::read_to_string(&meta_path) {
+        let stable_commit = parse_meta_field(&text, "commit").unwrap_or_else(|| "?".into());
+        let head = git_head_short().unwrap_or_else(|_| "?".into());
+        if stable_commit == head {
+            println!(
+                "stable: commit {} (matches HEAD)",
+                s.code(&stable_commit),
+            );
+        } else {
+            // Could be either direction — hook hasn't fired yet
+            // (stable behind), or you reset / checked out past it
+            // (stable ahead). Show both SHAs and let the user judge.
+            println!(
+                "{} stable: commit {} | HEAD: {} — snapshot doesn't match HEAD",
+                s.code("note:"),
+                s.code(&stable_commit),
+                s.code(&head),
+            );
+        }
+    }
+
+    // Build the working-tree binary so tournament `--no-build` can
+    // pick it up from `target/release/`.
+    println!("Building working-tree {crate_name} (release)...");
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let status = std::process::Command::new(&cargo)
+        .args(["build", "--release", "-p", &crate_name])
+        .status()
+        .context("invoking cargo build")?;
+    anyhow::ensure!(status.success(), "cargo build failed");
+
+    // Shell out to the tournament binary using its `@stable`
+    // qualifier so the resolver looks under `.snapshots/stable/` instead
+    // of `target/release/` for the stable variant.
+    println!(
+        "Running tournament: {bot}:{lang} vs {bot}:{lang}@stable, {rounds} round(s) × seat-rotation...",
+    );
+    let bot_spec = format!("{bot}:{lang}");
+    let stable_spec = format!("{bot_spec}@stable");
+    let status = std::process::Command::new(&cargo)
+        .args(["run", "--release", "--quiet", "-p", "tournament", "--"])
+        .arg("compare")
+        .args(["--game", game])
+        .args(["--rounds", &rounds.to_string()])
+        .args(["--bots-per-match", &bots_per_match.to_string()])
+        .arg("--no-build")
+        .arg(&bot_spec)
+        .arg(&stable_spec)
+        .status()
+        .context("invoking tournament")?;
+    anyhow::ensure!(status.success(), "tournament failed");
     Ok(())
 }
 
