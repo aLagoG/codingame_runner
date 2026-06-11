@@ -1,11 +1,11 @@
 use std::{
     fmt::Display,
-    io::{self, BufRead, Write},
+    io::{BufRead, Write},
     ops::{Add, AddAssign, Sub, SubAssign},
     str::FromStr,
 };
 
-use bot_common::{ReadFrom, SingleLine, WriteTo, invalid_data};
+use bot_common::{BotError, BotResult, ReadFrom, SingleLine, WriteTo};
 
 /// Tron has no per-match init payload. The alias exists so generic
 /// code (the bot template, the runner) can name `<game>_defs::InitialInput`
@@ -169,22 +169,22 @@ impl Display for TurnOutput {
 
 // region: FromStr impls
 impl FromStr for Pos {
-    type Err = io::Error;
+    type Err = BotError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let (x, y) = s
             .trim()
-            .split_once(" ")
-            .ok_or_else(|| invalid_data(format!("Failed parsing {s} as Pos")))?;
+            .split_once(' ')
+            .ok_or_else(|| format!("Failed parsing {s} as Pos"))?;
         Ok(Pos {
-            x: x.parse().map_err(invalid_data)?,
-            y: y.parse().map_err(invalid_data)?,
+            x: x.parse()?,
+            y: y.parse()?,
         })
     }
 }
 
 impl FromStr for Line {
-    type Err = io::Error;
+    type Err = BotError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let s = s.trim();
@@ -192,7 +192,7 @@ impl FromStr for Line {
             .match_indices(' ')
             .nth(1)
             .map(|(i, _)| i)
-            .ok_or_else(|| invalid_data(format!("Failed parsing {s} as Line")))?;
+            .ok_or_else(|| format!("Failed parsing {s} as Line"))?;
         let (start, end) = s.split_at(split_at);
         Ok(Line {
             start: start.parse()?,
@@ -202,7 +202,7 @@ impl FromStr for Line {
 }
 
 impl FromStr for TurnInput {
-    type Err = io::Error;
+    type Err = BotError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::read_from(&mut s.as_bytes())
@@ -210,7 +210,7 @@ impl FromStr for TurnInput {
 }
 
 impl FromStr for Direction {
-    type Err = io::Error;
+    type Err = BotError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s.trim() {
@@ -218,13 +218,13 @@ impl FromStr for Direction {
             "DOWN" => Direction::Down,
             "LEFT" => Direction::Left,
             "RIGHT" => Direction::Right,
-            other => return Err(invalid_data(format!("Unrecognized direction {other}"))),
+            other => return Err(format!("Unrecognized direction {other}").into()),
         })
     }
 }
 
 impl FromStr for TurnOutput {
-    type Err = io::Error;
+    type Err = BotError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(TurnOutput {
@@ -243,15 +243,15 @@ impl SingleLine for TurnOutput {}
 
 // region: ReadFrom / WriteTo impls
 impl ReadFrom for TurnInput {
-    fn read_from(r: &mut impl BufRead) -> io::Result<Self> {
+    fn read_from(r: &mut impl BufRead) -> BotResult<Self> {
         let mut header = String::new();
         r.read_line(&mut header)?;
         let (n, p) = header
             .trim()
             .split_once(' ')
-            .ok_or_else(|| invalid_data("Failed reading header"))?;
-        let number_of_players: i32 = n.parse().map_err(invalid_data)?;
-        let player_number: i32 = p.parse().map_err(invalid_data)?;
+            .ok_or("Failed reading header")?;
+        let number_of_players: i32 = n.parse()?;
+        let player_number: i32 = p.parse()?;
 
         let mut player_lines = Vec::with_capacity(number_of_players as usize);
         for _ in 0..number_of_players {
@@ -282,7 +282,7 @@ impl WriteTo for TurnInput {
 #[cfg(test)]
 mod test {
     use crate::*;
-    use std::io::Result;
+    use bot_common::BotResult as Result;
 
     #[test]
     fn parse_pos() -> Result<()> {

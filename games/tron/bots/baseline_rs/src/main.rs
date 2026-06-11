@@ -1,10 +1,10 @@
 use std::io::{self, Write};
 
-use bot_common::{ReadFrom, WriteTo};
+use bot_common::{BotResult, ReadFrom, WriteTo};
 use tron_baseline_rs::{GameState, decide, on_init};
 use tron_defs::{InitialInput, TurnInput};
 
-fn main() -> io::Result<()> {
+fn main() -> BotResult<()> {
     let mut input = io::stdin().lock();
     let mut output = io::BufWriter::new(io::stdout().lock());
 

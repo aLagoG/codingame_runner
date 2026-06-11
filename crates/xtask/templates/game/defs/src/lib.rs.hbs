@@ -4,7 +4,7 @@ use std::{
     str::FromStr,
 };
 
-use bot_common::{ReadFrom, SingleLine, WriteTo};
+use bot_common::{BotError, BotResult, ReadFrom, SingleLine, WriteTo};
 
 /// Per-match init payload. Default to `()` (no init). If your game
 /// ships per-player setup data before turn 1, replace the alias with
@@ -34,7 +34,7 @@ impl Display for TurnOutput {
 }
 
 impl FromStr for TurnOutput {
-    type Err = io::Error;
+    type Err = BotError;
     fn from_str(_s: &str) -> Result<Self, Self::Err> {
         Ok(TurnOutput::default())
     }
@@ -43,7 +43,7 @@ impl FromStr for TurnOutput {
 impl SingleLine for TurnOutput {}
 
 impl ReadFrom for TurnInput {
-    fn read_from(_r: &mut impl BufRead) -> io::Result<Self> {
+    fn read_from(_r: &mut impl BufRead) -> BotResult<Self> {
         Ok(TurnInput::default())
     }
 }

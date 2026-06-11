@@ -1,10 +1,10 @@
 use std::io::{self, Write};
 
-use bot_common::{ReadFrom, WriteTo};
+use bot_common::{BotResult, ReadFrom, WriteTo};
 use fantastic_bits_baseline_rs::{decide, on_init};
 use fantastic_bits_defs::{InitialInput, TurnInput};
 
-fn main() -> io::Result<()> {
+fn main() -> BotResult<()> {
     let mut input = io::stdin().lock();
     let mut output = io::BufWriter::new(io::stdout().lock());
     let init = InitialInput::read_from(&mut input)?;

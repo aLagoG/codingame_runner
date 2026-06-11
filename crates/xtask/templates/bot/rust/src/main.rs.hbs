@@ -1,10 +1,10 @@
 use std::io::{self, Write};
 
-use bot_common::{ReadFrom, WriteTo};
+use bot_common::{BotResult, ReadFrom, WriteTo};
 use {{crate_name}}::{decide, on_init};
 use {{game}}_defs::{InitialInput, TurnInput};
 
-fn main() -> io::Result<()> {
+fn main() -> BotResult<()> {
     let mut input = io::stdin().lock();
     let mut output = io::BufWriter::new(io::stdout().lock());
 

@@ -4,7 +4,7 @@ use std::{
     str::FromStr,
 };
 
-use bot_common::{ReadFrom, SingleLine, WriteTo, invalid_data};
+use bot_common::{BotError, BotResult, ReadFrom, SingleLine, WriteTo, next_field, next_i32};
 
 // ============================================================
 //  Initial input
@@ -25,10 +25,10 @@ impl Display for InitialInput {
 }
 
 impl FromStr for InitialInput {
-    type Err = io::Error;
+    type Err = BotError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(InitialInput {
-            my_team_id: s.trim().parse().map_err(invalid_data)?,
+            my_team_id: s.trim().parse()?,
         })
     }
 }
@@ -228,20 +228,20 @@ impl Display for TurnInput {
 // ============================================================
 
 impl FromStr for EntityKind {
-    type Err = io::Error;
+    type Err = BotError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s.trim() {
             "WIZARD" => EntityKind::Wizard,
             "OPPONENT_WIZARD" => EntityKind::OpponentWizard,
             "SNAFFLE" => EntityKind::Snaffle,
             "BLUDGER" => EntityKind::Bludger,
-            other => return Err(invalid_data(format!("Unrecognized entity kind {other:?}"))),
+            other => return Err(format!("Unrecognized entity kind {other:?}").into()),
         })
     }
 }
 
 impl FromStr for Entity {
-    type Err = io::Error;
+    type Err = BotError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut it = s.split_whitespace();
         Ok(Entity {
@@ -257,7 +257,7 @@ impl FromStr for Entity {
 }
 
 impl FromStr for ActionKind {
-    type Err = io::Error;
+    type Err = BotError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s.trim() {
             "MOVE" => ActionKind::Move,
@@ -266,13 +266,13 @@ impl FromStr for ActionKind {
             "PETRIFICUS" => ActionKind::Petrificus,
             "ACCIO" => ActionKind::Accio,
             "FLIPENDO" => ActionKind::Flipendo,
-            other => return Err(invalid_data(format!("Unrecognized action kind {other:?}"))),
+            other => return Err(format!("Unrecognized action kind {other:?}").into()),
         })
     }
 }
 
 impl FromStr for WizardAction {
-    type Err = io::Error;
+    type Err = BotError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut it = s.split_whitespace();
         let kind: ActionKind = next_field(&mut it, "action kind")?.parse()?;
@@ -296,22 +296,10 @@ impl FromStr for WizardAction {
 }
 
 impl FromStr for TurnInput {
-    type Err = io::Error;
+    type Err = BotError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::read_from(&mut s.as_bytes())
     }
-}
-
-// Helpers for the whitespace-split parsing pattern used by the
-// `FromStr` impls above. Without these, every field becomes a
-// 3-method chain (`.next().ok_or_else(…).?.parse().map_err(…)?`).
-fn next_field<'a>(it: &mut std::str::SplitWhitespace<'a>, field: &str) -> io::Result<&'a str> {
-    it.next()
-        .ok_or_else(|| invalid_data(format!("missing {field}")))
-}
-
-fn next_i32(it: &mut std::str::SplitWhitespace, field: &str) -> io::Result<i32> {
-    next_field(it, field)?.parse().map_err(invalid_data)
 }
 
 // ============================================================
@@ -328,12 +316,12 @@ impl SingleLine for WizardAction {}
 // ============================================================
 
 impl ReadFrom for TurnInput {
-    fn read_from(r: &mut impl BufRead) -> io::Result<Self> {
+    fn read_from(r: &mut impl BufRead) -> BotResult<Self> {
         let (my_score, my_magic) = read_two_ints(r)?;
         let (opp_score, opp_magic) = read_two_ints(r)?;
         let num: i32 = read_one_int(r)?;
         if num < 0 {
-            return Err(invalid_data(format!("negative entity count {num}")));
+            return Err(format!("negative entity count {num}").into());
         }
         let mut entities = Vec::with_capacity(num as usize);
         for _ in 0..num {
@@ -352,7 +340,7 @@ impl ReadFrom for TurnInput {
 }
 
 impl WriteTo for TurnInput {
-    fn write_to(&self, w: &mut impl Write) -> std::io::Result<()> {
+    fn write_to(&self, w: &mut impl Write) -> io::Result<()> {
         writeln!(w, "{} {}", self.my_score, self.my_magic)?;
         writeln!(w, "{} {}", self.opp_score, self.opp_magic)?;
         writeln!(w, "{}", self.entities.len())?;
@@ -366,7 +354,7 @@ impl WriteTo for TurnInput {
 /// TurnOutput is two lines — explicitly not `SingleLine`, so we hand-roll
 /// the wire glue rather than getting the blanket impls.
 impl ReadFrom for TurnOutput {
-    fn read_from(r: &mut impl BufRead) -> io::Result<Self> {
+    fn read_from(r: &mut impl BufRead) -> BotResult<Self> {
         let mut a = String::new();
         r.read_line(&mut a)?;
         let mut b = String::new();
@@ -379,27 +367,27 @@ impl ReadFrom for TurnOutput {
 }
 
 impl WriteTo for TurnOutput {
-    fn write_to(&self, w: &mut impl Write) -> std::io::Result<()> {
+    fn write_to(&self, w: &mut impl Write) -> io::Result<()> {
         writeln!(w, "{}", self.primary)?;
         writeln!(w, "{}", self.secondary)?;
         Ok(())
     }
 }
 
-fn read_one_int(r: &mut impl BufRead) -> io::Result<i32> {
+fn read_one_int(r: &mut impl BufRead) -> BotResult<i32> {
     let mut buf = String::new();
     r.read_line(&mut buf)?;
-    buf.trim().parse().map_err(invalid_data)
+    buf.trim().parse().map_err(Into::into)
 }
 
-fn read_two_ints(r: &mut impl BufRead) -> io::Result<(i32, i32)> {
+fn read_two_ints(r: &mut impl BufRead) -> BotResult<(i32, i32)> {
     let mut buf = String::new();
     r.read_line(&mut buf)?;
     let (a, b) = buf
         .trim()
         .split_once(' ')
-        .ok_or_else(|| invalid_data(format!("expected two ints, got {buf:?}")))?;
-    Ok((a.parse().map_err(invalid_data)?, b.parse().map_err(invalid_data)?))
+        .ok_or_else(|| format!("expected two ints, got {buf:?}"))?;
+    Ok((a.parse()?, b.parse()?))
 }
 
 // ============================================================
@@ -409,7 +397,7 @@ fn read_two_ints(r: &mut impl BufRead) -> io::Result<(i32, i32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Result;
+    use bot_common::BotResult as Result;
 
     #[test]
     fn initial_input_round_trip() -> Result<()> {
