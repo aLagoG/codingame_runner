@@ -94,6 +94,12 @@ pub const KNOWN_SECTIONS: &[&str] = &[
     "statement-inout-in",
     "statement-inout-out",
     "statement-lineno",
+    "statement-example",
+    "statement-example-container",
+    "statement-example-empty",
+    "statement-examples",
+    "statement-examples-text",
+    "statement-league-alert-content",
 ];
 
 pub fn is_denied(property: &str, value: &str) -> bool {

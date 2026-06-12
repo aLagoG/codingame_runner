@@ -1,0 +1,10 @@
+[package]
+name = "spider_attack_defs"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+# Bot-facing surface only — deliberately NOT `common`, which would
+# drag serde/thiserror into the flattened bot bundle and break
+# CodinGame submission.
+bot_common.workspace = true

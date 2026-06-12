@@ -1,0 +1,26 @@
+use std::io::{self, Write};
+
+use bot_common::{BotResult, ReadFrom, WriteTo};
+use spider_attack_baseline_rs::{GameState, decide, on_init};
+use spider_attack_defs::{InitialInput, TurnInput};
+
+fn main() -> BotResult<()> {
+    let mut input = io::stdin().lock();
+    let mut output = io::BufWriter::new(io::stdout().lock());
+
+    // Signal readiness to the runner so it can stop sleeping and start
+    // measuring turn-1 latency from a clean baseline. Emitted *after*
+    // the stdin/stdout lock acquisition so that setup cost is absorbed
+    // into the spawn-time measurement rather than billed to turn 1.
+    // Any line on stderr counts; the runner drops the content and
+    // forwards subsequent eprintln!s as usual.
+    eprintln!("READY");
+
+    let mut state = GameState::default();
+    on_init(&InitialInput::read_from(&mut input)?, &mut state);
+    loop {
+        let turn = TurnInput::read_from(&mut input)?;
+        decide(&turn, &mut state).write_to(&mut output)?;
+        output.flush()?;
+    }
+}

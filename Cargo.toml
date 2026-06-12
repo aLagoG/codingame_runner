@@ -28,6 +28,12 @@ members = [
     "games/fantastic_bits/viz",
     "games/fantastic_bits/bots/baseline_rs",
     "games/fantastic_bits/bots/v1_cpp",
+    "games/spider_attack/defs",
+    "games/spider_attack/game",
+    "games/spider_attack/viz",
+    "games/spider_attack/bots/baseline_rs",
+    "games/spider_attack/bots/baseline_cpp",
+    "games/spider_attack/bots/v1_cpp",
 ]
 
 # Built on its own toolchain (nightly + rustc-dev) — see
@@ -94,3 +100,5 @@ tron_defs = { path = "games/tron/defs" }
 tron_game = { path = "games/tron/game" }
 fantastic_bits_defs = { path = "games/fantastic_bits/defs" }
 fantastic_bits_game = { path = "games/fantastic_bits/game" }
+spider_attack_defs = { path = "games/spider_attack/defs" }
+spider_attack_game = { path = "games/spider_attack/game" }

@@ -415,6 +415,7 @@ dependencies = [
  "clap",
  "common",
  "fantastic_bits_game",
+ "spider_attack_game",
  "tron_game",
 ]
 
@@ -1891,6 +1892,56 @@ dependencies = [
  "libc",
  "smithay-client-toolkit",
  "wayland-backend",
+]
+
+[[package]]
+name = "spider_attack_baseline_cpp"
+version = "0.1.0"
+dependencies = [
+ "cgio_build",
+]
+
+[[package]]
+name = "spider_attack_baseline_rs"
+version = "0.1.0"
+dependencies = [
+ "bot_common",
+ "spider_attack_defs",
+]
+
+[[package]]
+name = "spider_attack_defs"
+version = "0.1.0"
+dependencies = [
+ "bot_common",
+]
+
+[[package]]
+name = "spider_attack_game"
+version = "0.1.0"
+dependencies = [
+ "common",
+ "rand",
+ "spider_attack_defs",
+]
+
+[[package]]
+name = "spider_attack_v1_cpp"
+version = "0.1.0"
+dependencies = [
+ "cgio_build",
+]
+
+[[package]]
+name = "spider_attack_viz"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "common",
+ "macroquad",
+ "spider_attack_defs",
+ "spider_attack_game",
+ "viz",
 ]
 
 [[package]]

@@ -1,0 +1,9 @@
+[package]
+name = "spider_attack_game"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+spider_attack_defs.workspace = true
+common.workspace = true
+rand.workspace = true

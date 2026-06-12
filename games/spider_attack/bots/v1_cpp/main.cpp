@@ -1,0 +1,32 @@
+// See ../baseline_cpp/main.cpp for the transport contract.
+
+#include "strategy.h"
+
+#include <iostream>
+
+using namespace cgio;
+
+#ifdef CGIO_RUST_SHIM
+extern "C" int cgio_main()
+#else
+int main()
+#endif
+{
+    std::ios_base::sync_with_stdio(false);
+
+    // Signal readiness to the runner so it can stop sleeping and start
+    // measuring turn-1 latency from a clean baseline. `std::endl`
+    // flushes; `std::cerr` is unbuffered anyway but the explicit flush
+    // is defensive.
+    std::cerr << "READY" << std::endl;
+
+    InitialInput init;
+    if (!(std::cin >> init)) return 0;
+    spider_attack_v1_cpp::on_init(init);
+
+    TurnInput input;
+    while (std::cin >> input) {
+        std::cout << spider_attack_v1_cpp::decide(input) << std::endl;
+    }
+    return 0;
+}

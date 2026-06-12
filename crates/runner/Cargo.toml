@@ -18,3 +18,4 @@ clap.workspace = true
 common = { workspace = true, features = ["cli"] }
 tron_game.workspace = true
 fantastic_bits_game.workspace = true
+spider_attack_game.workspace = true

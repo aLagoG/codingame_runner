@@ -1,0 +1,11 @@
+[package]
+name = "spider_attack_baseline_rs"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+spider_attack_defs.workspace = true
+# Deliberately `bot_common`, not `common` — `common` pulls in serde /
+# thiserror / tracing via the runner side, which the flatten step
+# can't vendor. `bot_common` is the trimmed bot-facing surface.
+bot_common.workspace = true

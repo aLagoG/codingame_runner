@@ -35,6 +35,7 @@ macro_rules! for_each_game {
     ($cb:ident) => {
         $cb!("tron", $crate::__games::TronGame);
         $cb!("fantastic_bits", $crate::__games::FantasticBitsGame);
+        $cb!("spider_attack", $crate::__games::SpiderAttackGame);
     };
 }
 
@@ -42,4 +43,5 @@ macro_rules! for_each_game {
 pub mod __games {
     pub use fantastic_bits_game::FantasticBitsGame;
     pub use tron_game::TronGame;
+    pub use spider_attack_game::SpiderAttackGame;
 }

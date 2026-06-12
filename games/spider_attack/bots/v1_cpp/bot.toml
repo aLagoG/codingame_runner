@@ -1,0 +1,5 @@
+name = "v1"
+lang = "cpp"
+parent = "baseline"
+description = "threat-triage + WIND-deflect — port of baseline_cpp/v1/spider_attack.cpp"
+champion = true

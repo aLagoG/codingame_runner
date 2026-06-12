@@ -1,0 +1,10 @@
+[package]
+name = "spider_attack_baseline_cpp"
+version.workspace = true
+edition.workspace = true
+
+# Default-discovered bin (`src/main.rs` → `spider_attack_baseline_cpp`). The tiny
+# Rust shim in `src/main.rs` links the static archive `main.cpp`
+# produces via `cgio_build`.
+[build-dependencies]
+cgio_build.workspace = true
