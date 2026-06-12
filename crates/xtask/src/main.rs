@@ -48,6 +48,10 @@ impl Style {
     fn ok(&self, s: &str) -> String {
         self.paint(s, "32") // green
     }
+    /// Soft warnings / skip notices (non-fatal yellow).
+    fn warn(&self, s: &str) -> String {
+        self.paint(s, "33") // yellow
+    }
 }
 
 #[derive(Parser)]
@@ -236,16 +240,50 @@ enum Command {
     Statement {
         /// Game name (e.g. `tron`, `fantastic_bits`). The output goes
         /// to `<game>/game/instructions.html` unless `--output` is set.
-        game: String,
+        /// Optional only when `--upgrade-all` / `--check-all` is set.
+        game: Option<String>,
         /// Read paste from this file instead of stdin.
-        #[arg(short, long)]
+        #[arg(short, long, conflicts_with_all = ["clipboard", "upgrade", "upgrade_all"])]
         input: Option<PathBuf>,
         /// Override the output path.
-        #[arg(short, long)]
+        #[arg(short, long, conflicts_with_all = ["upgrade_all", "check_all"])]
         output: Option<PathBuf>,
         /// Read paste from the system clipboard.
-        #[arg(short, long)]
+        #[arg(short, long, conflicts_with_all = ["input", "upgrade", "upgrade_all"])]
         clipboard: bool,
+        /// Re-clean from the saved original at `games/<game>/game/instructions_original.html`.
+        /// Combine with `--css-only` to fall back to re-cleaning the
+        /// existing `instructions.html` when no saved original exists.
+        #[arg(long, conflicts_with_all = ["input", "clipboard", "upgrade_all"])]
+        upgrade: bool,
+        /// Re-clean every game with a saved original.
+        /// `<game>` is ignored. Per-file warning headers are printed.
+        #[arg(long, conflicts_with_all = ["upgrade", "input", "clipboard", "output"])]
+        upgrade_all: bool,
+        /// Dry run — compare what would be written to what's on disk;
+        /// exit non-zero on any mismatch. Pair with `--upgrade`,
+        /// `--upgrade-all`, or any explicit source flag.
+        #[arg(long)]
+        check: bool,
+        /// Check every game's `instructions.html` against what the
+        /// current cleaner would produce (with `--css-only` fallback
+        /// for games without a saved original). Exits non-zero on any
+        /// drift. `<game>` is ignored.
+        #[arg(long, conflicts_with_all = ["upgrade", "upgrade_all", "input", "clipboard", "output", "check"])]
+        check_all: bool,
+        /// Re-style only: extract the body from the existing
+        /// `instructions.html` and re-run the rule passes. Works on
+        /// games that don't have a saved original; the body itself
+        /// is reused, only the embedded CSS + per-rule scrubbing is
+        /// refreshed. Implies `--upgrade` semantics.
+        #[arg(long)]
+        css_only: bool,
+        /// Don't copy the input paste to `instructions_original.html`.
+        /// By default, every `--input` / `--clipboard` / stdin paste
+        /// is saved alongside `instructions.html` so future
+        /// `--upgrade` runs have a faithful source to re-clean from.
+        #[arg(long)]
+        no_save_original: bool,
     },
     /// Profile a tournament run with `samply`. Builds the workspace
     /// under the `profiling` cargo profile (release + full debug
@@ -424,7 +462,24 @@ fn main() -> Result<()> {
             input,
             output,
             clipboard,
-        } => statement(&game, input.as_deref(), output.as_deref(), clipboard)?,
+            upgrade,
+            upgrade_all,
+            check,
+            check_all,
+            css_only,
+            no_save_original,
+        } => statement(StatementArgs {
+            game,
+            input,
+            output,
+            clipboard,
+            upgrade,
+            upgrade_all,
+            check,
+            check_all,
+            css_only,
+            no_save_original,
+        })?,
         Command::Profile {
             output,
             rate,
@@ -463,38 +518,82 @@ fn title_case_game(game: &str) -> String {
         .join(" ")
 }
 
-fn statement(
-    game: &str,
-    input_path: Option<&Path>,
-    output_override: Option<&Path>,
+/// Bundled flags for the `statement` subcommand. Owns its strings
+/// (vs. borrowing) so we can hand the struct to a per-game loop
+/// without lifetime gymnastics.
+struct StatementArgs {
+    game: Option<String>,
+    input: Option<PathBuf>,
+    output: Option<PathBuf>,
     clipboard: bool,
-) -> Result<()> {
-    use std::io::{IsTerminal, Read, Write};
+    upgrade: bool,
+    upgrade_all: bool,
+    check: bool,
+    check_all: bool,
+    css_only: bool,
+    no_save_original: bool,
+}
 
-    let s = Style::new();
-
-    // Resolve the output path. Default lives next to the game
-    // crate so it's easy to find from the source tree.
-    let output: PathBuf = output_override.map(Path::to_path_buf).unwrap_or_else(|| {
-        PathBuf::from("games")
-            .join(game)
-            .join("game")
-            .join("instructions.html")
-    });
-    if let Some(parent) = output.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+fn statement(args: StatementArgs) -> Result<()> {
+    // Dispatch on the explicit "all" modes first; they ignore <game>.
+    if args.upgrade_all {
+        return upgrade_all(args.check, args.css_only);
+    }
+    if args.check_all {
+        return check_all(args.css_only);
     }
 
-    // Read the paste from the chosen source.
+    let game = args
+        .game
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("missing <game> argument"))?;
+
+    if args.upgrade {
+        return upgrade_one(game, args.css_only, args.check, args.output.as_deref());
+    }
+    if args.css_only {
+        // Css-only without --upgrade also makes sense — re-style the
+        // existing file in place. Same code path.
+        return upgrade_one(game, true, args.check, args.output.as_deref());
+    }
+
+    // Otherwise: classic clean-from-paste flow.
+    clean_from_paste(
+        game,
+        args.input.as_deref(),
+        args.clipboard,
+        args.output.as_deref(),
+        args.check,
+        args.no_save_original,
+    )
+}
+
+/// Original behaviour: read a paste (file / clipboard / stdin), feed
+/// it through `cg_statement::clean`, write `instructions.html`. New:
+/// also save the paste to `instructions_original.html` so future
+/// `--upgrade` calls have a faithful source. Set `--no-save-original`
+/// to skip the copy.
+fn clean_from_paste(
+    game: &str,
+    input_path: Option<&Path>,
+    clipboard: bool,
+    output_override: Option<&Path>,
+    check: bool,
+    no_save_original: bool,
+) -> Result<()> {
+    use std::io::{IsTerminal, Read};
+
+    let s = Style::new();
+    let output = resolve_output(game, output_override);
+    ensure_parent_dir(&output)?;
+
     let paste = if let Some(p) = input_path {
         fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))?
     } else if clipboard {
         read_clipboard()?
     } else {
-        // Stdin. If we're attached to a terminal, the user is
-        // pasting interactively — show them how to end the input.
+        // Stdin. If we're attached to a terminal, the user is pasting
+        // interactively — show them how to end the input.
         if std::io::stdin().is_terminal() {
             eprintln!(
                 "{} Paste your HTML, then press {} when done:",
@@ -517,41 +616,302 @@ fn statement(
         anyhow::bail!("empty paste — nothing to clean");
     }
 
-    // Shell out to `cg_statement` (matches the bundle → cpp_flatten
-    // pattern). Pipe the paste through its stdin; let it write the
-    // file directly via --output so we don't have to round-trip the
-    // (potentially large) cleaned HTML through this process.
-    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
-    let title = format!("{} - Game Statement", title_case_game(game));
-    let mut child = std::process::Command::new(cargo)
-        .args(["run", "--quiet", "-p", "cg_statement", "--"])
-        .args(["--title", &title])
-        .args(["--output"])
-        .arg(&output)
-        .stdin(std::process::Stdio::piped())
-        // Inherit stderr so cg_statement's warnings reach the user
-        // verbatim, and stdout (which it won't use since --output
-        // is set) is fine to inherit too.
-        .stderr(std::process::Stdio::inherit())
-        .stdout(std::process::Stdio::inherit())
-        .spawn()
-        .context("spawning cg_statement")?;
-    {
-        let mut stdin = child.stdin.take().expect("piped stdin");
-        stdin
-            .write_all(paste.as_bytes())
-            .context("writing paste to cg_statement stdin")?;
-        // Dropping `stdin` here closes the pipe so cg_statement
-        // sees EOF and starts processing.
-    }
-    let status = child.wait().context("waiting on cg_statement")?;
-    anyhow::ensure!(status.success(), "cg_statement exited with {status}");
+    let cleanup = cg_statement::clean_with_options(
+        &paste,
+        &cg_statement::CleanOptions {
+            title: Some(format!("{} - Game Statement", title_case_game(game))),
+        },
+    )?;
+    report_warnings(game, &cleanup.warnings);
 
+    if check {
+        bail_on_drift(&output, &cleanup.html)?;
+        println!(
+            "{} {} is up to date",
+            s.ok("✓"),
+            s.path(&output.display().to_string()),
+        );
+        return Ok(());
+    }
+
+    fs::write(&output, &cleanup.html)
+        .with_context(|| format!("writing {}", output.display()))?;
     println!(
         "{} Wrote {}",
         s.ok("✓"),
         s.path(&output.display().to_string()),
     );
+
+    // Save the paste alongside instructions.html for future
+    // --upgrade runs (canonical name: instructions_original.html).
+    // Skipped on --no-save-original or when the source already IS
+    // that file (avoid no-op writes / fake "saved" messages).
+    if !no_save_original {
+        let original = original_path(game);
+        let same_path = input_path.map(|p| paths_equal(p, &original)).unwrap_or(false);
+        if !same_path {
+            ensure_parent_dir(&original)?;
+            fs::write(&original, &paste)
+                .with_context(|| format!("writing {}", original.display()))?;
+            println!(
+                "{} Saved paste to {} (re-runnable with `cargo xtask statement {game} --upgrade`)",
+                s.ok("✓"),
+                s.path(&original.display().to_string()),
+            );
+        }
+    }
+    Ok(())
+}
+
+/// `--upgrade` for a single game. If `css_only` is false, expects the
+/// saved original; if true (or as fallback), re-cleans the existing
+/// `instructions.html` body.
+fn upgrade_one(
+    game: &str,
+    css_only: bool,
+    check: bool,
+    output_override: Option<&Path>,
+) -> Result<()> {
+    let s = Style::new();
+    let output = resolve_output(game, output_override);
+
+    let cleanup = if css_only {
+        let existing = fs::read_to_string(&output)
+            .with_context(|| format!("reading {}", output.display()))?;
+        cg_statement::re_clean_with_options(
+            &existing,
+            &cg_statement::CleanOptions {
+                title: Some(format!("{} - Game Statement", title_case_game(game))),
+            },
+        )
+        .with_context(|| format!("css-only re-clean of {}", output.display()))?
+    } else {
+        let original = original_path(game);
+        if !original.exists() {
+            anyhow::bail!(
+                "no {original_path} — save the paste there first, or rerun with `--css-only` to re-clean the existing {output} body in place",
+                original_path = original.display(),
+                output = output.display(),
+            );
+        }
+        let paste = fs::read_to_string(&original)
+            .with_context(|| format!("reading {}", original.display()))?;
+        cg_statement::clean_with_options(
+            &paste,
+            &cg_statement::CleanOptions {
+                title: Some(format!("{} - Game Statement", title_case_game(game))),
+            },
+        )?
+    };
+    report_warnings(game, &cleanup.warnings);
+
+    if check {
+        bail_on_drift(&output, &cleanup.html)?;
+        println!(
+            "{} {} is up to date",
+            s.ok("✓"),
+            s.path(&output.display().to_string()),
+        );
+        return Ok(());
+    }
+
+    ensure_parent_dir(&output)?;
+    fs::write(&output, &cleanup.html)
+        .with_context(|| format!("writing {}", output.display()))?;
+    println!(
+        "{} Wrote {}{}",
+        s.ok("✓"),
+        s.path(&output.display().to_string()),
+        if css_only { " (css-only)" } else { "" },
+    );
+    Ok(())
+}
+
+/// `--upgrade-all`: loop over every game with a generated
+/// `instructions.html`. Use the saved original when present;
+/// fall back to `--css-only` only when `css_only=true` is set
+/// (otherwise skip with a warning).
+fn upgrade_all(check: bool, css_only: bool) -> Result<()> {
+    let games = discover_games_with_instructions()?;
+    if games.is_empty() {
+        anyhow::bail!("no games found under games/*/game/instructions.html");
+    }
+    let mut had_failure = false;
+    let s = Style::new();
+    for game in &games {
+        let original = original_path(game);
+        let has_original = original.exists();
+        let effective_css_only = !has_original && css_only;
+
+        if !has_original && !css_only {
+            eprintln!(
+                "{} {} skipped — no {} (run with `--css-only` to re-clean in place)",
+                s.warn("⚠"),
+                game,
+                original.display(),
+            );
+            continue;
+        }
+
+        println!("{} {}", s.heading("•"), s.heading(game));
+        match upgrade_one(game, effective_css_only || !has_original, check, None) {
+            Ok(()) => {}
+            Err(e) => {
+                had_failure = true;
+                eprintln!("{} {}: {e:#}", s.warn("✗"), game);
+            }
+        }
+    }
+    if had_failure {
+        anyhow::bail!("one or more games failed to upgrade");
+    }
+    Ok(())
+}
+
+/// `--check-all`: dry-run equivalent of `--upgrade-all`. Always
+/// falls back to css-only for games without a saved original so the
+/// check is comprehensive — the alternative (skip them) would silently
+/// miss drift on the largest games.
+fn check_all(_css_only_flag: bool) -> Result<()> {
+    // `--check-all` always allows the css-only fallback; the
+    // alternative is silently skipping games without an original,
+    // which defeats the point of a comprehensive check.
+    upgrade_all(true, true)
+}
+
+// ---- helpers shared by every statement path ----
+
+/// Default output path for a game: `games/<game>/game/instructions.html`.
+fn resolve_output(game: &str, override_path: Option<&Path>) -> PathBuf {
+    override_path.map(Path::to_path_buf).unwrap_or_else(|| {
+        PathBuf::from("games")
+            .join(game)
+            .join("game")
+            .join("instructions.html")
+    })
+}
+
+fn original_path(game: &str) -> PathBuf {
+    PathBuf::from("games")
+        .join(game)
+        .join("game")
+        .join("instructions_original.html")
+}
+
+fn ensure_parent_dir(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
+    Ok(())
+}
+
+/// True when two paths refer to the same file. Falls back to lexical
+/// equality if neither path exists yet (e.g. we're about to create
+/// the original).
+fn paths_equal(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(ca), Ok(cb)) => ca == cb,
+        _ => a == b,
+    }
+}
+
+/// Glob `games/*/game/instructions.html` and return the game names
+/// (the second path component). Sorted for deterministic output.
+fn discover_games_with_instructions() -> Result<Vec<String>> {
+    let games_dir = PathBuf::from("games");
+    if !games_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for entry in fs::read_dir(&games_dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let candidate = games_dir.join(&name).join("game").join("instructions.html");
+        if candidate.is_file() {
+            out.push(name);
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// Per-file warning header. Same layout the cg_statement binary used
+/// to print directly; we just add the `[<game>]` prefix so
+/// `--upgrade-all` output stays unambiguous when many games warn.
+fn report_warnings(game: &str, warnings: &[cg_statement::Warning]) {
+    if warnings.is_empty() {
+        return;
+    }
+    use std::collections::HashMap;
+    let mut counts: HashMap<&cg_statement::Warning, usize> = HashMap::new();
+    for w in warnings {
+        *counts.entry(w).or_insert(0) += 1;
+    }
+    let mut sorted: Vec<(&cg_statement::Warning, usize)> = counts.into_iter().collect();
+    sorted.sort_by(|a, b| {
+        b.1.cmp(&a.1)
+            .then_with(|| warning_text(a.0).cmp(&warning_text(b.0)))
+    });
+    eprintln!(
+        "[{game}] {} warning(s) ({} unique):",
+        warnings.len(),
+        sorted.len(),
+    );
+    for (w, n) in &sorted {
+        if *n > 1 {
+            eprintln!("  (×{n}) {}", warning_text(w));
+        } else {
+            eprintln!("  {}", warning_text(w));
+        }
+    }
+}
+
+fn warning_text(w: &cg_statement::Warning) -> String {
+    use cg_statement::Warning;
+    match w {
+        Warning::UnknownInlineStyle { property, value } => {
+            format!("unknown inline style: {property}: {value} (kept; add to rules.rs to silence)")
+        }
+        Warning::UnknownStatementClass(c) => {
+            format!("unknown statement class: .{c} (kept; bundled CSS may not style it)")
+        }
+        Warning::UnknownIconClass(c) => {
+            format!("unknown icon class: .{c} (kept; bundled CSS may not draw it)")
+        }
+        Warning::NoContentBoundary => {
+            "could not find a content boundary; emitting whole input as body".to_string()
+        }
+    }
+}
+
+/// `--check` core: compare what we would write to what's on disk
+/// and `bail!` with a friendly message on mismatch. Normalises line
+/// endings before comparing so a Windows checkout doesn't false-
+/// positive.
+fn bail_on_drift(output: &Path, would_write: &str) -> Result<()> {
+    let on_disk = match fs::read_to_string(output) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            anyhow::bail!(
+                "{} does not exist; would create on a non-check run",
+                output.display(),
+            );
+        }
+        Err(e) => return Err(e).with_context(|| format!("reading {}", output.display())),
+    };
+    let norm_disk = on_disk.replace("\r\n", "\n");
+    let norm_new = would_write.replace("\r\n", "\n");
+    if norm_disk != norm_new {
+        anyhow::bail!(
+            "{} is out of date — re-run without `--check` to update",
+            output.display(),
+        );
+    }
     Ok(())
 }
 

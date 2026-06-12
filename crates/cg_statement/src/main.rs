@@ -2,6 +2,7 @@
 //! paste, applies the cleaner, writes the result. Warnings always
 //! go to stderr; `--werror` flips them into errors.
 
+use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
@@ -69,9 +70,32 @@ fn main() -> Result<()> {
     }
 
     if !result.warnings.is_empty() {
-        eprintln!("cg_statement: {} warning(s):", result.warnings.len());
+        // Group identical warnings + sort by count desc. Without this
+        // the output is one line per *occurrence* — a single table
+        // with 16 cells dumps 16 identical lines, drowning the rarer
+        // (and usually more interesting) warnings.
+        let mut counts: HashMap<&Warning, usize> = HashMap::new();
         for w in &result.warnings {
-            print_warning(w);
+            *counts.entry(w).or_insert(0) += 1;
+        }
+        let mut sorted: Vec<(&Warning, usize)> = counts.into_iter().collect();
+        sorted.sort_by(|a, b| {
+            b.1
+                .cmp(&a.1)
+                .then_with(|| warning_text(a.0).cmp(&warning_text(b.0)))
+        });
+
+        eprintln!(
+            "cg_statement: {} warning(s) ({} unique):",
+            result.warnings.len(),
+            sorted.len(),
+        );
+        for (w, n) in &sorted {
+            if *n > 1 {
+                eprintln!("  (×{n}) {}", warning_text(w));
+            } else {
+                eprintln!("  {}", warning_text(w));
+            }
         }
         if args.werror {
             bail!("warnings present and --werror was set");
@@ -81,18 +105,19 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn print_warning(w: &Warning) {
+fn warning_text(w: &Warning) -> String {
     match w {
         Warning::UnknownInlineStyle { property, value } => {
-            eprintln!(
-                "  unknown inline style: {property}: {value} (kept; add to rules.rs to silence)"
-            );
+            format!("unknown inline style: {property}: {value} (kept; add to rules.rs to silence)")
         }
         Warning::UnknownStatementClass(c) => {
-            eprintln!("  unknown statement class: .{c} (kept; bundled CSS may not style it)");
+            format!("unknown statement class: .{c} (kept; bundled CSS may not style it)")
+        }
+        Warning::UnknownIconClass(c) => {
+            format!("unknown icon class: .{c} (kept; bundled CSS may not draw it)")
         }
         Warning::NoContentBoundary => {
-            eprintln!("  could not find a content boundary; emitting whole input as body");
+            "could not find a content boundary; emitting whole input as body".to_string()
         }
     }
 }

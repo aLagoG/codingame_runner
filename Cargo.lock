@@ -2784,6 +2784,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "bot_manifest",
+ "cg_statement",
  "clap",
  "handlebars",
  "serde",

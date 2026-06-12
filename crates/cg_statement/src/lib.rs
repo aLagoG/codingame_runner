@@ -40,6 +40,31 @@ pub mod rules;
 
 const STYLE: &str = include_str!("style.css");
 
+/// FNV-1a 64-bit fingerprint of the bundled stylesheet. Stable across
+/// Rust versions (unlike `DefaultHasher`), so a fingerprint embedded in
+/// an `instructions.html` produced on machine A reliably compares to
+/// the current fingerprint on machine B. Used purely for traceability
+/// and human-readable "which cleaner version produced this file" — not
+/// for cache invalidation or skipping re-clean work (`--check` always
+/// does a full byte compare).
+const STYLE_SHA: u64 = fnv1a_64(STYLE.as_bytes());
+
+const fn fnv1a_64(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    let mut i = 0;
+    while i < bytes.len() {
+        hash ^= bytes[i] as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+        i += 1;
+    }
+    hash
+}
+
+/// Hex fingerprint of the bundled CSS. See [`STYLE_SHA`].
+pub fn style_sha() -> String {
+    format!("{STYLE_SHA:016x}")
+}
+
 /// Output of [`clean`].
 #[derive(Debug, Clone)]
 pub struct Cleanup {
@@ -64,7 +89,7 @@ pub struct CleanOptions {
 
 const DEFAULT_TITLE: &str = "CodinGame Statement";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Warning {
     /// An inline `style` property we don't have an opinion on. Kept
     /// in the output verbatim. Format mirrors what was in the
@@ -74,6 +99,11 @@ pub enum Warning {
     /// known set. The element is kept but the bundled CSS probably
     /// doesn't style it.
     UnknownStatementClass(String),
+    /// A class token starting with `icon-` that the bundled CSS
+    /// doesn't have a `background-image` rule for. The `<span>` stays
+    /// in the markup but renders empty until rules.rs + style.css
+    /// are extended.
+    UnknownIconClass(String),
     /// No recognisable content boundary found — the cleaner emitted
     /// the whole input as the body. Usually means the paste didn't
     /// include any `.statement-*` divs or a green-callout marker.
@@ -99,6 +129,66 @@ pub fn clean_with_options(input: &str, opts: &CleanOptions) -> Result<Cleanup> {
     let title = opts.title.as_deref().unwrap_or(DEFAULT_TITLE);
     let html = wrap_in_scaffold(&body, title);
     Ok(Cleanup { html, warnings })
+}
+
+/// "CSS-only" upgrade path for games that don't have a saved
+/// `instructions_original.html`. Extracts the body from a previously-
+/// generated file (between the scaffold's outer `<div class="statement-body">`
+/// and its matching close), then runs the same pipeline as [`clean`]
+/// — *minus* `slice_body`, which would otherwise re-find the scaffold's
+/// own wrapper as content and produce nested divs.
+///
+/// The whole rule set runs again, so new entries in `DENIED_STYLES`
+/// / `ALLOWED_STYLES` / `KNOWN_*` lists take effect. Idempotent on
+/// already-current input: re-running on `re_clean`'s own output yields
+/// identical bytes (modulo CSS / rules changes).
+///
+/// Returns `Err` only if the input doesn't look like a previously
+/// generated file (no `<div class="statement-body">` to anchor on);
+/// in that case the caller should fall back to a full `clean()` from
+/// a paste.
+pub fn re_clean(input: &str) -> Result<Cleanup> {
+    re_clean_with_options(input, &CleanOptions::default())
+}
+
+pub fn re_clean_with_options(input: &str, opts: &CleanOptions) -> Result<Cleanup> {
+    let body = extract_body_from_cleaned(input).ok_or_else(|| {
+        anyhow::anyhow!(
+            "input doesn't look like a cleaner-generated file \
+             (no <div class=\"statement-body\"> anchor found); \
+             use `clean()` on the original paste instead",
+        )
+    })?;
+
+    let mut warnings = Vec::new();
+    let body = drop_sections(body);
+    let body = scrub_styles(&body, &mut warnings);
+    let body = audit_statement_classes(&body, &mut warnings);
+    let body = polish(&body);
+
+    let title = opts.title.as_deref().unwrap_or(DEFAULT_TITLE);
+    let html = wrap_in_scaffold(&body, title);
+    Ok(Cleanup { html, warnings })
+}
+
+/// Pull the inner content out of a cleaner-produced HTML file — the
+/// bytes between `<div class="statement-body">` and its matching
+/// `</div>`. Returns `None` if the anchor isn't present (the file
+/// wasn't produced by this cleaner or someone has rewritten the
+/// scaffold).
+///
+/// Reuses [`find_matching_div_close`] for the depth-counted close so
+/// nested `<div>`s inside the body don't fool the search.
+fn extract_body_from_cleaned(html: &str) -> Option<&str> {
+    const ANCHOR: &str = r#"<div class="statement-body">"#;
+    let start = html.find(ANCHOR)?;
+    let body_start = start + ANCHOR.len();
+    let after_close = find_matching_div_close(html, body_start);
+    if after_close >= html.len() && !html[body_start..].contains("</div>") {
+        return None;
+    }
+    let body_end = after_close.saturating_sub("</div>".len());
+    Some(html[body_start..body_end].trim_matches(['\n', '\r']))
 }
 
 // ============================================================
@@ -305,7 +395,7 @@ fn scrub_styles(body: &str, warnings: &mut Vec<Warning>) -> String {
 /// rules. Empty string means "drop the whole attribute".
 fn clean_style_attribute(raw: &str, warnings: &mut Vec<Warning>) -> String {
     let mut kept = Vec::new();
-    for prop in raw.split(';') {
+    for prop in split_style_props(raw) {
         let prop = prop.trim();
         if prop.is_empty() {
             continue;
@@ -334,15 +424,54 @@ fn clean_style_attribute(raw: &str, warnings: &mut Vec<Warning>) -> String {
     kept.join("; ")
 }
 
+/// Split a CSS style attribute body on `;` boundaries, skipping `;`
+/// that terminates an HTML entity (`&name;`, `&#NNN;`, `&#xHH;`).
+/// Without this, `font-family: &quot;Courier New&quot;, sans-serif`
+/// would parse as three properties because each `&quot;` ends in
+/// `;` — and the second pseudo-property (`Courier New&quot`) has no
+/// colon, so the cleaner kept a malformed fragment and emitted a
+/// truncated warning of `font-family: &quot`.
+///
+/// Heuristic: track an `in_entity` flag set by `&`; clear it on `;`
+/// (consuming that `;` as part of the entity, not as a separator) or
+/// on the first byte that can't appear in a valid entity name
+/// (anything outside `[A-Za-z0-9#]`). Conservative: a bare `&` later
+/// followed by a real separator just behaves like the old splitter.
+fn split_style_props(raw: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let bytes = raw.as_bytes();
+    let mut start = 0usize;
+    let mut in_entity = false;
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'&' => in_entity = true,
+            b';' if in_entity => in_entity = false,
+            b';' => {
+                out.push(&raw[start..i]);
+                start = i + 1;
+            }
+            b if !b.is_ascii_alphanumeric() && b != b'#' => in_entity = false,
+            _ => {}
+        }
+    }
+    if start < raw.len() {
+        out.push(&raw[start..]);
+    }
+    out
+}
+
 // ============================================================
 //  3. Section-class auditing
 // ============================================================
 
 fn audit_statement_classes(body: &str, warnings: &mut Vec<Warning>) -> String {
     // Scan for `class="…"` attributes; for each token starting with
-    // `statement-`, check membership in the known set. We don't
-    // *modify* the markup here — just observe.
-    let mut seen: BTreeSet<String> = BTreeSet::new();
+    // `statement-` or `icon-`, check membership in the matching
+    // known set. We don't *modify* the markup here — just observe.
+    // BTreeSets dedup so we emit each unknown class once even if it
+    // recurs (e.g. icon-example appears on every `<h2>` heading).
+    let mut unknown_sections: BTreeSet<String> = BTreeSet::new();
+    let mut unknown_icons: BTreeSet<String> = BTreeSet::new();
     let mut i = 0usize;
     while let Some(off) = body[i..].find("class=") {
         let start = i + off + "class=".len();
@@ -360,13 +489,18 @@ fn audit_statement_classes(body: &str, warnings: &mut Vec<Warning>) -> String {
         };
         for token in inner[..end_rel].split_whitespace() {
             if token.starts_with("statement-") && !rules::is_known_section(token) {
-                seen.insert(token.to_string());
+                unknown_sections.insert(token.to_string());
+            } else if token.starts_with("icon-") && !rules::is_known_icon(token) {
+                unknown_icons.insert(token.to_string());
             }
         }
         i = start + 1 + end_rel + 1;
     }
-    for s in seen {
+    for s in unknown_sections {
         warnings.push(Warning::UnknownStatementClass(s));
+    }
+    for c in unknown_icons {
+        warnings.push(Warning::UnknownIconClass(c));
     }
     body.to_string()
 }
@@ -442,8 +576,13 @@ fn detab_pre_blocks(body: &str) -> String {
 
 fn wrap_in_scaffold(body: &str, title: &str) -> String {
     let title = escape_title(title);
+    // The `cg_statement` comment carries an FNV-1a fingerprint of the
+    // bundled CSS so a future re-run / `--check` can show which
+    // version of the cleaner produced this file. Single-line so simple
+    // string surgery (e.g. external tooling) can spot it.
     format!(
         "<!DOCTYPE html>
+<!-- cg_statement: style-sha={STYLE_SHA:016x}; do not edit by hand — re-run `cargo xtask statement <game> --upgrade`. -->
 <html lang=\"en\">
 <head>
 <meta charset=\"UTF-8\">
@@ -555,16 +694,66 @@ mod tests {
     #[test]
     fn scrub_drops_denied_keeps_allowed() {
         let mut w = vec![];
-        let input = r#"<div style="background-color: white; color: #7cc576; padding: 5px">x</div>"#;
+        // `transform` is on neither list → kept + warning. `bg white`
+        // is denied → stripped. `color: #7cc576` is the green callout
+        // → allowed silently.
+        let input = r#"<div style="background-color: white; color: #7cc576; transform: rotate(5deg)">x</div>"#;
         let out = scrub_styles(input, &mut w);
-        // White bg dropped; the green color and padding kept.
         assert!(!out.contains("background-color: white"));
         assert!(out.contains("color: #7cc576"));
-        // padding isn't in either list → kept + warning.
-        assert!(out.contains("padding: 5px"));
+        assert!(out.contains("transform: rotate(5deg)"));
         assert!(w.iter().any(
-            |w| matches!(w, Warning::UnknownInlineStyle { property, .. } if property == "padding")
+            |w| matches!(w, Warning::UnknownInlineStyle { property, .. } if property == "transform")
         ));
+    }
+
+    #[test]
+    fn scrub_strips_table_cell_padding() {
+        // The bundled CSS now styles `th, td { padding: 5px }`, so
+        // the inline copy is redundant and `padding: 5px` is on the
+        // deny list. Verify it's stripped silently.
+        let mut w = vec![];
+        let input = r#"<td style="padding: 5px">cell</td>"#;
+        let out = scrub_styles(input, &mut w);
+        assert!(!out.contains("padding: 5px"));
+        assert!(w.is_empty(), "stripping a denied property should not warn");
+    }
+
+    #[test]
+    fn scrub_strips_subsection_h3_inline_styles() {
+        // All 5 properties are on the deny list — the whole `style="…"`
+        // attribute drops out and our bundled `.statement-section h3`
+        // rule takes over.
+        let mut w = vec![];
+        let input = r#"<h3 style="font-size: 24px; margin-top: 20px; margin-bottom: 10px; font-weight: 500; line-height: 1.1">The map</h3>"#;
+        let out = scrub_styles(input, &mut w);
+        assert!(!out.contains("style="));
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn scrub_handles_entity_in_value() {
+        // `font-family: &quot;Courier New&quot;, monospace` — the
+        // `;` inside `&quot;` must NOT be treated as a property
+        // separator. Pre-fix this produced a malformed warning of
+        // `font-family: &quot` and the rest got mangled.
+        let mut w = vec![];
+        let input =
+            r#"<span style="font-family: &quot;Courier New&quot;, monospace">x</span>"#;
+        let out = scrub_styles(input, &mut w);
+        assert!(out.contains("&quot;Courier New&quot;, monospace"));
+        // Exactly ONE warning, with the full value.
+        let style_warns: Vec<_> = w
+            .iter()
+            .filter(|w| matches!(w, Warning::UnknownInlineStyle { .. }))
+            .collect();
+        assert_eq!(style_warns.len(), 1, "expected exactly one warning, got {:?}", style_warns);
+        if let Warning::UnknownInlineStyle { value, .. } = style_warns[0] {
+            assert!(
+                value.contains("Courier New"),
+                "warning value should carry the full string, got {value:?}",
+            );
+        }
     }
 
     #[test]
@@ -591,6 +780,41 @@ mod tests {
         let mut w = vec![];
         audit_statement_classes(r#"<div class="statement-goal">x</div>"#, &mut w);
         assert!(w.is_empty());
+    }
+
+    #[test]
+    fn audit_silent_on_known_icon() {
+        let mut w = vec![];
+        audit_statement_classes(
+            r#"<span class="icon icon-goal">&nbsp;</span>"#,
+            &mut w,
+        );
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn audit_warns_on_unknown_icon() {
+        let mut w = vec![];
+        audit_statement_classes(
+            r#"<span class="icon icon-novel">&nbsp;</span>"#,
+            &mut w,
+        );
+        assert_eq!(
+            w,
+            vec![Warning::UnknownIconClass("icon-novel".into())],
+        );
+    }
+
+    #[test]
+    fn audit_dedups_repeated_icons() {
+        // Spider Attack's `icon-example` appears on two `<h2>` headings.
+        // Even if it weren't known, the audit should warn ONCE.
+        let mut w = vec![];
+        audit_statement_classes(
+            r#"<span class="icon icon-novel">a</span><span class="icon icon-novel">b</span>"#,
+            &mut w,
+        );
+        assert_eq!(w.len(), 1);
     }
 
     #[test]
@@ -633,6 +857,64 @@ mod tests {
         assert!(
             out.html
                 .contains("<title>Fantastic Bits - Game Statement</title>")
+        );
+    }
+
+    #[test]
+    fn scaffold_stamps_style_sha() {
+        let html = wrap_in_scaffold("<p>x</p>", "T");
+        let expected_marker = format!("style-sha={}", style_sha());
+        assert!(html.contains(&expected_marker), "missing style-sha stamp");
+    }
+
+    #[test]
+    fn style_sha_is_stable_per_build() {
+        // Cheap regression guard: the sha must not change unless
+        // STYLE actually does. Two calls in the same process must
+        // match.
+        assert_eq!(style_sha(), style_sha());
+    }
+
+    #[test]
+    fn extract_body_round_trips_through_re_clean() {
+        // clean → re_clean → clean produces byte-equal output. The
+        // first clean turns the paste into a cleaned file. re_clean
+        // strips the scaffold + reruns rules; same scaffold goes back
+        // on. Idempotent.
+        let paste = r#"<div class="statement-goal"><h1>Goal</h1><p>do the thing</p></div>"#;
+        let once = clean(paste).unwrap().html;
+        let twice = re_clean(&once).unwrap().html;
+        assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn re_clean_picks_up_new_deny_rules() {
+        // Simulate the case where someone hand-wrote a body div with
+        // an inline style currently on DENIED. After re_clean the
+        // style should be stripped FROM THE BODY. The bundled CSS
+        // still references `font-size: 24px` in the h3 subsection
+        // rule, so we must look at the body specifically.
+        let raw = r#"<!DOCTYPE html><html><head><style></style></head><body>
+<div class="statement-body">
+<h3 style="font-size: 24px; color: red">x</h3>
+</div></body></html>"#;
+        let out = re_clean(raw).unwrap().html;
+        let body = extract_body_from_cleaned(&out).expect("re_clean must emit a scaffolded body");
+        assert!(
+            !body.contains("font-size: 24px"),
+            "denied font-size: 24px leaked into body: {body}",
+        );
+        assert!(body.contains("color: red"), "unknown color should be kept");
+    }
+
+    #[test]
+    fn re_clean_errors_on_non_scaffold_input() {
+        // No anchor → returns Err so the caller can suggest a full
+        // `clean()` from the original paste.
+        let err = re_clean("<p>not a generated file</p>").unwrap_err();
+        assert!(
+            err.to_string().contains("doesn't look like"),
+            "unexpected error: {err}",
         );
     }
 }

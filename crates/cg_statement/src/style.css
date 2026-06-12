@@ -38,6 +38,42 @@ li {
   margin: 4px 0;
 }
 
+/* Tables: spell tables, parameter tables, etc. Borders match the
+   section-divider colour; cells share the 5px padding CodinGame
+   pastes apply inline — those inline copies are now denied so this
+   rule is the single source of truth. */
+table {
+  border-collapse: collapse;
+  margin: 8px 0;
+}
+
+th,
+td {
+  padding: 5px;
+  text-align: left;
+  vertical-align: top;
+  /* border: 1px solid #2c3e54; */
+}
+
+th {
+  background: #2c3e54;
+  font-weight: 700;
+  text-align: center;
+}
+
+/* Subsection headers — h3 inside a section's body (e.g. "The map",
+   "Heroes" inside Spider Attack's Rules). Higher specificity than
+   the direct-child section-title rule below, so the direct-child
+   case (an h3 that's a section title, with an icon) still gets the
+   flex layout. */
+.statement-section :not(.statement-section) h3 {
+  font-size: 24px;
+  margin-top: 20px;
+  margin-bottom: 10px;
+  font-weight: 500;
+  line-height: 1.1;
+}
+
 /* Section headers (Goal / Rules / Game Input). Small gold square
      stands in for the CodinGame icon font we don't have locally. */
 .statement-section > :is(h1, h2, h3) {

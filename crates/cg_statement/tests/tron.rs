@@ -103,6 +103,9 @@ fn tron_paste_produces_no_warnings() {
             Warning::UnknownStatementClass(c) => {
                 panic!("unknown statement class on tron paste: {c}");
             }
+            Warning::UnknownIconClass(c) => {
+                panic!("unknown icon class on tron paste: {c}");
+            }
             Warning::NoContentBoundary => panic!("no content boundary on tron paste"),
         }
     }
