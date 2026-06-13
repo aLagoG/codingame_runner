@@ -7,10 +7,8 @@ const WIDTH: usize = 30;
 const HEIGHT: usize = 20;
 const MAX_DEPTH: i32 = 5;
 const MAX_PLAYERS: usize = 4;
+const SLOTS: usize = MAX_PLAYERS + 1;
 
-// Order matches v1's iteration (UP, RIGHT, DOWN, LEFT). With a
-// heuristic that often returns ties between moves, the first-tried
-// direction wins, so this matters more than it looks.
 const MOVES: [(Direction, Pos); 4] = [
     (Direction::Up, Pos::new(0, -1)),
     (Direction::Right, Pos::new(1, 0)),
@@ -22,15 +20,14 @@ type ID = NonZeroU8;
 // IDs are 1..=MAX_PLAYERS — slot number = player_number + 1.
 
 pub struct GameState {
-    // map[y][x] — HEIGHT rows × WIDTH columns, matching the engine
-    // convention in games/tron/game/src/lib.rs.
+    // map[y][x] — HEIGHT rows × WIDTH columns
     map: [[Option<ID>; WIDTH]; HEIGHT],
     n_players: u8,
     my_id: ID,
     // alive[id] / heads[id] for id in 1..=MAX_PLAYERS; index 0 unused.
     // heads[id] is only meaningful when alive[id].
-    alive: [bool; MAX_PLAYERS + 1],
-    heads: [Pos; MAX_PLAYERS + 1],
+    alive: [bool; SLOTS],
+    heads: [Pos; SLOTS],
     heuristic_state: HeuristicState,
 }
 
@@ -40,8 +37,8 @@ impl Default for GameState {
             map: [[None; WIDTH]; HEIGHT],
             n_players: 0,
             my_id: ID::new(1u8).unwrap(),
-            alive: [false; MAX_PLAYERS + 1],
-            heads: [Pos::new(0, 0); MAX_PLAYERS + 1],
+            alive: [false; SLOTS],
+            heads: [Pos::new(0, 0); SLOTS],
             heuristic_state: HeuristicState::default(),
         }
     }
@@ -52,12 +49,15 @@ impl GameState {
         self.map[pos.y as usize][pos.x as usize]
     }
 
-    fn set_pos(&mut self, id: ID, pos: &Pos) {
-        self.map[pos.y as usize][pos.x as usize] = Some(id);
+    fn at_mut(&mut self, pos: &Pos) -> &mut Option<ID> {
+        &mut self.map[pos.y as usize][pos.x as usize]
     }
 
-    // Passable if in-bounds AND (empty OR owned by a dead player —
-    // dead trails are erased by the engine, so they're free to walk on).
+    fn set_pos(&mut self, id: ID, pos: &Pos) {
+        *self.at_mut(pos) = Some(id);
+    }
+
+    // Passable if in-bounds AND (empty OR owned by a dead player).
     fn is_pos_passable(&self, pos: &Pos) -> bool {
         is_valid_pos(pos)
             && self
@@ -85,34 +85,28 @@ impl GameState {
         iter.next().is_none().then_some(first)
     }
 
-    // scores[id] for id in 1..=MAX_PLAYERS. v1-style multiplicative
-    // depth scaling: `(remaining_depth + 1) * ±2*W*H`. Winning sooner
-    // is *much* better than winning later (factor of 6× at the root
-    // with MAX_DEPTH=5). Magnitude matches the suicide penalty so
-    // "I lose via game-over" and "I lose via suicide" score
-    // consistently.
-    fn game_over_score(&self, depth: i32) -> [i32; MAX_PLAYERS + 1] {
-        let mut res = [0i32; MAX_PLAYERS + 1];
-        let winner = self.winner_id();
-        let magnitude = (WIDTH * HEIGHT) as i32 * 2 * (MAX_DEPTH - depth + 1);
-        for i in 1..res.len() {
-            res[i] = if winner.is_some_and(|p| p.get() as usize == i) {
-                magnitude
-            } else {
-                -magnitude
-            };
+    // scores[id] for id in 1..=MAX_PLAYERS.
+    fn game_over_score(&self, depth: i32) -> [i32; SLOTS] {
+        // All players start scored as if they lost
+        let mut res = [game_over_base_score(depth); SLOTS];
+        if let Some(winner) = self.winner_id() {
+            // Winner gets the score flipped
+            res[winner.get() as usize] *= -1;
         }
         res
     }
 
-    fn heuristic(&mut self) -> [i32; MAX_PLAYERS + 1] {
+    fn heuristic(&mut self) -> [i32; SLOTS] {
         self.heuristic_state.start_epoch();
-        let queue = &mut self.heuristic_state.queue;
-        queue.clear();
         for i in 1..=MAX_PLAYERS {
             if self.alive[i] {
-                let id = ID::new(i as u8).unwrap();
-                queue.push_back(HeuristicSearchNode::new(id, self.heads[i], 0));
+                self.heuristic_state
+                    .queue
+                    .push_back(HeuristicSearchNode::new(
+                        ID::new(i as u8).unwrap(),
+                        self.heads[i],
+                        0,
+                    ));
             }
         }
 
@@ -124,11 +118,13 @@ impl GameState {
                         .heuristic_state
                         .set(&moved, current.player_id, current.distance + 1)
                 {
-                    self.heuristic_state.queue.push_back(HeuristicSearchNode::new(
-                        current.player_id,
-                        moved,
-                        current.distance + 1,
-                    ));
+                    self.heuristic_state
+                        .queue
+                        .push_back(HeuristicSearchNode::new(
+                            current.player_id,
+                            moved,
+                            current.distance + 1,
+                        ));
                 }
             }
         }
@@ -156,13 +152,10 @@ impl HeuristicSearchNode {
 struct HeuristicState {
     board: [[HeuristicNode; WIDTH]; HEIGHT],
     // How many squares each player controls in the current heuristic call.
-    scores: [i32; MAX_PLAYERS + 1],
-    // Epoch counter: lets us treat `board` as freshly zeroed every
-    // heuristic call without actually zeroing it.
+    scores: [i32; SLOTS],
+    // Epoch counter; treats old marks in the board as empty if on different epoch
     epoch: u32,
-    // BFS work queue, reused across heuristic calls to avoid per-leaf
-    // allocations (the heuristic fires at every search leaf, ~1000×
-    // per top-level move).
+    // Shared search queue, no need to re-allocate it every time
     queue: VecDeque<HeuristicSearchNode>,
 }
 
@@ -181,6 +174,7 @@ impl HeuristicState {
     fn start_epoch(&mut self) {
         self.epoch += 1;
         self.scores.fill(0);
+        self.queue.clear();
     }
 
     // Returns true iff `id` should expand from `pos` further (i.e.
@@ -193,17 +187,15 @@ impl HeuristicState {
     // shortest distance equals `distance`; only cells with exactly
     // one bit set contribute to `scores`.
     fn set(&mut self, pos: &Pos, id: ID, current_distance: u32) -> bool {
-        let id_bit = 1u8 << (id.get() - 1);
+        let id_bit = 1u8 << id.get();
         let epoch = self.epoch;
-        let node = self.board[pos.y as usize][pos.x as usize];
+        let node = &mut self.board[pos.y as usize][pos.x as usize];
 
         if node.epoch_last_set < epoch {
             // First visit this epoch — claim uniquely.
-            self.board[pos.y as usize][pos.x as usize] = HeuristicNode {
-                epoch_last_set: epoch,
-                distance: current_distance,
-                owners: id_bit,
-            };
+            node.epoch_last_set = epoch;
+            node.distance = current_distance;
+            node.owners = id_bit;
             self.scores[id.get() as usize] += 1;
             return true;
         }
@@ -224,10 +216,10 @@ impl HeuristicState {
         // If the cell was uniquely owned, flip its credit off. If it
         // was already contested (≥2 owners), no credit was held.
         if node.owners.count_ones() == 1 {
-            let prev_id = (node.owners.trailing_zeros() + 1) as usize;
+            let prev_id = node.owners.trailing_zeros() as usize;
             self.scores[prev_id] -= 1;
         }
-        self.board[pos.y as usize][pos.x as usize].owners |= id_bit;
+        node.owners |= id_bit;
 
         // Still expand: cells beyond a contested junction may be
         // uniquely reachable through it for this player.
@@ -239,7 +231,7 @@ impl HeuristicState {
 struct HeuristicNode {
     epoch_last_set: u32,
     distance: u32,
-    // Bitmask: bit (i-1) set ⇒ player i reaches this cell at
+    // Bitmask: bit (i) set ⇒ player i reaches this cell at
     // `distance`. Cells with `owners.count_ones() == 1` are credited
     // in `scores`; cells with ≥2 bits set are neutral.
     owners: u8,
@@ -249,12 +241,18 @@ fn is_valid_pos(pos: &Pos) -> bool {
     (0..(WIDTH as i32)).contains(&pos.x) && (0..(HEIGHT as i32)).contains(&pos.y)
 }
 
+// Base score for a looser when the game is over (meaning it's negative)
+fn game_over_base_score(depth: i32) -> i32 {
+    (WIDTH * HEIGHT) as i32 * -2 * (MAX_DEPTH - depth + 1)
+}
+
 // Find the next alive player after `current`, wrapping. Callers only
 // invoke this when `alive_count >= 2`, so a next alive always exists.
 fn next_alive_after(state: &GameState, current: ID) -> ID {
     let n = state.n_players as usize;
-    for step in 1..=n {
-        let cand = ((current.get() as usize - 1 + step) % n) + 1;
+    let idx = current.get() as usize - 1;
+    for step in 1..n {
+        let cand = ((idx + step) % n) + 1;
         if state.alive[cand] {
             return ID::new(cand as u8).unwrap();
         }
@@ -272,7 +270,7 @@ fn search(
     state: &mut GameState,
     current_player: ID,
     depth: i32,
-) -> ([i32; MAX_PLAYERS + 1], Option<Direction>) {
+) -> ([i32; SLOTS], Option<Direction>) {
     if state.is_game_over() {
         return (state.game_over_score(depth), None);
     }
@@ -282,7 +280,7 @@ fn search(
 
     let cp_idx = current_player.get() as usize;
     let head = state.heads[cp_idx];
-    let mut best_scores = [i32::MIN; MAX_PLAYERS + 1];
+    let mut best_scores = [i32::MIN; SLOTS];
     let mut best_dir: Option<Direction> = None;
 
     for (dir, mv) in MOVES {
@@ -301,7 +299,7 @@ fn search(
         let (scores, _) = search(state, next_player, depth + 1);
 
         state.heads[cp_idx] = head;
-        state.map[next.y as usize][next.x as usize] = prev_owner;
+        *state.at_mut(&next) = prev_owner;
 
         if scores[cp_idx] > best_scores[cp_idx] {
             best_scores = scores;
@@ -316,39 +314,15 @@ fn search(
     // No legal move ⇒ this player dies.
 
     if current_player == state.my_id {
-        // v1-style suicide short-circuit: my death is catastrophically
-        // bad — skip exploring further. Magnitude matches v1's
-        // `-2*W*H * (remaining_depth + 1)`, so dying near the root is
-        // punished more than dying near a leaf.
-        //
-        // The mirrored +penalty on every alive opponent is required
-        // because we're in max^n, not minimax: without it, the parent
-        // opponent would read `scores[opp] = 0` here and prefer some
-        // *other* branch where the heuristic returned a positive
-        // cell-count — i.e., they'd actively avoid killing us.
-        let mut s = [0i32; MAX_PLAYERS + 1];
-        let penalty = (WIDTH * HEIGHT) as i32 * 2 * (MAX_DEPTH - depth + 1);
-        s[cp_idx] = -penalty;
-        for id in state.alive_ids() {
-            if id != current_player {
-                s[id.get() as usize] = penalty;
-            }
-        }
-        // Pick an in-bounds neighbour as the fallback direction. The
-        // engine still needs a valid string from us this turn even
-        // though we're about to die. At non-root depths the parent
-        // discards this, but returning it unconditionally lets
-        // `decide` skip its own fallback path.
-        let fallback = MOVES
-            .iter()
-            .find(|(_, mv)| is_valid_pos(&(head + mv)))
-            .map_or(Direction::Down, |(d, _)| *d);
-        return (s, Some(fallback));
+        // our death is catastrophically bad — skip exploring further.
+        let loss = game_over_base_score(depth);
+        let mut s = [-loss; SLOTS];
+        s[cp_idx] = loss;
+        // We died, the direction doesn't matter
+        return (s, Some(Direction::Up));
     }
 
     // Opponent dies — flip them out of the alive set and recurse.
-    // No need to scrub the map: `is_pos_passable` already treats
-    // cells owned by a dead player as passable.
     state.alive[cp_idx] = false;
     let scores = if state.is_game_over() {
         state.game_over_score(depth)
@@ -369,18 +343,15 @@ pub fn decide(turn: &TurnInput, state: &mut GameState) -> TurnOutput {
     state.n_players = turn.number_of_players as u8;
     state.my_id = ID::new((turn.player_number + 1) as u8).unwrap();
 
-    // Rebuild alive/heads from this turn's input. The map persists
-    // across turns so trails accumulate — we only ever see line.end
-    // each turn, so old heads stay marked. Dead players' stale trail
-    // cells are harmless: `is_pos_passable` keys on `alive[]`, which
-    // we reset here.
-    state.alive.fill(false);
     for (idx, line) in turn.player_lines.iter().enumerate() {
-        if !is_valid_pos(&line.end) {
-            continue;
-        }
         let id = ID::new((idx + 1) as u8).unwrap();
         let slot = id.get() as usize;
+
+        if !is_valid_pos(&line.end) {
+            state.alive[slot] = false;
+            continue;
+        }
+
         state.alive[slot] = true;
         state.heads[slot] = line.end;
         state.set_pos(id, &line.end);
